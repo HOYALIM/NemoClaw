@@ -77,7 +77,7 @@ const { DEFAULT_CLOUD_MODEL, getProviderSelectionConfig, parseGatewayInference }
 // Shared constant so getSuggestedPolicyPresets() and setupPoliciesWithSelection()
 // stay in sync.
 const LOCAL_INFERENCE_PROVIDERS: string[] = ["ollama-local", "vllm-local"];
-const { sleepSeconds } = require("./wait");
+const { sleepSeconds, waitUntil }: typeof import("./wait") = require("./wait");
 const platformUtils: typeof import("./platform") = require("./platform");
 const { inferContainerRuntime, isWsl, shouldPatchCoredns } = platformUtils;
 const { resolveOpenshell } = require("./resolve-openshell");
@@ -3510,24 +3510,40 @@ async function startGatewayWithOptions(
 
         const healthPollCount = healthWait.count;
         const healthPollInterval = healthWait.interval;
-        for (let i = 0; i < healthPollCount; i++) {
-          const repairResult = repairGatewayBootstrapSecrets();
-          if (repairResult.repaired) {
-            attachGatewayMetadataIfNeeded({ forceRefresh: true });
-          } else if (gatewayClusterHealthcheckPassed()) {
-            attachGatewayMetadataIfNeeded();
-          }
-          // Ensure the gateway remains selected before each probe.
-          runCaptureOpenshell(["gateway", "select", GATEWAY_NAME], { ignoreError: true });
-          const status = runCaptureOpenshell(["status"], { ignoreError: true });
-          const namedInfo = runCaptureOpenshell(["gateway", "info", "-g", GATEWAY_NAME], {
-            ignoreError: true,
-          });
-          const currentInfo = runCaptureOpenshell(["gateway", "info"], { ignoreError: true });
-          if (isGatewayHealthy(status, namedInfo, currentInfo)) {
-            return; // success
-          }
-          if (i < healthPollCount - 1) sleep(healthPollInterval);
+        const healthPollIntervalMs = Math.max(0, healthPollInterval * 1000);
+        const healthDeadlineMs =
+          Date.now() +
+          Math.max(0, healthPollCount - 1) * healthPollIntervalMs +
+          (healthPollIntervalMs === 0 ? 1 : 0);
+        const gatewayBecameHealthy =
+          healthPollCount > 0 &&
+          waitUntil(
+            () => {
+              const repairResult = repairGatewayBootstrapSecrets();
+              if (repairResult.repaired) {
+                attachGatewayMetadataIfNeeded({ forceRefresh: true });
+              } else if (gatewayClusterHealthcheckPassed()) {
+                attachGatewayMetadataIfNeeded();
+              }
+              // Ensure the gateway remains selected before each probe.
+              runCaptureOpenshell(["gateway", "select", GATEWAY_NAME], { ignoreError: true });
+              const status = runCaptureOpenshell(["status"], { ignoreError: true });
+              const namedInfo = runCaptureOpenshell(["gateway", "info", "-g", GATEWAY_NAME], {
+                ignoreError: true,
+              });
+              const currentInfo = runCaptureOpenshell(["gateway", "info"], { ignoreError: true });
+              return isGatewayHealthy(status, namedInfo, currentInfo);
+            },
+            {
+              deadlineMs: healthDeadlineMs,
+              initialIntervalMs: healthPollIntervalMs,
+              maxIntervalMs: healthPollIntervalMs,
+              backoffFactor: 1,
+              maxAttempts: healthPollCount,
+            },
+          );
+        if (gatewayBecameHealthy) {
+          return;
         }
 
         throw new Error("Gateway failed to start");

@@ -3,7 +3,7 @@
 
 import assert from "node:assert";
 import { describe, expect, it } from "vitest";
-import { sleepMs, sleepSeconds } from "../src/lib/wait.js";
+import { sleepMs, sleepSeconds, waitUntil } from "../src/lib/wait.js";
 
 describe("wait utility", () => {
   it("sleepMs blocks for approximately the requested time", () => {
@@ -37,5 +37,137 @@ describe("wait utility", () => {
     const end = performance.now();
     const duration = end - start;
     assert.ok(duration < 50, `duration ${duration}ms > 50ms`);
+  });
+
+  it("waitUntil returns immediately when the condition is already true", () => {
+    const sleeps: number[] = [];
+    let attempts = 0;
+
+    const result = waitUntil(
+      () => {
+        attempts += 1;
+        return true;
+      },
+      {
+        deadlineMs: 100,
+        now: () => 0,
+        sleep: (ms) => sleeps.push(ms),
+      },
+    );
+
+    expect(result).toBe(true);
+    expect(attempts).toBe(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  it("waitUntil retries until the condition succeeds", () => {
+    const sleeps: number[] = [];
+    let attempts = 0;
+    let nowMs = 0;
+
+    const result = waitUntil(
+      () => {
+        attempts += 1;
+        return attempts >= 3;
+      },
+      {
+        deadlineMs: 100,
+        initialIntervalMs: 10,
+        maxIntervalMs: 10,
+        backoffFactor: 1,
+        now: () => nowMs,
+        sleep: (ms) => {
+          sleeps.push(ms);
+          nowMs += ms;
+        },
+      },
+    );
+
+    expect(result).toBe(true);
+    expect(attempts).toBe(3);
+    expect(sleeps).toEqual([10, 10]);
+  });
+
+  it("waitUntil returns false after the deadline passes", () => {
+    const sleeps: number[] = [];
+    let attempts = 0;
+    let nowMs = 0;
+
+    const result = waitUntil(
+      () => {
+        attempts += 1;
+        return false;
+      },
+      {
+        deadlineMs: 25,
+        initialIntervalMs: 10,
+        maxIntervalMs: 10,
+        backoffFactor: 1,
+        now: () => nowMs,
+        sleep: (ms) => {
+          sleeps.push(ms);
+          nowMs += ms;
+        },
+      },
+    );
+
+    expect(result).toBe(false);
+    expect(attempts).toBe(4);
+    expect(sleeps).toEqual([10, 10, 5]);
+  });
+
+  it("waitUntil applies interval backoff up to the configured max interval", () => {
+    const sleeps: number[] = [];
+    let attempts = 0;
+    let nowMs = 0;
+
+    const result = waitUntil(
+      () => {
+        attempts += 1;
+        return attempts >= 5;
+      },
+      {
+        deadlineMs: 100,
+        initialIntervalMs: 5,
+        maxIntervalMs: 20,
+        backoffFactor: 2,
+        now: () => nowMs,
+        sleep: (ms) => {
+          sleeps.push(ms);
+          nowMs += ms;
+        },
+      },
+    );
+
+    expect(result).toBe(true);
+    expect(sleeps).toEqual([5, 10, 20, 20]);
+  });
+
+  it("waitUntil can cap attempts while allowing zero-length intervals", () => {
+    const sleeps: number[] = [];
+    let attempts = 0;
+    let nowMs = 0;
+
+    const result = waitUntil(
+      () => {
+        attempts += 1;
+        return false;
+      },
+      {
+        deadlineMs: 1,
+        initialIntervalMs: 0,
+        maxIntervalMs: 0,
+        maxAttempts: 3,
+        now: () => nowMs,
+        sleep: (ms) => {
+          sleeps.push(ms);
+          nowMs += ms;
+        },
+      },
+    );
+
+    expect(result).toBe(false);
+    expect(attempts).toBe(3);
+    expect(sleeps).toEqual([0, 0]);
   });
 });
