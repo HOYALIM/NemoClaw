@@ -92,11 +92,9 @@ export function waitUntil(condition: () => boolean, options: WaitUntilOptions): 
 
   let attempts = 0;
   for (;;) {
-    if (attempts > 0) {
-      const currentMs = now();
-      if (!Number.isFinite(currentMs) || currentMs >= deadlineMs) {
-        return false;
-      }
+    const currentMs = now();
+    if (!Number.isFinite(currentMs) || currentMs >= deadlineMs) {
+      return false;
     }
 
     if (attempts >= maxAttempts) {
@@ -111,7 +109,6 @@ export function waitUntil(condition: () => boolean, options: WaitUntilOptions): 
       return false;
     }
 
-    const currentMs = now();
     const remainingMs = deadlineMs - currentMs;
     const requestedSleepMs = Math.min(intervalMs, remainingMs);
     const sleepDurationMs =

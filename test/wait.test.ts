@@ -60,6 +60,27 @@ describe("wait utility", () => {
     expect(sleeps).toEqual([]);
   });
 
+  it("waitUntil does not probe when the deadline is already expired", () => {
+    const sleeps: number[] = [];
+    let attempts = 0;
+
+    const result = waitUntil(
+      () => {
+        attempts += 1;
+        return true;
+      },
+      {
+        deadlineMs: 10,
+        now: () => 10,
+        sleep: (ms) => sleeps.push(ms),
+      },
+    );
+
+    expect(result).toBe(false);
+    expect(attempts).toBe(0);
+    expect(sleeps).toEqual([]);
+  });
+
   it("waitUntil throws when deadlineMs is non-finite and no attempt cap is provided", () => {
     expect(() =>
       waitUntil(() => false, {
