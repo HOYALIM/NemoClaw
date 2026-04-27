@@ -7,7 +7,7 @@
 
 export type WaitUntilOptions = {
   /** Absolute deadline, in milliseconds, using the same clock as `now`. */
-  deadlineMs: number;
+  deadlineMs?: number;
   /** First delay between failed attempts. */
   initialIntervalMs?: number;
   /** Maximum delay between failed attempts after backoff. */
@@ -25,6 +25,7 @@ export type WaitUntilOptions = {
 const DEFAULT_INITIAL_INTERVAL_MS = 250;
 const DEFAULT_MAX_INTERVAL_MS = 5_000;
 const DEFAULT_BACKOFF_FACTOR = 1.5;
+const MIN_UNCAPPED_SLEEP_MS = 1;
 
 /**
  * Synchronously sleep for the given number of milliseconds.
@@ -43,23 +44,26 @@ export function sleepSeconds(seconds: number): void {
   sleepMs(seconds * 1000);
 }
 
+/**
+ * Return a positive finite number, or a fallback when the option is absent or invalid.
+ */
 function positiveFiniteOr(value: number | undefined, fallback: number): number {
   return value !== undefined && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+/**
+ * Return a non-negative finite number, or a fallback when the option is absent or invalid.
+ */
 function nonNegativeFiniteOr(value: number | undefined, fallback: number): number {
   return value !== undefined && Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
 /**
- * Poll a synchronous condition until it succeeds or the absolute deadline passes.
+ * Poll a synchronous condition until it succeeds, the deadline passes, or attempts run out.
+ *
+ * Callers must provide either a finite deadline or a finite maxAttempts cap.
  */
 export function waitUntil(condition: () => boolean, options: WaitUntilOptions): boolean {
-  const deadlineMs = Number(options.deadlineMs);
-  if (!Number.isFinite(deadlineMs)) {
-    throw new TypeError("waitUntil requires a finite deadlineMs");
-  }
-
   const now = options.now ?? Date.now;
   const sleeper = options.sleep ?? sleepMs;
   const maxIntervalMs = nonNegativeFiniteOr(options.maxIntervalMs, DEFAULT_MAX_INTERVAL_MS);
@@ -75,6 +79,16 @@ export function waitUntil(condition: () => boolean, options: WaitUntilOptions): 
     options.maxAttempts !== undefined && Number.isFinite(options.maxAttempts)
       ? Math.max(0, Math.floor(options.maxAttempts))
       : Number.POSITIVE_INFINITY;
+  const hasAttemptCap = Number.isFinite(maxAttempts);
+
+  const deadlineMs =
+    options.deadlineMs === undefined ? Number.POSITIVE_INFINITY : Number(options.deadlineMs);
+  if (Number.isNaN(deadlineMs) || deadlineMs === Number.NEGATIVE_INFINITY) {
+    throw new TypeError("waitUntil requires a valid deadlineMs");
+  }
+  if (deadlineMs === Number.POSITIVE_INFINITY && !hasAttemptCap) {
+    throw new TypeError("waitUntil requires deadlineMs or maxAttempts");
+  }
 
   let attempts = 0;
   for (;;) {
@@ -95,7 +109,11 @@ export function waitUntil(condition: () => boolean, options: WaitUntilOptions): 
       return false;
     }
 
-    sleeper(Math.min(intervalMs, deadlineMs - currentMs));
+    const remainingMs = deadlineMs - currentMs;
+    const requestedSleepMs = Math.min(intervalMs, remainingMs);
+    const sleepDurationMs =
+      !hasAttemptCap && requestedSleepMs <= 0 ? MIN_UNCAPPED_SLEEP_MS : requestedSleepMs;
+    sleeper(Math.min(sleepDurationMs, remainingMs));
     intervalMs = Math.min(maxIntervalMs, intervalMs * backoffFactor);
   }
 }

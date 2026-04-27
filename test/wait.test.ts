@@ -60,6 +60,16 @@ describe("wait utility", () => {
     expect(sleeps).toEqual([]);
   });
 
+  it("waitUntil throws when deadlineMs is non-finite and no attempt cap is provided", () => {
+    expect(() =>
+      waitUntil(() => false, {
+        deadlineMs: Number.NaN,
+        now: () => 0,
+        sleep: () => {},
+      }),
+    ).toThrow(TypeError);
+  });
+
   it("waitUntil retries until the condition succeeds", () => {
     const sleeps: number[] = [];
     let attempts = 0;
@@ -169,5 +179,55 @@ describe("wait utility", () => {
     expect(result).toBe(false);
     expect(attempts).toBe(3);
     expect(sleeps).toEqual([0, 0]);
+  });
+
+  it("waitUntil can rely on maxAttempts without a deadline", () => {
+    const sleeps: number[] = [];
+    let attempts = 0;
+
+    const result = waitUntil(
+      () => {
+        attempts += 1;
+        return false;
+      },
+      {
+        initialIntervalMs: 0,
+        maxIntervalMs: 0,
+        maxAttempts: 3,
+        now: () => 0,
+        sleep: (ms) => sleeps.push(ms),
+      },
+    );
+
+    expect(result).toBe(false);
+    expect(attempts).toBe(3);
+    expect(sleeps).toEqual([0, 0]);
+  });
+
+  it("waitUntil yields between unbounded zero-interval attempts", () => {
+    const sleeps: number[] = [];
+    let attempts = 0;
+    let nowMs = 0;
+
+    const result = waitUntil(
+      () => {
+        attempts += 1;
+        return false;
+      },
+      {
+        deadlineMs: 3,
+        initialIntervalMs: 0,
+        maxIntervalMs: 0,
+        now: () => nowMs,
+        sleep: (ms) => {
+          sleeps.push(ms);
+          nowMs += ms;
+        },
+      },
+    );
+
+    expect(result).toBe(false);
+    expect(attempts).toBe(4);
+    expect(sleeps).toEqual([1, 1, 1]);
   });
 });
