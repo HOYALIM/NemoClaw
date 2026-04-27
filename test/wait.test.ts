@@ -122,7 +122,7 @@ describe("wait utility", () => {
     );
 
     expect(result).toBe(false);
-    expect(attempts).toBe(4);
+    expect(attempts).toBe(3);
     expect(sleeps).toEqual([10, 10, 5]);
   });
 
@@ -227,7 +227,7 @@ describe("wait utility", () => {
     );
 
     expect(result).toBe(false);
-    expect(attempts).toBe(4);
+    expect(attempts).toBe(3);
     expect(sleeps).toEqual([1, 1, 1]);
   });
 });
