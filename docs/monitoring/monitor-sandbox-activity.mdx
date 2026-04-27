@@ -58,6 +58,38 @@ $$nemoclaw <name> logs --follow
 The `logs` command shows lifecycle and gateway output.
 It does not export the structured per-session agent state that OpenClaw stores under `.openclaw/agents/`.
 
+## Export Prometheus Metrics
+
+NemoClaw can expose lightweight Prometheus-format metrics for blueprint execution, API validation, and sandbox lifecycle operations.
+Metrics are disabled by default.
+
+Set the following environment variable before starting the OpenClaw process that loads the NemoClaw plugin:
+
+```bash
+export NEMOCLAW_METRICS_ENABLED=true
+```
+
+The metrics endpoint listens on `127.0.0.1:9090` by default:
+
+```bash
+curl http://127.0.0.1:9090/metrics
+```
+
+<Warning title="Secure metrics access">
+The `/metrics` endpoint is unauthenticated. If `NEMOCLAW_METRICS_HOST` binds beyond loopback, any host or network that can reach `NEMOCLAW_METRICS_HOST:NEMOCLAW_METRICS_PORT/metrics` may scrape operational metadata about blueprint execution, API validation, and sandbox lifecycle activity. Prefer scraping over a secured network, restrict access with firewall rules, or keep `NEMOCLAW_METRICS_HOST` bound to loopback and expose `/metrics` through a secured proxy.
+</Warning>
+
+Use `NEMOCLAW_METRICS_PORT` to select another port, or `NEMOCLAW_METRICS_HOST` to bind to a different interface when your deployment needs remote scraping.
+The endpoint serves only `/metrics`; other paths return `404`.
+
+Example metric families include:
+
+```text
+blueprint_execution_total{action="apply",profile="default",status="success"} 1
+api_validation_total{kind="endpoint_url",source="blueprint",status="success"} 1
+sandbox_lifecycle_total{operation="create",status="success"} 1
+```
+
 ## Inspect Agent Session State
 
 OpenClaw stores structured session state inside the sandbox.

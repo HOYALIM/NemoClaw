@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawPluginApi } from "./index.js";
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -24,12 +24,19 @@ vi.mock("./runtime-context.js", () => ({
   }),
 }));
 
+vi.mock("./observability/server.js", () => ({
+  startMetricsServer: vi.fn(),
+}));
+
 import { readFileSync } from "node:fs";
 import register, { getPluginConfig } from "./index.js";
 import { loadOnboardConfig } from "./onboard/config.js";
+import { metrics } from "./observability/metrics.js";
+import { startMetricsServer } from "./observability/server.js";
 
 const mockedReadFileSync = vi.mocked(readFileSync);
 const mockedLoadOnboardConfig = vi.mocked(loadOnboardConfig);
+const mockedStartMetricsServer = vi.mocked(startMetricsServer);
 const originalReadFileSync = (await vi.importActual<typeof import("node:fs")>("node:fs"))
   .readFileSync;
 
@@ -69,6 +76,14 @@ describe("plugin registration", () => {
     vi.clearAllMocks();
     mockMissingOpenClawConfig();
     mockedLoadOnboardConfig.mockReturnValue(null);
+    mockedStartMetricsServer.mockReset();
+    metrics.reset();
+    vi.unstubAllEnvs();
+  });
+
+  afterEach(() => {
+    metrics.reset();
+    vi.unstubAllEnvs();
   });
 
   it("registers a slash command", () => {
@@ -85,6 +100,46 @@ describe("plugin registration", () => {
         id: "inference",
         auth: [expect.objectContaining({ id: "bearer", type: "bearer" })],
       }),
+    );
+  });
+
+  it("does not register the metrics service by default", () => {
+    const api = createMockApi();
+    register(api);
+    expect(api.registerService).not.toHaveBeenCalled();
+  });
+
+  it("registers the metrics service when enabled", () => {
+    vi.stubEnv("NEMOCLAW_METRICS_ENABLED", "true");
+    const api = createMockApi();
+
+    register(api);
+
+    expect(api.registerService).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "nemoclaw-metrics" }),
+    );
+  });
+
+  it("logs metrics server close failures without rejecting plugin shutdown", async () => {
+    vi.stubEnv("NEMOCLAW_METRICS_ENABLED", "true");
+    const close = vi.fn().mockRejectedValue(new Error("close failed"));
+    mockedStartMetricsServer.mockResolvedValue({
+      host: "127.0.0.1",
+      port: 9090,
+      close,
+    });
+    const api = createMockApi();
+
+    register(api);
+    const service = vi.mocked(api.registerService).mock.calls[0][0];
+    await service.start({ config: api.config, logger: api.logger });
+    await expect(
+      service.stop?.({ config: api.config, logger: api.logger }),
+    ).resolves.toBeUndefined();
+
+    expect(close).toHaveBeenCalledOnce();
+    expect(api.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("Could not stop NemoClaw metrics endpoint cleanly: close failed"),
     );
   });
 

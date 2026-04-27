@@ -19,6 +19,8 @@ import {
   describeOnboardProvider,
   loadOnboardConfig,
 } from "./onboard/config.js";
+import { isMetricsEnabled, metrics } from "./observability/metrics.js";
+import { startMetricsServer, type MetricsServer } from "./observability/server.js";
 import { registerRuntimeContext } from "./runtime-context.js";
 import { scanForSecrets, isMemoryPath } from "./security/secret-scanner.js";
 import { safeResolvePath } from "./security/safe-resolve-path.js";
@@ -352,7 +354,43 @@ export default function register(api: OpenClawPluginApi): void {
     handler: (ctx) => handleSlashCommand(ctx, api),
   });
 
-  // 2. Register nvidia-nim provider from the active OpenClaw config, falling
+  // 2. Register optional Prometheus-compatible metrics endpoint (#233)
+  if (isMetricsEnabled()) {
+    let metricsServer: MetricsServer | undefined;
+    api.registerService({
+      id: "nemoclaw-metrics",
+      start: async ({ logger }) => {
+        try {
+          metricsServer = await startMetricsServer({ registry: metrics, logger });
+        } catch (error) {
+          logger.warn(
+            `[OBSERVABILITY] Could not start NemoClaw metrics endpoint: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      },
+      stop: async ({ logger }) => {
+        if (!metricsServer) {
+          return;
+        }
+        try {
+          await metricsServer.close();
+          logger.info("NemoClaw metrics endpoint stopped");
+        } catch (error) {
+          logger.warn(
+            `[OBSERVABILITY] Could not stop NemoClaw metrics endpoint cleanly: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        } finally {
+          metricsServer = undefined;
+        }
+      },
+    });
+  }
+
+  // 3. Register nvidia-nim provider from the active OpenClaw config, falling
   // back to the onboard snapshot and then the NemoClaw default.
   const onboardCfg = loadOnboardConfig();
   const activeModel = readOpenClawPrimaryModel(api.logger) || onboardCfg?.model || "";
