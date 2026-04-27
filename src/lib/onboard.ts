@@ -3511,10 +3511,10 @@ async function startGatewayWithOptions(
         const healthPollCount = healthWait.count;
         const healthPollInterval = healthWait.interval;
         const healthPollIntervalMs = Math.max(0, healthPollInterval * 1000);
-        const healthDeadlineMs =
-          Date.now() +
-          Math.max(0, healthPollCount - 1) * healthPollIntervalMs +
-          (healthPollIntervalMs === 0 ? 1 : 0);
+        // Keep the deadline effectively unbounded so slow probe/repair commands do not
+        // consume the entire time budget before maxAttempts is reached. maxAttempts
+        // remains the mechanism that enforces the configured poll count.
+        const healthDeadlineMs = Number.MAX_SAFE_INTEGER;
         const gatewayBecameHealthy =
           healthPollCount > 0 &&
           waitUntil(
