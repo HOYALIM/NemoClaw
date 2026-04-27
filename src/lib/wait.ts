@@ -109,7 +109,11 @@ export function waitUntil(condition: () => boolean, options: WaitUntilOptions): 
       return false;
     }
 
-    const remainingMs = deadlineMs - currentMs;
+    const postConditionMs = now();
+    if (!Number.isFinite(postConditionMs) || postConditionMs >= deadlineMs) {
+      return false;
+    }
+    const remainingMs = deadlineMs - postConditionMs;
     const requestedSleepMs = Math.min(intervalMs, remainingMs);
     const sleepDurationMs =
       !hasAttemptCap && requestedSleepMs <= 0 ? MIN_UNCAPPED_SLEEP_MS : requestedSleepMs;
