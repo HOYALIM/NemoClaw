@@ -21,7 +21,7 @@ export type WaitUntilOptions = {
   maxAttempts?: number;
   /** Clock used for deadline comparisons. Defaults to Date.now. */
   now?: () => number;
-  /** Blocking sleep function. Defaults to sleepMs. */
+  /** Sleep function. Defaults to sleepMs for waitUntil and sleepMsAsync for waitUntilAsync. */
   sleep?: (ms: number) => void;
 };
 
@@ -33,7 +33,7 @@ type NormalizedWaitUntilOptions = {
   maxAttempts: number;
   hasAttemptCap: boolean;
   now: () => number;
-  sleep: (ms: number) => void;
+  sleep: (ms: number) => void | Promise<void>;
 };
 
 const DEFAULT_TIMEOUT_SECONDS = 10;
@@ -67,6 +67,14 @@ export function sleepMs(ms: number): void {
 }
 
 /**
+ * Asynchronously sleep for the given number of milliseconds.
+ */
+export function sleepMsAsync(ms: number): Promise<void> {
+  if (ms <= 0 || !Number.isFinite(ms)) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
  * Synchronously sleep for the given number of seconds.
  */
 export function sleepSeconds(seconds: number): void {
@@ -84,6 +92,7 @@ function nonNegativeFiniteOr(value: number | undefined, fallback: number): numbe
 function normalizeWaitUntilOptions(
   optionsOrTimeout?: WaitUntilOptions | number,
   pollIntervalMs = DEFAULT_INITIAL_INTERVAL_MS,
+  defaultSleep: (ms: number) => void | Promise<void> = sleepMs,
 ): NormalizedWaitUntilOptions {
   if (typeof optionsOrTimeout === "number" || optionsOrTimeout === undefined) {
     const now = Date.now;
@@ -103,7 +112,7 @@ function normalizeWaitUntilOptions(
       maxAttempts: Number.POSITIVE_INFINITY,
       hasAttemptCap: false,
       now,
-      sleep: sleepMs,
+      sleep: defaultSleep,
     };
   }
 
@@ -143,7 +152,7 @@ function normalizeWaitUntilOptions(
     maxAttempts,
     hasAttemptCap,
     now,
-    sleep: optionsOrTimeout.sleep ?? sleepMs,
+    sleep: optionsOrTimeout.sleep ?? defaultSleep,
   };
 }
 
@@ -225,7 +234,7 @@ export async function waitUntilAsync(
   optionsOrTimeout?: WaitUntilOptions | number,
   pollIntervalMs?: number,
 ): Promise<boolean> {
-  const options = normalizeWaitUntilOptions(optionsOrTimeout, pollIntervalMs);
+  const options = normalizeWaitUntilOptions(optionsOrTimeout, pollIntervalMs, sleepMsAsync);
   let attempts = 0;
   let intervalMs = options.intervalMs;
 

@@ -3,7 +3,7 @@
 
 import assert from "node:assert";
 import { createServer, type AddressInfo } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildLoopbackProbeEnv,
   sleepMs,
@@ -285,6 +285,37 @@ describe("wait utility", () => {
     expect(result).toBe(true);
     expect(attempts).toBe(3);
     expect(sleeps).toEqual([5, 5]);
+  });
+
+  it("waitUntilAsync uses a nonblocking default sleeper", async () => {
+    vi.useFakeTimers();
+    try {
+      let attempts = 0;
+
+      const resultPromise = waitUntilAsync(
+        () => {
+          attempts += 1;
+          return attempts >= 2;
+        },
+        {
+          initialIntervalMs: 10,
+          maxIntervalMs: 10,
+          maxAttempts: 2,
+        },
+      );
+
+      await Promise.resolve();
+      expect(attempts).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(9);
+      expect(attempts).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(resultPromise).resolves.toBe(true);
+      expect(attempts).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
