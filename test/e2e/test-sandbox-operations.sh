@@ -24,6 +24,8 @@ export NEMOCLAW_E2E_DEFAULT_TIMEOUT=1800
 SCRIPT_DIR_TIMEOUT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=test/e2e/e2e-timeout.sh
 source "${SCRIPT_DIR_TIMEOUT}/e2e-timeout.sh"
+# shellcheck source=test/e2e/lib/openclaw-json.sh
+source "${SCRIPT_DIR_TIMEOUT}/lib/openclaw-json.sh"
 
 # ── Config ───────────────────────────────────────────────────────────────────
 SANDBOX_A="test-sbx-a"
@@ -107,6 +109,60 @@ sandbox_exec() {
   sandbox_exec_for "$SANDBOX_A" "$1"
 }
 
+is_onboard_import_stream_reset() {
+  local output_file="$1"
+  [[ -f "$output_file" ]] || return 1
+
+  grep -q "Connection reset by peer (os error 104)" "$output_file" \
+    && grep -Eq "The image appears to have reached the gateway before the stream failed|Recovery: nemoclaw onboard --resume" "$output_file"
+}
+
+is_transient_onboard_resume_error() {
+  local output_file="$1"
+  [[ -f "$output_file" ]] || return 1
+
+  grep -Eq "Connection reset by peer \(os error 104\)|transport error|gateway unavailable|No active gateway|No gateway metadata found" "$output_file"
+}
+
+resume_onboard_after_import_stream_reset() {
+  local name="$1" output_file="$2"
+  if ! is_onboard_import_stream_reset "$output_file"; then
+    return 1
+  fi
+
+  log "  [onboard] Image reached gateway but import stream reset; retrying with nemoclaw onboard --resume..."
+
+  local attempt delay resume_exit resume_output
+  for attempt in 1 2 3; do
+    rm -f "$HOME/.nemoclaw/onboard.lock" 2>/dev/null || true
+    resume_exit=0
+    resume_output="$(mktemp)"
+    log "  [onboard] Resume attempt ${attempt}/3..."
+    NEMOCLAW_SANDBOX_NAME="$name" \
+      NEMOCLAW_NON_INTERACTIVE=1 \
+      NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1 \
+      nemoclaw onboard --resume --non-interactive --yes-i-accept-third-party-software \
+      2>&1 | tee -a "$LOG_FILE" "$resume_output" || resume_exit=$?
+
+    if [[ $resume_exit -eq 0 ]]; then
+      rm -f "$resume_output"
+      return 0
+    fi
+
+    log "  [onboard] nemoclaw onboard --resume attempt ${attempt}/3 exited with code $resume_exit"
+    if ((attempt < 3)) && is_transient_onboard_resume_error "$resume_output"; then
+      delay=$((attempt * 15))
+      log "  [onboard] Gateway transport still settling; retrying resume in ${delay}s..."
+      rm -f "$resume_output"
+      sleep "$delay"
+      continue
+    fi
+    rm -f "$resume_output"
+    return 1
+  done
+  return 1
+}
+
 # Onboard a sandbox by name. Removes stale locks, runs nemoclaw onboard in
 # non-interactive mode, and returns 0 if the sandbox appears in nemoclaw list.
 onboard_sandbox() {
@@ -116,18 +172,25 @@ onboard_sandbox() {
   # Remove stale lock from previous crashed runs
   rm -f "$HOME/.nemoclaw/onboard.lock" 2>/dev/null || true
 
-  local onboard_exit=0
+  local onboard_exit=0 onboard_output
+  onboard_output="$(mktemp)"
   NEMOCLAW_SANDBOX_NAME="$name" \
     NEMOCLAW_NON_INTERACTIVE=1 \
     NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1 \
     NEMOCLAW_RECREATE_SANDBOX=1 \
     nemoclaw onboard --non-interactive --yes-i-accept-third-party-software \
-    2>&1 | tee -a "$LOG_FILE" || onboard_exit=$?
+    2>&1 | tee -a "$LOG_FILE" "$onboard_output" || onboard_exit=$?
 
   if [[ $onboard_exit -ne 0 ]]; then
     log "  [onboard_sandbox] nemoclaw onboard exited with code $onboard_exit"
-    return 1
+    if resume_onboard_after_import_stream_reset "$name" "$onboard_output"; then
+      onboard_exit=0
+    else
+      rm -f "$onboard_output"
+      return 1
+    fi
   fi
+  rm -f "$onboard_output"
 
   if ! nemoclaw list 2>/dev/null | grep -q "$name"; then
     log "  [onboard_sandbox] Sandbox '$name' not found in nemoclaw list after onboard"
@@ -158,9 +221,10 @@ install_nemoclaw() {
 
   log "=== Installing NemoClaw via install.sh ==="
 
-  local install_exit=0
+  local install_exit=0 install_output
+  install_output="$(mktemp)"
   bash "$REPO_ROOT/install.sh" --non-interactive --yes-i-accept-third-party-software \
-    2>&1 | tee -a "$LOG_FILE" || install_exit=$?
+    2>&1 | tee -a "$LOG_FILE" "$install_output" || install_exit=$?
 
   # Source shell profile to pick up PATH changes from install.sh
   if [ -f "$HOME/.bashrc" ]; then
@@ -175,6 +239,15 @@ install_nemoclaw() {
   if [ -d "$HOME/.local/bin" ] && [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
     export PATH="$HOME/.local/bin:$PATH"
   fi
+
+  if [[ $install_exit -ne 0 ]]; then
+    local install_sandbox
+    install_sandbox="${NEMOCLAW_SANDBOX_NAME:-my-assistant}"
+    if resume_onboard_after_import_stream_reset "$install_sandbox" "$install_output"; then
+      install_exit=0
+    fi
+  fi
+  rm -f "$install_output"
 
   if [[ $install_exit -ne 0 ]]; then
     echo -e "${RED}FATAL: install.sh failed (exit $install_exit)${NC}"
@@ -276,59 +349,48 @@ test_sbx_01_list_sandboxes() {
 #
 #   1. Uses `openclaw agent --json`, which calls routeLogsToStderr() in
 #      openclaw/src/commands/agent-via-gateway.ts:57 so stdout is a clean
-#      JSON envelope. Stderr is dropped (2>/dev/null) so any prompt-echo
-#      or wrapped error there cannot satisfy the assertion.
+#      JSON envelope. Merged stdout/stderr is preserved for failure
+#      diagnostics, but assertions only read JSON payload text.
 #   2. The expected token (the integer 42) is not a literal substring of
 #      the prompt, so an error path that quoted the prompt back cannot
 #      false-positive the grep — which is what masked the openclaw 4.9
 #      SSRF regression from the prior `Say exactly: HELLO_E2E` assertion.
-#   3. Asserts on `result.payloads[].text` from the JSON envelope, not on
-#      merged stdout/stderr.
+#   3. Asserts on parsed model reply text from the JSON envelope, not on
+#      merged stdout/stderr or a single brittle envelope shape.
+#   4. Relies on generated `thinkingDefault: off` config so the first-turn
+#      smoke contract is not delayed by model-catalog inferred reasoning
+#      defaults without depending on transient CLI flags.
 test_sbx_02_connect_chat() {
   log "=== TC-SBX-02: Connect & Chat ==="
   require_sandbox "$SANDBOX_A" "TC-SBX-02" || return
 
   log "  Sending one-shot message to agent via SSH (openclaw agent --json)..."
-  local session_id raw ssh_cfg
+  local session_id raw ssh_cfg rc
   session_id="e2e-sbx-02-$(date +%s)-$$"
-  # Use a direct ssh invocation rather than sandbox_exec(): sandbox_exec_for
-  # merges stderr into stdout via 2>&1 so it can log non-zero exits, which
-  # would pollute the JSON document we need to parse below. Drop stderr at
-  # the source so node deprecation warnings (UNDICI-EHPA, etc.) and
-  # progress-bar bytes from openclaw cannot trip up json.load().
+  # Use a direct ssh invocation rather than sandbox_exec() so the JSON envelope
+  # is easy to parse while still preserving stderr in failure output.
   ssh_cfg="$(mktemp)"
   if ! openshell sandbox ssh-config "$SANDBOX_A" >"$ssh_cfg" 2>/dev/null; then
     rm -f "$ssh_cfg"
     fail "TC-SBX-02: Connect & Chat" "Failed to fetch SSH config for '$SANDBOX_A'"
     return
   fi
+  rc=0
   raw=$(run_with_timeout 90 ssh -F "$ssh_cfg" \
     -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o ConnectTimeout=10 -o LogLevel=ERROR \
     "openshell-${SANDBOX_A}" \
     "openclaw agent --agent main --json --session-id '${session_id}' -m 'What is 6 multiplied by 7? Reply with only the integer, no extra words.'" \
-    2>/dev/null) || true
+    2>&1) || rc=$?
   rm -f "$ssh_cfg"
 
   local reply
-  reply=$(echo "$raw" | python3 -c "
-import json, sys
-try:
-    doc = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-result = doc.get('result') or {}
-parts = []
-for p in result.get('payloads') or []:
-    if isinstance(p, dict) and isinstance(p.get('text'), str):
-        parts.append(p['text'])
-print('\n'.join(parts))
-" 2>/dev/null) || true
+  reply=$(printf '%s' "$raw" | parse_openclaw_agent_text 2>/dev/null) || true
 
-  if [[ -n "$reply" ]] && echo "$reply" | grep -qE "(^|[^0-9])42([^0-9]|$)"; then
+  if [[ $rc -eq 0 && -n "$reply" ]] && echo "$reply" | grep -qE "(^|[^0-9])42([^0-9]|$)"; then
     pass "TC-SBX-02: Agent computed 6×7=42 through openclaw → inference.local"
   else
-    fail "TC-SBX-02: Connect & Chat" "Expected '42' in agent reply; reply='${reply:0:200}'; raw stdout='${raw:0:200}'"
+    fail "TC-SBX-02: Connect & Chat" "Expected '42' in agent reply (rc=$rc); reply='${reply:0:200}'; raw output='${raw:0:200}'"
   fi
 }
 
@@ -387,6 +449,72 @@ test_sbx_04_log_streaming() {
     else
       pass "TC-SBX-04: Log --follow exited cleanly after kill"
     fi
+  fi
+}
+
+# ── TC-SBX-09: Tmux Session Flow ────────────────────────────────────────────
+# OpenClaw's bundled tmux-session flow shells out to `tmux` inside the sandbox.
+# The sandbox image must ship tmux (issue #4513) AND the sandbox landlock policy
+# must grant the devpts PTY devices so tmux can actually allocate a window.
+#
+# History: #4606 installed tmux but the lifecycle drive then failed with
+# `create window failed: fork failed: Permission denied`; #4640 degraded that
+# branch to a soft skip. The real cause was landlock denying /dev/ptmx +
+# /dev/pts (EACCES on forkpty()), not a fork/seccomp/nproc limit. The base
+# policy now grants /dev/pts, so this drive MUST pass — a `fork failed` here is
+# a hard regression of #4513, never a skip.
+test_sbx_09_tmux_session_flow() {
+  log "=== TC-SBX-09: Tmux Session Flow ==="
+  require_sandbox "$SANDBOX_A" "TC-SBX-09" || return
+
+  local which_out
+  which_out=$(sandbox_exec "command -v tmux || echo TMUX_MISSING" 2>&1) || true
+  if echo "$which_out" | grep -q "TMUX_MISSING"; then
+    fail "TC-SBX-09: Tmux Session Flow" "tmux not found inside sandbox (issue #4513)"
+    return
+  fi
+  pass "TC-SBX-09: tmux is installed in the sandbox ($(echo "$which_out" | head -1))"
+
+  # Pin the #4513 root cause directly: PTY allocation must succeed. This opens
+  # /dev/ptmx and a /dev/pts/<n> slave the same way tmux's forkpty() does, and
+  # fails fast with the underlying EACCES if the devpts grant ever regresses.
+  # Guarded on python3 (a diagnostic) so a missing interpreter cannot be
+  # mistaken for a devpts regression — the tmux lifecycle below is the gate.
+  # The PTY_OK sentinel is emitted by a shell `&& echo` only after openpty()
+  # exits 0 — it is deliberately NOT a literal inside the python source, because
+  # a Python traceback echoes the failing source line and would otherwise make
+  # `grep PTY_OK` match on the very EACCES regression this probe guards against.
+  # PY3_MISSING is gated solely on `command -v`, so an openpty() failure with
+  # python3 present falls through to `fail`, never to the soft skip.
+  local pty_out
+  pty_out=$(sandbox_exec "if command -v python3 >/dev/null 2>&1; then \
+    python3 -c 'import os; _,s=os.openpty(); print(os.ttyname(s))' && echo PTY_OK; \
+    else echo PY3_MISSING; fi" 2>&1) || true
+  if echo "$pty_out" | grep -q "PTY_OK"; then
+    pass "TC-SBX-09: PTY allocation works (slave $(echo "$pty_out" | grep -E '^/dev/pts/' | head -1))"
+  elif echo "$pty_out" | grep -q "PY3_MISSING"; then
+    log "TC-SBX-09: python3 unavailable; skipping direct openpty() probe (tmux lifecycle still gates devpts)"
+  else
+    fail "TC-SBX-09: PTY allocation" "openpty() failed — devpts not granted by sandbox policy (#4513): $(echo "$pty_out" | head -3)"
+  fi
+
+  # Drive a detached session lifecycle the way the bundled flow does. tmux needs
+  # a writable socket dir; /tmp is on the sandbox write set.
+  local sess="nemoclaw-e2e-tmux-$$"
+  local flow_out
+  flow_out=$(sandbox_exec "TMUX_TMPDIR=/tmp tmux new-session -d -s '${sess}' 'sleep 30' \
+    && TMUX_TMPDIR=/tmp tmux list-sessions \
+    && TMUX_TMPDIR=/tmp tmux kill-session -t '${sess}' \
+    && echo TMUX_FLOW_OK" 2>&1) || true
+
+  if echo "$flow_out" | grep -q "TMUX_FLOW_OK" && echo "$flow_out" | grep -q "${sess}"; then
+    pass "TC-SBX-09: tmux new/list/kill session lifecycle works"
+  else
+    # Best-effort cleanup in case kill-session never ran. A `fork failed`
+    # message here means the devpts grant regressed — fail loudly (#4513),
+    # do not skip.
+    sandbox_exec "TMUX_TMPDIR=/tmp tmux kill-session -t '${sess}' 2>/dev/null || true" >/dev/null 2>&1 || true
+    fail "TC-SBX-09: Tmux Session Flow" "Session lifecycle failed: $(echo "$flow_out" | head -5)"
   fi
 }
 
@@ -730,6 +858,7 @@ main() {
   test_sbx_02_connect_chat
   test_sbx_03_status_fields
   test_sbx_04_log_streaming
+  test_sbx_09_tmux_session_flow
 
   # Phase 2: Non-destructive recovery (sandbox A stays alive)
   test_sbx_07_registry_rebuild

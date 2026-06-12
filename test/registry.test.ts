@@ -14,9 +14,41 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-test-"));
 process.env.HOME = tmpDir;
 
 const require = createRequire(import.meta.url);
-const registry = require("../dist/lib/registry");
+const registry = require("../dist/lib/state/registry");
 
 const regFile = path.join(tmpDir, ".nemoclaw", "sandboxes.json");
+
+function makeMessagingPlan(
+  name: string,
+  channels: string[] = ["telegram"],
+  disabledChannels: string[] = [],
+) {
+  const disabled = new Set<string>(disabledChannels);
+  return {
+    schemaVersion: 1,
+    sandboxName: name,
+    agent: "openclaw",
+    workflow: "onboard",
+    channels: channels.map((channelId) => ({
+      channelId,
+      displayName: channelId,
+      authMode: "token-paste",
+      active: !disabled.has(channelId),
+      selected: true,
+      configured: true,
+      disabled: disabled.has(channelId),
+      inputs: [],
+      hooks: [],
+    })),
+    disabledChannels,
+    credentialBindings: [],
+    networkPolicy: { presets: [], entries: [] },
+    agentRender: [],
+    buildSteps: [],
+    stateUpdates: [],
+    healthChecks: [],
+  };
+}
 
 beforeEach(() => {
   if (fs.existsSync(regFile)) fs.unlinkSync(regFile);
@@ -49,6 +81,29 @@ describe("registry", () => {
     expect(data.sandboxes.alpha.provider).toBe("nvidia-prod");
   });
 
+  it("persists distinct gateway bindings for two sandboxes on different ports (#4422)", () => {
+    registry.registerSandbox({
+      name: "first",
+      gatewayName: "nemoclaw",
+      gatewayPort: 8080,
+      dashboardPort: 18789,
+    });
+    registry.registerSandbox({
+      name: "second",
+      gatewayName: "nemoclaw-8081",
+      gatewayPort: 8081,
+      dashboardPort: 18790,
+    });
+    const data = JSON.parse(fs.readFileSync(regFile, "utf-8"));
+    expect(data.sandboxes.first.gatewayName).toBe("nemoclaw");
+    expect(data.sandboxes.first.gatewayPort).toBe(8080);
+    expect(data.sandboxes.second.gatewayName).toBe("nemoclaw-8081");
+    expect(data.sandboxes.second.gatewayPort).toBe(8081);
+    // The second registration must not retarget the first sandbox's binding.
+    expect(registry.getSandbox("first").gatewayName).toBe("nemoclaw");
+    expect(registry.getSandbox("first").gatewayPort).toBe(8080);
+  });
+
   it("first registered becomes default", () => {
     registry.registerSandbox({ name: "first" });
     registry.registerSandbox({ name: "second" });
@@ -76,6 +131,16 @@ describe("registry", () => {
 
   it("updateSandbox returns false for nonexistent sandbox", () => {
     expect(registry.updateSandbox("nope", {})).toBe(false);
+  });
+
+  it("registerSandbox does not inherit a finalized policy marker (#4621)", () => {
+    // Snapshot restore spreads the source entry (possibly finalized) but resets
+    // policies; the clone must not carry a stale finalized marker.
+    registry.registerSandbox({ name: "clone", policies: [], policyPresetsFinalized: true });
+    expect(registry.getSandbox("clone").policyPresetsFinalized).toBeUndefined();
+    // The marker is set only by the post-policy registry write.
+    registry.updateSandbox("clone", { policyPresetsFinalized: true });
+    expect(registry.getSandbox("clone").policyPresetsFinalized).toBe(true);
   });
 
   it("updateSandbox rejects name changes", () => {
@@ -163,6 +228,25 @@ describe("registry", () => {
     expect(data.sandboxes.tagged.imageTag).toBe("openshell/sandbox-from:1776766054");
   });
 
+  it("stores messaging plan state at registration time", () => {
+    const plan = makeMessagingPlan("messaging", ["telegram"]);
+    registry.registerSandbox({
+      name: "messaging",
+      messaging: { schemaVersion: 1, plan },
+    });
+
+    const sb = registry.getSandbox("messaging");
+    expect(sb.messaging).toEqual({ schemaVersion: 1, plan });
+    const rawSandbox = sb as unknown as Record<string, unknown>;
+    expect(rawSandbox.messagingChannels).toBeUndefined();
+    expect(rawSandbox.messagingChannelConfig).toBeUndefined();
+    expect(registry.getConfiguredMessagingChannels("messaging")).toEqual(["telegram"]);
+    const data = JSON.parse(fs.readFileSync(regFile, "utf-8"));
+    expect(data.sandboxes.messaging.messaging).toEqual({ schemaVersion: 1, plan });
+    expect(data.sandboxes.messaging.messagingChannels).toBeUndefined();
+    expect(data.sandboxes.messaging.messagingChannelConfig).toBeUndefined();
+  });
+
   it("imageTag defaults to null when not provided", () => {
     registry.registerSandbox({ name: "no-tag" });
     const sb = registry.getSandbox("no-tag");
@@ -184,7 +268,10 @@ describe("registry", () => {
   });
 
   it("setChannelDisabled toggles a channel on and off for a sandbox", () => {
-    registry.registerSandbox({ name: "s1" });
+    registry.registerSandbox({
+      name: "s1",
+      messaging: { schemaVersion: 1, plan: makeMessagingPlan("s1", ["telegram", "discord"]) },
+    });
     expect(registry.getDisabledChannels("s1")).toEqual([]);
 
     expect(registry.setChannelDisabled("s1", "telegram", true)).toBe(true);
@@ -197,12 +284,25 @@ describe("registry", () => {
     expect(registry.getDisabledChannels("s1")).toEqual(["discord"]);
   });
 
-  it("setChannelDisabled clears the disabledChannels field when empty", () => {
-    registry.registerSandbox({ name: "s1" });
+  it("setChannelDisabled clears plan.disabledChannels when empty", () => {
+    registry.registerSandbox({
+      name: "s1",
+      messaging: { schemaVersion: 1, plan: makeMessagingPlan("s1", ["telegram"]) },
+    });
     registry.setChannelDisabled("s1", "telegram", true);
     registry.setChannelDisabled("s1", "telegram", false);
     const persisted = JSON.parse(fs.readFileSync(regFile, "utf-8"));
+    expect(persisted.sandboxes.s1.messaging.plan.disabledChannels).toEqual([]);
     expect(persisted.sandboxes.s1.disabledChannels).toBeUndefined();
+  });
+
+  it("setChannelDisabled returns false when the channel is not configured in the plan", () => {
+    registry.registerSandbox({
+      name: "s1",
+      messaging: { schemaVersion: 1, plan: makeMessagingPlan("s1", ["telegram"]) },
+    });
+    expect(registry.setChannelDisabled("s1", "discord", true)).toBe(false);
+    expect(registry.getDisabledChannels("s1")).toEqual([]);
   });
 
   it("setChannelDisabled returns false when sandbox is missing", () => {
@@ -210,13 +310,62 @@ describe("registry", () => {
   });
 
   it("registerSandbox preserves disabledChannels when re-registering", () => {
-    registry.registerSandbox({ name: "s1" });
+    registry.registerSandbox({
+      name: "s1",
+      messaging: { schemaVersion: 1, plan: makeMessagingPlan("s1", ["telegram"]) },
+    });
     registry.setChannelDisabled("s1", "telegram", true);
     registry.registerSandbox({
       name: "s1",
-      disabledChannels: registry.getDisabledChannels("s1"),
+      messaging: registry.getSandbox("s1").messaging,
     });
     expect(registry.getDisabledChannels("s1")).toEqual(["telegram"]);
+  });
+
+  it("addCustomPolicy persists name, content, and sourcePath", () => {
+    registry.registerSandbox({ name: "cp1" });
+    const added = registry.addCustomPolicy("cp1", {
+      name: "my-api",
+      content: "preset:\n  name: my-api\nnetwork_policies: {}\n",
+      sourcePath: "/tmp/my-api.yaml",
+    });
+    expect(added).toBe(true);
+    const list = registry.getCustomPolicies("cp1");
+    expect(list.length).toBe(1);
+    expect(list[0].name).toBe("my-api");
+    expect(list[0].content).toMatch(/name: my-api/);
+    expect(list[0].sourcePath).toBe("/tmp/my-api.yaml");
+    expect(typeof list[0].appliedAt).toBe("string");
+  });
+
+  it("addCustomPolicy replaces an existing entry with the same name", () => {
+    registry.registerSandbox({ name: "cp2" });
+    registry.addCustomPolicy("cp2", { name: "dup", content: "v1" });
+    registry.addCustomPolicy("cp2", { name: "dup", content: "v2" });
+    const list = registry.getCustomPolicies("cp2");
+    expect(list.length).toBe(1);
+    expect(list[0].content).toBe("v2");
+  });
+
+  it("removeCustomPolicyByName removes an entry and returns true", () => {
+    registry.registerSandbox({ name: "cp3" });
+    registry.addCustomPolicy("cp3", { name: "a", content: "x" });
+    registry.addCustomPolicy("cp3", { name: "b", content: "y" });
+    expect(registry.removeCustomPolicyByName("cp3", "a")).toBe(true);
+    const list = registry.getCustomPolicies("cp3");
+    expect(list.length).toBe(1);
+    expect(list[0].name).toBe("b");
+  });
+
+  it("removeCustomPolicyByName returns false when the entry is missing", () => {
+    registry.registerSandbox({ name: "cp4" });
+    expect(registry.removeCustomPolicyByName("cp4", "nope")).toBe(false);
+  });
+
+  it("getCustomPolicies returns [] for unknown or fresh sandboxes", () => {
+    expect(registry.getCustomPolicies("nonexistent")).toEqual([]);
+    registry.registerSandbox({ name: "cp5" });
+    expect(registry.getCustomPolicies("cp5")).toEqual([]);
   });
 });
 
@@ -356,7 +505,7 @@ describe("advisory file locking", () => {
   it("concurrent writers do not corrupt the registry", () => {
     const { spawnSync } = require("child_process");
     const registryPath = path.resolve(
-      path.join(import.meta.dirname, "..", "dist", "lib", "registry.js"),
+      path.join(import.meta.dirname, "..", "dist", "lib", "state", "registry.js"),
     );
     const homeDir = path.dirname(path.dirname(regFile));
     // Script that spawns 4 workers in parallel, each writing 5 sandboxes

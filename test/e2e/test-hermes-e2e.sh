@@ -20,6 +20,8 @@
 #   NEMOCLAW_AGENT=hermes                  — auto-set if not already set
 #   NEMOCLAW_SANDBOX_NAME                  — sandbox name (default: e2e-hermes)
 #   NEMOCLAW_RECREATE_SANDBOX=1            — recreate sandbox if it exists from a previous run
+#   NEMOCLAW_E2E_HERMES_DASHBOARD=1        — validate the built-in Hermes web dashboard end-to-end
+#   NEMOCLAW_HERMES_DASHBOARD_TUI=1        — enable Hermes' optional in-browser TUI tab during onboard
 #   NVIDIA_API_KEY                         — required for NVIDIA Endpoints inference
 #
 # Usage:
@@ -53,6 +55,42 @@ section() {
 }
 info() { printf '\033[1;34m  [info]\033[0m %s\n' "$1"; }
 
+dump_hermes_diagnostics() {
+  info "--- Hermes sandbox diagnostics ---"
+  if ! command -v openshell >/dev/null 2>&1; then
+    info "openshell is not available for sandbox diagnostics"
+    return
+  fi
+
+  local sandboxes diag_output diag_script
+  sandboxes=$(openshell sandbox list 2>&1 || true)
+  info "openshell sandbox list:"
+  echo "$sandboxes" | tail -20 | while IFS= read -r line; do
+    info "  $line"
+  done
+
+  if ! grep -Fq -- "$SANDBOX_NAME" <<<"$sandboxes"; then
+    info "sandbox '${SANDBOX_NAME}' is not visible to openshell"
+    return
+  fi
+
+  diag_script='set +e'
+  diag_script+='; echo "== identity =="; id 2>&1 || true'
+  diag_script+='; echo "== listening sockets =="; ss -tlnp 2>&1 || ss -tln 2>&1 || true'
+  diag_script+='; echo "== log and state paths =="; ls -ld /tmp /sandbox/.hermes /sandbox/.hermes/logs 2>&1 || true; ls -l /tmp/nemoclaw-start.log /tmp/gateway.log 2>&1 || true'
+  diag_script+='; echo "== hermes-related processes =="'
+  # shellcheck disable=SC2016  # script is intentionally evaluated inside the sandbox
+  diag_script+='; for p in /proc/[0-9]*; do cmd=$(tr "\000" " " < "$p/cmdline" 2>/dev/null || true); case "$cmd" in *hermes*|*socat*) echo "$(basename "$p") $cmd" ;; esac; done'
+  diag_script+='; echo "== /tmp/nemoclaw-start.log tail =="; tail -n 80 /tmp/nemoclaw-start.log 2>&1 || true'
+  diag_script+='; echo "== /tmp/gateway.log tail =="; tail -n 120 /tmp/gateway.log 2>&1 || true'
+  diag_output=$(openshell sandbox exec -n "$SANDBOX_NAME" -- sh -lc "$diag_script" 2>&1 || true)
+
+  echo "$diag_output" | while IFS= read -r line; do
+    info "  $line"
+  done
+  info "--- End Hermes sandbox diagnostics ---"
+}
+
 # Parse chat completion response — handles both content and reasoning_content
 # (nemotron-3-super is a reasoning model that may put output in reasoning_content)
 parse_chat_content() {
@@ -67,6 +105,46 @@ except Exception as e:
     print(f'PARSE_ERROR: {e}', file=sys.stderr)
     sys.exit(1)
 "
+}
+
+is_truthy_env_value() {
+  case "${1:-}" in
+    1 | true | TRUE | yes | YES | on | ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+hermes_dashboard_e2e_enabled() {
+  is_truthy_env_value "${NEMOCLAW_E2E_HERMES_DASHBOARD:-}" \
+    || is_truthy_env_value "${NEMOCLAW_HERMES_DASHBOARD:-}"
+}
+
+http_status_ok() {
+  case "$1" in
+    2?? | 3??) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+forward_list_has_running_port() {
+  local sandbox="$1"
+  local port="$2"
+  local forward_list="$3"
+  FORWARD_LIST_TEXT="$forward_list" python3 - "$sandbox" "$port" <<'PY'
+import os
+import re
+import sys
+
+ANSI_RE = re.compile(r"\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)|[@-_])")
+sandbox = sys.argv[1]
+port = sys.argv[2]
+for raw_line in os.environ.get("FORWARD_LIST_TEXT", "").splitlines():
+    line = ANSI_RE.sub("", raw_line)
+    parts = line.split()
+    if len(parts) >= 5 and parts[0] == sandbox and parts[2] == port and parts[-1].lower() in {"running", "active"}:
+        sys.exit(0)
+sys.exit(1)
+PY
 }
 
 # Determine repo root
@@ -88,6 +166,9 @@ register_sandbox_for_teardown "$SANDBOX_NAME"
 
 # Hermes health probe endpoint (from agents/hermes/manifest.yaml)
 HERMES_HEALTH_URL="http://localhost:8642/health"
+HERMES_DASHBOARD_PORT="${NEMOCLAW_DASHBOARD_PORT:-18789}"
+HERMES_DASHBOARD_INTERNAL_PORT="${NEMOCLAW_HERMES_DASHBOARD_INTERNAL_PORT:-19119}"
+TIMEOUT_CMD=""
 
 # ══════════════════════════════════════════════════════════════════
 # Phase 0: Pre-cleanup
@@ -196,6 +277,7 @@ if [ $install_exit -eq 0 ]; then
   pass "install.sh completed (exit 0)"
 else
   fail "install.sh failed (exit $install_exit)"
+  dump_hermes_diagnostics
   exit 1
 fi
 
@@ -219,6 +301,21 @@ if nemoclaw --help >/dev/null 2>&1; then
   pass "nemoclaw --help exits 0"
 else
   fail "nemoclaw --help failed"
+fi
+
+if hermes_dashboard_e2e_enabled; then
+  if grep -Fq "Deployment verified — gateway and dashboard are healthy." "$INSTALL_LOG"; then
+    pass "Install output confirms Hermes gateway and dashboard health"
+  else
+    fail "Install output did not confirm Hermes gateway and dashboard health"
+  fi
+
+  if grep -Fq "Hermes Agent Dashboard" "$INSTALL_LOG" \
+    && grep -Fq "http://127.0.0.1:${HERMES_DASHBOARD_PORT}/" "$INSTALL_LOG"; then
+    pass "Install output advertises Hermes web dashboard on ${HERMES_DASHBOARD_PORT}"
+  else
+    fail "Install output did not advertise Hermes web dashboard on ${HERMES_DASHBOARD_PORT}"
+  fi
 fi
 
 # ══════════════════════════════════════════════════════════════════
@@ -358,7 +455,7 @@ else
   fail "Hermes config.yaml not found at /sandbox/.hermes/config.yaml"
 fi
 
-# 4d: Verify immutable config directory (Landlock read-only)
+# 4d: Verify config directory is writable (mutable default)
 writable_check=$($TIMEOUT_CMD ssh -F "$ssh_config" \
   -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null \
@@ -368,10 +465,10 @@ writable_check=$($TIMEOUT_CMD ssh -F "$ssh_config" \
   "touch /sandbox/.hermes/test-write 2>&1 && echo WRITABLE && rm -f /sandbox/.hermes/test-write || echo READ_ONLY" \
   2>&1) || true
 
-if echo "$writable_check" | grep -q "READ_ONLY"; then
-  pass "Hermes config directory is read-only (immutable)"
-elif echo "$writable_check" | grep -q "WRITABLE"; then
-  fail "Hermes config directory is writable — should be immutable"
+if echo "$writable_check" | grep -q "WRITABLE"; then
+  pass "Hermes config directory is writable (mutable default)"
+elif echo "$writable_check" | grep -q "READ_ONLY"; then
+  fail "Hermes config directory is read-only — should be writable by default"
 else
   skip "Could not determine config directory mutability: ${writable_check:0:100}"
 fi
@@ -383,13 +480,115 @@ data_dir_check=$($TIMEOUT_CMD ssh -F "$ssh_config" \
   -o ConnectTimeout=10 \
   -o LogLevel=ERROR \
   "openshell-${SANDBOX_NAME}" \
-  "test -d /sandbox/.hermes-data && echo EXISTS || echo MISSING" \
+  "test -d /sandbox/.hermes && echo EXISTS || echo MISSING" \
   2>&1) || true
 
 if echo "$data_dir_check" | grep -q "EXISTS"; then
-  pass "Hermes writable data directory exists at /sandbox/.hermes-data"
+  pass "Hermes config/state directory exists at /sandbox/.hermes"
 else
-  fail "Hermes writable data directory not found at /sandbox/.hermes-data"
+  fail "Hermes config/state directory not found at /sandbox/.hermes"
+fi
+
+if hermes_dashboard_e2e_enabled; then
+  section "Phase 4f: Hermes web dashboard"
+
+  registry_check=$(
+    python3 - "$SANDBOX_NAME" "$HERMES_DASHBOARD_PORT" "$HERMES_DASHBOARD_INTERNAL_PORT" <<'PY' 2>&1
+import json
+import os
+import sys
+
+sandbox_name = sys.argv[1]
+public_port = int(sys.argv[2])
+internal_port = int(sys.argv[3])
+registry_path = os.path.join(os.path.expanduser("~"), ".nemoclaw", "sandboxes.json")
+with open(registry_path, encoding="utf-8") as fh:
+    registry = json.load(fh)
+sandbox = (registry.get("sandboxes") or {}).get(sandbox_name)
+errors = []
+if sandbox is None:
+    errors.append(f"{sandbox_name} missing from registry")
+elif sandbox.get("agent") != "hermes":
+    errors.append(f"agent={sandbox.get('agent')!r}")
+else:
+    if sandbox.get("dashboardPort") != public_port:
+        errors.append(f"dashboardPort={sandbox.get('dashboardPort')!r} expected {public_port!r}")
+    # The trusted main workflow may still set the legacy optional-dashboard flag
+    # while testing this PR head. That can add hermesDashboard* metadata for the
+    # compatibility forward, but the built-in dashboard contract is still proved
+    # by dashboardPort plus the host/internal probes below.
+if errors:
+    print("; ".join(errors))
+    sys.exit(1)
+print("ok")
+PY
+  )
+  if [ "$registry_check" = "ok" ]; then
+    pass "Registry records Hermes API and optional dashboard ports separately"
+  else
+    fail "Registry did not record Hermes dashboard metadata: ${registry_check:0:240}"
+  fi
+
+  forward_list=$(openshell forward list 2>&1 || true)
+  if forward_list_has_running_port "$SANDBOX_NAME" "8642" "$forward_list"; then
+    pass "OpenShell forward list shows Hermes API port 8642 running"
+  else
+    fail "OpenShell forward list does not show Hermes API port 8642 running"
+    info "forward list: ${forward_list:0:300}"
+  fi
+  if forward_list_has_running_port "$SANDBOX_NAME" "$HERMES_DASHBOARD_PORT" "$forward_list"; then
+    pass "OpenShell forward list shows Hermes dashboard port ${HERMES_DASHBOARD_PORT} running"
+  else
+    fail "OpenShell forward list does not show Hermes dashboard port ${HERMES_DASHBOARD_PORT} running"
+    info "forward list: ${forward_list:0:300}"
+  fi
+
+  dashboard_body="$(mktemp)"
+  dashboard_url="http://127.0.0.1:${HERMES_DASHBOARD_PORT}/"
+  dashboard_code="000"
+  for attempt in $(seq 1 20); do
+    dashboard_code=$(curl -sS -L --max-time 10 -o "$dashboard_body" -w "%{http_code}" "$dashboard_url" 2>/dev/null || echo "000")
+    if http_status_ok "$dashboard_code" && [ -s "$dashboard_body" ]; then
+      break
+    fi
+    info "Dashboard host probe attempt ${attempt}/20 returned HTTP ${dashboard_code:-000}; waiting 4s..."
+    sleep 4
+  done
+  if http_status_ok "$dashboard_code" && [ -s "$dashboard_body" ]; then
+    pass "Hermes web dashboard responds from host on ${dashboard_url} (HTTP ${dashboard_code})"
+  else
+    fail "Hermes web dashboard did not respond from host on ${dashboard_url} (HTTP ${dashboard_code:-000})"
+  fi
+
+  api_health=$(curl -sf --max-time 10 "http://127.0.0.1:8642/health" 2>&1 || true)
+  if echo "$api_health" | grep -qi '"ok"'; then
+    pass "Hermes API health remains on port 8642"
+  else
+    fail "Hermes API health did not respond on port 8642: ${api_health:0:160}"
+  fi
+
+  if [ ! -s "$ssh_config" ]; then
+    openshell sandbox ssh-config "$SANDBOX_NAME" >"$ssh_config" 2>/dev/null || true
+  fi
+  if [ -s "$ssh_config" ]; then
+    dashboard_internal_code=$($TIMEOUT_CMD ssh -F "$ssh_config" \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      -o ConnectTimeout=10 \
+      -o LogLevel=ERROR \
+      "openshell-${SANDBOX_NAME}" \
+      "code=\$(curl -sS -L --max-time 10 -o /tmp/hermes-dashboard-e2e-body -w '%{http_code}' http://127.0.0.1:${HERMES_DASHBOARD_INTERNAL_PORT}/ 2>/dev/null || echo 000); if test -s /tmp/hermes-dashboard-e2e-body; then echo \"\$code\"; else echo \"EMPTY:\$code\"; fi" \
+      2>&1) || true
+
+    if http_status_ok "$dashboard_internal_code"; then
+      pass "Hermes dashboard process responds inside sandbox on ${HERMES_DASHBOARD_INTERNAL_PORT}"
+    else
+      fail "Hermes dashboard process did not respond inside sandbox on ${HERMES_DASHBOARD_INTERNAL_PORT}: ${dashboard_internal_code:0:160}"
+    fi
+  else
+    fail "Could not get SSH config for in-sandbox Hermes dashboard probe"
+  fi
+  rm -f "$dashboard_body"
 fi
 
 rm -f "$ssh_config"
@@ -513,6 +712,15 @@ if echo "$openclaw_check" | grep -q "agents:.*openclaw.*hermes\|agents:.*hermes.
 else
   fail "listAgents() did not return both openclaw and hermes"
   info "Output: ${openclaw_check:0:300}"
+fi
+
+# ══════════════════════════════════════════════════════════════════
+# Optional Phase 7b: Security posture regression checks
+# ══════════════════════════════════════════════════════════════════
+if [ "${NEMOCLAW_E2E_SECURITY_POSTURE:-}" = "1" ]; then
+  # shellcheck source=test/e2e/lib/security-posture-assertions.sh
+  . "$(dirname "${BASH_SOURCE[0]}")/lib/security-posture-assertions.sh"
+  security_posture_assertions_run "$SANDBOX_NAME" "hermes"
 fi
 
 # ══════════════════════════════════════════════════════════════════

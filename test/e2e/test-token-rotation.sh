@@ -7,23 +7,28 @@
 #     the new credential to the sandbox (sandbox is rebuilt automatically)
 #   - prove that re-running onboard with the same token reuses the sandbox
 #   - prove that rotating each provider in isolation only re-builds for that
-#     provider's bridge (no cross-talk between Telegram and Discord detection)
+#     provider's bridge (no cross-talk between Telegram, Discord, and Slack
+#     detection)
 #
 # Uses two distinct fake tokens per provider. The test validates that NemoClaw
 # detects the rotation and triggers a sandbox rebuild — it does not validate
-# the Telegram or Discord API responses.
+# the Telegram, Discord, or Slack API responses.
 #
 # Prerequisites:
 #   - Docker running
 #   - NVIDIA_API_KEY set (or fake OpenAI endpoint)
 #   - TELEGRAM_BOT_TOKEN_A and TELEGRAM_BOT_TOKEN_B set (can be fake)
 #   - DISCORD_BOT_TOKEN_A and DISCORD_BOT_TOKEN_B set (can be fake)
+#   - SLACK_BOT_TOKEN_A and SLACK_BOT_TOKEN_B set (can be fake; xoxb- prefix)
+#   - SLACK_APP_TOKEN_A and SLACK_APP_TOKEN_B set (can be fake; xapp- prefix)
 #
 # Usage:
 #   NEMOCLAW_NON_INTERACTIVE=1 NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1 \
 #     NVIDIA_API_KEY=nvapi-... \
 #     TELEGRAM_BOT_TOKEN_A=fake-a TELEGRAM_BOT_TOKEN_B=fake-b \
 #     DISCORD_BOT_TOKEN_A=fake-c DISCORD_BOT_TOKEN_B=fake-d \
+#     SLACK_BOT_TOKEN_A=xoxb-fake-a SLACK_BOT_TOKEN_B=xoxb-fake-b \
+#     SLACK_APP_TOKEN_A=xapp-fake-a SLACK_APP_TOKEN_B=xapp-fake-b \
 #     bash test/e2e/test-token-rotation.sh
 
 set -uo pipefail
@@ -112,6 +117,26 @@ if [ -n "${DISCORD_BOT_TOKEN_A:-}" ] && [ "${DISCORD_BOT_TOKEN_A}" = "${DISCORD_
   PREREQS_OK=0
 fi
 
+if [ -z "${SLACK_BOT_TOKEN_A:-}" ] || [ -z "${SLACK_BOT_TOKEN_B:-}" ]; then
+  skip "SLACK_BOT_TOKEN_A and SLACK_BOT_TOKEN_B must both be set"
+  PREREQS_OK=0
+fi
+
+if [ -z "${SLACK_APP_TOKEN_A:-}" ] || [ -z "${SLACK_APP_TOKEN_B:-}" ]; then
+  skip "SLACK_APP_TOKEN_A and SLACK_APP_TOKEN_B must both be set"
+  PREREQS_OK=0
+fi
+
+if [ -n "${SLACK_BOT_TOKEN_A:-}" ] && [ "${SLACK_BOT_TOKEN_A}" = "${SLACK_BOT_TOKEN_B:-}" ]; then
+  skip "SLACK_BOT_TOKEN_A and SLACK_BOT_TOKEN_B must be different"
+  PREREQS_OK=0
+fi
+
+if [ -n "${SLACK_APP_TOKEN_A:-}" ] && [ "${SLACK_APP_TOKEN_A}" = "${SLACK_APP_TOKEN_B:-}" ]; then
+  skip "SLACK_APP_TOKEN_A and SLACK_APP_TOKEN_B must be different"
+  PREREQS_OK=0
+fi
+
 # Bail to summary if any prereq failed (no phases run, but Summary still prints)
 if [ "$PREREQS_OK" != "1" ]; then
   print_summary
@@ -125,6 +150,35 @@ cleanup() {
 }
 trap cleanup EXIT
 
+is_fake_telegram_token() {
+  case "${1:-}" in
+    *fake*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+is_fake_slack_token() {
+  case "${1:-}" in
+    xoxb-fake-* | xoxb-test-* | xapp-fake-* | xapp-test-*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+registry_has_messaging_credential_hash() {
+  local env_key="$1"
+  [ -f "$REGISTRY" ] && node -e "
+const r = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));
+const sandbox = (r.sandboxes || {})[process.argv[2]];
+const bindings = sandbox?.messaging?.plan?.credentialBindings;
+if (!Array.isArray(bindings)) process.exit(1);
+const found = bindings.some((entry) =>
+  entry?.providerEnvKey === process.argv[3] &&
+  typeof entry.credentialHash === 'string' &&
+  entry.credentialHash.length > 0,
+);
+process.exit(found ? 0 : 1);
+" "$REGISTRY" "$SANDBOX_NAME" "$env_key" 2>/dev/null
+}
+
 # ── Phase 0: Install NemoClaw with token A ────────────────────────
 
 section "Phase 0: Install NemoClaw and first onboard with token A"
@@ -133,11 +187,25 @@ section "Phase 0: Install NemoClaw and first onboard with token A"
 openshell sandbox delete "$SANDBOX_NAME" 2>/dev/null || true
 openshell gateway destroy -g nemoclaw 2>/dev/null || true
 
+if [ -z "${NEMOCLAW_SKIP_TELEGRAM_REACHABILITY:-}" ] \
+  && { is_fake_telegram_token "$TELEGRAM_BOT_TOKEN_A" || is_fake_telegram_token "$TELEGRAM_BOT_TOKEN_B"; }; then
+  # This E2E normally uses fake tokens to exercise rotation plumbing, not the
+  # live Telegram API. Remove once onboard has a hermetic fake Telegram API.
+  export NEMOCLAW_SKIP_TELEGRAM_REACHABILITY=1
+  info "Skipping onboarding Telegram reachability probe for fake-token E2E"
+fi
+if [ -z "${NEMOCLAW_SKIP_SLACK_AUTH_VALIDATION:-}" ] \
+  && { is_fake_slack_token "$SLACK_BOT_TOKEN_A" || is_fake_slack_token "$SLACK_BOT_TOKEN_B" || is_fake_slack_token "$SLACK_APP_TOKEN_A" || is_fake_slack_token "$SLACK_APP_TOKEN_B"; }; then
+  # This E2E normally uses fake Slack tokens to exercise rotation plumbing, not
+  # the live Slack API.
+  export NEMOCLAW_SKIP_SLACK_AUTH_VALIDATION=1
+  info "Skipping onboarding Slack auth validation for fake-token E2E"
+fi
+
 export TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN_A"
 export DISCORD_BOT_TOKEN="$DISCORD_BOT_TOKEN_A"
-# Determinism: clear ambient SLACK_* so onboard doesn't add an extra
-# slack-bridge provider (messagingTokenDefs at onboard.ts).
-unset SLACK_BOT_TOKEN SLACK_APP_TOKEN
+export SLACK_BOT_TOKEN="$SLACK_BOT_TOKEN_A"
+export SLACK_APP_TOKEN="$SLACK_APP_TOKEN_A"
 export NEMOCLAW_SANDBOX_NAME="$SANDBOX_NAME"
 export NEMOCLAW_POLICY_TIER="open"
 export NEMOCLAW_RECREATE_SANDBOX=1
@@ -204,6 +272,8 @@ if [ "$INSTALL_OK" != "1" ]; then
   skip "Phase 3: Re-onboard with same tokens (after Telegram rotation)"
   skip "Phase 4: Re-onboard with rotated DISCORD_BOT_TOKEN_B"
   skip "Phase 5: Re-onboard with same tokens (after Discord rotation)"
+  skip "Phase 6: Re-onboard with rotated SLACK_BOT_TOKEN_B and SLACK_APP_TOKEN_B"
+  skip "Phase 7: Re-onboard with same tokens (after Slack rotation)"
 else
   # ── Phase 1: Verify first onboard with token A ──────────────────
 
@@ -227,25 +297,41 @@ else
     fail "Provider ${SANDBOX_NAME}-discord-bridge not found"
   fi
 
-  # Verify credential hashes are stored for this sandbox in the registry
-  if [ -f "$REGISTRY" ] && node -e "
-const r = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));
-const h = (r.sandboxes || {})[process.argv[2]]?.providerCredentialHashes || {};
-process.exit('TELEGRAM_BOT_TOKEN' in h ? 0 : 1);
-" "$REGISTRY" "$SANDBOX_NAME" 2>/dev/null; then
-    pass "Telegram credential hash stored for $SANDBOX_NAME"
+  if openshell provider get "${SANDBOX_NAME}-slack-bridge" >/dev/null 2>&1; then
+    pass "Provider ${SANDBOX_NAME}-slack-bridge exists"
   else
-    fail "Telegram credential hash not found for $SANDBOX_NAME in registry"
+    fail "Provider ${SANDBOX_NAME}-slack-bridge not found"
   fi
 
-  if [ -f "$REGISTRY" ] && node -e "
-const r = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));
-const h = (r.sandboxes || {})[process.argv[2]]?.providerCredentialHashes || {};
-process.exit('DISCORD_BOT_TOKEN' in h ? 0 : 1);
-" "$REGISTRY" "$SANDBOX_NAME" 2>/dev/null; then
-    pass "Discord credential hash stored for $SANDBOX_NAME"
+  if openshell provider get "${SANDBOX_NAME}-slack-app" >/dev/null 2>&1; then
+    pass "Provider ${SANDBOX_NAME}-slack-app exists"
   else
-    fail "Discord credential hash not found for $SANDBOX_NAME in registry"
+    fail "Provider ${SANDBOX_NAME}-slack-app not found"
+  fi
+
+  # Verify credential hashes are stored in the persisted messaging plan.
+  if registry_has_messaging_credential_hash "TELEGRAM_BOT_TOKEN"; then
+    pass "Telegram credential hash stored in messaging plan for $SANDBOX_NAME"
+  else
+    fail "Telegram credential hash not found in messaging plan for $SANDBOX_NAME"
+  fi
+
+  if registry_has_messaging_credential_hash "DISCORD_BOT_TOKEN"; then
+    pass "Discord credential hash stored in messaging plan for $SANDBOX_NAME"
+  else
+    fail "Discord credential hash not found in messaging plan for $SANDBOX_NAME"
+  fi
+
+  if registry_has_messaging_credential_hash "SLACK_BOT_TOKEN"; then
+    pass "Slack bot credential hash stored in messaging plan for $SANDBOX_NAME"
+  else
+    fail "Slack bot credential hash not found in messaging plan for $SANDBOX_NAME"
+  fi
+
+  if registry_has_messaging_credential_hash "SLACK_APP_TOKEN"; then
+    pass "Slack app credential hash stored in messaging plan for $SANDBOX_NAME"
+  else
+    fail "Slack app credential hash not found in messaging plan for $SANDBOX_NAME"
   fi
 
   # ── Phase 2: Rotate Telegram token only (re-onboard with token B) ─
@@ -254,9 +340,8 @@ process.exit('DISCORD_BOT_TOKEN' in h ? 0 : 1);
 
   export TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN_B"
   export DISCORD_BOT_TOKEN="$DISCORD_BOT_TOKEN_A"
-  # Determinism: clear ambient SLACK_* so onboard doesn't add an extra
-  # slack-bridge provider (messagingTokenDefs at onboard.ts).
-  unset SLACK_BOT_TOKEN SLACK_APP_TOKEN
+  export SLACK_BOT_TOKEN="$SLACK_BOT_TOKEN_A"
+  export SLACK_APP_TOKEN="$SLACK_APP_TOKEN_A"
   unset NEMOCLAW_RECREATE_SANDBOX
 
   ONBOARD_OUTPUT=$(nemoclaw onboard --non-interactive 2>&1)
@@ -267,7 +352,7 @@ process.exit('DISCORD_BOT_TOKEN' in h ? 0 : 1);
     echo "$ONBOARD_OUTPUT" | tail -30
   fi
 
-  if echo "$ONBOARD_OUTPUT" | grep -q "credential(s) rotated"; then
+  if grep -q "credential(s) rotated" <<<"$ONBOARD_OUTPUT"; then
     pass "Credential rotation detected"
   else
     fail "Credential rotation not detected in onboard output"
@@ -278,23 +363,31 @@ process.exit('DISCORD_BOT_TOKEN' in h ? 0 : 1);
   # Rotation message must name only the telegram-bridge provider — Discord
   # token is unchanged, so a stray discord-bridge entry would indicate a
   # false-positive in detectMessagingCredentialRotation.
-  if echo "$ONBOARD_OUTPUT" | grep -q "credential(s) rotated:.*telegram-bridge"; then
+  if grep -q "credential(s) rotated:.*telegram-bridge" <<<"$ONBOARD_OUTPUT"; then
     pass "Rotation message identifies telegram-bridge"
   else
     fail "Rotation message did not identify telegram-bridge"
     info "Onboard output:"
-    echo "$ONBOARD_OUTPUT" | grep "credential(s) rotated" || true
+    grep "credential(s) rotated" <<<"$ONBOARD_OUTPUT" || true
   fi
 
-  if echo "$ONBOARD_OUTPUT" | grep -q "credential(s) rotated:.*discord-bridge"; then
+  if grep -q "credential(s) rotated:.*discord-bridge" <<<"$ONBOARD_OUTPUT"; then
     fail "Rotation message unexpectedly named discord-bridge (Discord token did not change)"
     info "Onboard output:"
-    echo "$ONBOARD_OUTPUT" | grep "credential(s) rotated" || true
+    grep "credential(s) rotated" <<<"$ONBOARD_OUTPUT" || true
   else
     pass "Rotation message did not name discord-bridge (Discord unchanged)"
   fi
 
-  if echo "$ONBOARD_OUTPUT" | grep -q "Rebuilding sandbox"; then
+  if grep -qE "credential\(s\) rotated:.*slack-(bridge|app)" <<<"$ONBOARD_OUTPUT"; then
+    fail "Rotation message unexpectedly named slack-bridge/slack-app (Slack tokens did not change)"
+    info "Onboard output:"
+    grep "credential(s) rotated" <<<"$ONBOARD_OUTPUT" || true
+  else
+    pass "Rotation message did not name slack-bridge or slack-app (Slack unchanged)"
+  fi
+
+  if grep -q "Rebuilding sandbox" <<<"$ONBOARD_OUTPUT"; then
     pass "Sandbox rebuild triggered by rotation"
   else
     fail "Sandbox rebuild not triggered"
@@ -320,7 +413,7 @@ process.exit('DISCORD_BOT_TOKEN' in h ? 0 : 1);
     echo "$ONBOARD_OUTPUT" | tail -30
   fi
 
-  if echo "$ONBOARD_OUTPUT" | grep -q "reusing it"; then
+  if grep -q "reusing it" <<<"$ONBOARD_OUTPUT"; then
     pass "Sandbox reused when tokens unchanged"
   else
     fail "Sandbox was not reused (unexpected rebuild)"
@@ -334,9 +427,8 @@ process.exit('DISCORD_BOT_TOKEN' in h ? 0 : 1);
 
   export TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN_B"
   export DISCORD_BOT_TOKEN="$DISCORD_BOT_TOKEN_B"
-  # Determinism: clear ambient SLACK_* so onboard doesn't add an extra
-  # slack-bridge provider (messagingTokenDefs at onboard.ts).
-  unset SLACK_BOT_TOKEN SLACK_APP_TOKEN
+  export SLACK_BOT_TOKEN="$SLACK_BOT_TOKEN_A"
+  export SLACK_APP_TOKEN="$SLACK_APP_TOKEN_A"
 
   ONBOARD_OUTPUT=$(nemoclaw onboard --non-interactive 2>&1)
   onboard_exit=$?
@@ -346,7 +438,7 @@ process.exit('DISCORD_BOT_TOKEN' in h ? 0 : 1);
     echo "$ONBOARD_OUTPUT" | tail -30
   fi
 
-  if echo "$ONBOARD_OUTPUT" | grep -q "credential(s) rotated"; then
+  if grep -q "credential(s) rotated" <<<"$ONBOARD_OUTPUT"; then
     pass "Credential rotation detected"
   else
     fail "Credential rotation not detected in onboard output"
@@ -355,23 +447,31 @@ process.exit('DISCORD_BOT_TOKEN' in h ? 0 : 1);
   fi
 
   # Symmetric assertion to Phase 2: only the discord-bridge entry should appear.
-  if echo "$ONBOARD_OUTPUT" | grep -q "credential(s) rotated:.*discord-bridge"; then
+  if grep -q "credential(s) rotated:.*discord-bridge" <<<"$ONBOARD_OUTPUT"; then
     pass "Rotation message identifies discord-bridge"
   else
     fail "Rotation message did not identify discord-bridge"
     info "Onboard output:"
-    echo "$ONBOARD_OUTPUT" | grep "credential(s) rotated" || true
+    grep "credential(s) rotated" <<<"$ONBOARD_OUTPUT" || true
   fi
 
-  if echo "$ONBOARD_OUTPUT" | grep -q "credential(s) rotated:.*telegram-bridge"; then
+  if grep -q "credential(s) rotated:.*telegram-bridge" <<<"$ONBOARD_OUTPUT"; then
     fail "Rotation message unexpectedly named telegram-bridge (Telegram token did not change)"
     info "Onboard output:"
-    echo "$ONBOARD_OUTPUT" | grep "credential(s) rotated" || true
+    grep "credential(s) rotated" <<<"$ONBOARD_OUTPUT" || true
   else
     pass "Rotation message did not name telegram-bridge (Telegram unchanged)"
   fi
 
-  if echo "$ONBOARD_OUTPUT" | grep -q "Rebuilding sandbox"; then
+  if grep -qE "credential\(s\) rotated:.*slack-(bridge|app)" <<<"$ONBOARD_OUTPUT"; then
+    fail "Rotation message unexpectedly named slack-bridge/slack-app (Slack tokens did not change)"
+    info "Onboard output:"
+    grep "credential(s) rotated" <<<"$ONBOARD_OUTPUT" || true
+  else
+    pass "Rotation message did not name slack-bridge or slack-app (Slack unchanged)"
+  fi
+
+  if grep -q "Rebuilding sandbox" <<<"$ONBOARD_OUTPUT"; then
     pass "Sandbox rebuild triggered by rotation"
   else
     fail "Sandbox rebuild not triggered"
@@ -397,7 +497,99 @@ process.exit('DISCORD_BOT_TOKEN' in h ? 0 : 1);
     echo "$ONBOARD_OUTPUT" | tail -30
   fi
 
-  if echo "$ONBOARD_OUTPUT" | grep -q "reusing it"; then
+  if grep -q "reusing it" <<<"$ONBOARD_OUTPUT"; then
+    pass "Sandbox reused when tokens unchanged"
+  else
+    fail "Sandbox was not reused (unexpected rebuild)"
+    info "Onboard output:"
+    echo "$ONBOARD_OUTPUT" | tail -20
+  fi
+
+  # ── Phase 6: Rotate Slack tokens (re-onboard with token B) ───────
+
+  section "Phase 6: Re-onboard with rotated SLACK_BOT_TOKEN_B and SLACK_APP_TOKEN_B (Telegram + Discord unchanged)"
+
+  export TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN_B"
+  export DISCORD_BOT_TOKEN="$DISCORD_BOT_TOKEN_B"
+  export SLACK_BOT_TOKEN="$SLACK_BOT_TOKEN_B"
+  export SLACK_APP_TOKEN="$SLACK_APP_TOKEN_B"
+
+  ONBOARD_OUTPUT=$(nemoclaw onboard --non-interactive 2>&1)
+  onboard_exit=$?
+
+  if [ $onboard_exit -ne 0 ]; then
+    fail "Phase 6 onboard failed (exit $onboard_exit)"
+    echo "$ONBOARD_OUTPUT" | tail -30
+  fi
+
+  if grep -q "credential(s) rotated" <<<"$ONBOARD_OUTPUT"; then
+    pass "Credential rotation detected"
+  else
+    fail "Credential rotation not detected in onboard output"
+    info "Onboard output:"
+    echo "$ONBOARD_OUTPUT" | tail -20
+  fi
+
+  # Both slack-bridge (bot token) and slack-app (app token) should rotate.
+  if grep -q "credential(s) rotated:.*slack-bridge" <<<"$ONBOARD_OUTPUT"; then
+    pass "Rotation message identifies slack-bridge"
+  else
+    fail "Rotation message did not identify slack-bridge"
+    info "Onboard output:"
+    grep "credential(s) rotated" <<<"$ONBOARD_OUTPUT" || true
+  fi
+
+  if grep -q "credential(s) rotated:.*slack-app" <<<"$ONBOARD_OUTPUT"; then
+    pass "Rotation message identifies slack-app"
+  else
+    fail "Rotation message did not identify slack-app"
+    info "Onboard output:"
+    grep "credential(s) rotated" <<<"$ONBOARD_OUTPUT" || true
+  fi
+
+  if grep -q "credential(s) rotated:.*telegram-bridge" <<<"$ONBOARD_OUTPUT"; then
+    fail "Rotation message unexpectedly named telegram-bridge (Telegram token did not change)"
+    info "Onboard output:"
+    grep "credential(s) rotated" <<<"$ONBOARD_OUTPUT" || true
+  else
+    pass "Rotation message did not name telegram-bridge (Telegram unchanged)"
+  fi
+
+  if grep -q "credential(s) rotated:.*discord-bridge" <<<"$ONBOARD_OUTPUT"; then
+    fail "Rotation message unexpectedly named discord-bridge (Discord token did not change)"
+    info "Onboard output:"
+    grep "credential(s) rotated" <<<"$ONBOARD_OUTPUT" || true
+  else
+    pass "Rotation message did not name discord-bridge (Discord unchanged)"
+  fi
+
+  if grep -q "Rebuilding sandbox" <<<"$ONBOARD_OUTPUT"; then
+    pass "Sandbox rebuild triggered by Slack rotation"
+  else
+    fail "Sandbox rebuild not triggered"
+    info "Onboard output:"
+    echo "$ONBOARD_OUTPUT" | tail -20
+  fi
+
+  if openshell sandbox list 2>/dev/null | grep -q "$SANDBOX_NAME"; then
+    pass "Sandbox running after Slack rotation"
+  else
+    fail "Sandbox not running after Slack rotation"
+  fi
+
+  # ── Phase 7: Re-onboard with same tokens (no change) ─────────────
+
+  section "Phase 7: Re-onboard with same tokens (no rotation expected)"
+
+  ONBOARD_OUTPUT=$(nemoclaw onboard --non-interactive 2>&1)
+  onboard_exit=$?
+
+  if [ $onboard_exit -ne 0 ]; then
+    fail "Phase 7 onboard failed (exit $onboard_exit)"
+    echo "$ONBOARD_OUTPUT" | tail -30
+  fi
+
+  if grep -q "reusing it" <<<"$ONBOARD_OUTPUT"; then
     pass "Sandbox reused when tokens unchanged"
   else
     fail "Sandbox was not reused (unexpected rebuild)"

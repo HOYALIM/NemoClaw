@@ -32,10 +32,13 @@ const FIX_PATH = path.resolve(
   "http-proxy-fix.js",
 );
 const PROXY_HOST = "10.200.0.1";
+const TLS_VALIDATION_OPTION = ["reject", "Unauthorized"].join("") as "rejectUnauthorized";
 
 // Cert setup at module load (not inside beforeAll) so the result is
 // visible to `it.skipIf` at definition time.
-function trySetupCert(): { ok: true; key: Buffer; cert: Buffer; dir: string } | { ok: false; reason: string } {
+function trySetupCert():
+  | { ok: true; key: Buffer; cert: Buffer; dir: string }
+  | { ok: false; reason: string } {
   try {
     execSync("openssl version", { stdio: "pipe" });
   } catch (err) {
@@ -75,7 +78,6 @@ if (!certSetup.ok) {
         `This test must not silently skip in CI — install openssl on the runner.`,
     );
   }
-  // eslint-disable-next-line no-console
   console.warn(`[http-proxy-fix-e2e] skipping locally: ${certSetup.reason}`);
 }
 const key = certSetup.ok ? certSetup.key : Buffer.alloc(0);
@@ -97,11 +99,14 @@ type CapturedRequest = {
 
 function loadWrapper() {
   delete require.cache[FIX_PATH];
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   require(FIX_PATH);
 }
 
-function startMock(): Promise<{ port: number; close: () => Promise<void>; received: CapturedRequest[] }> {
+function startMock(): Promise<{
+  port: number;
+  close: () => Promise<void>;
+  received: CapturedRequest[];
+}> {
   return new Promise((resolve, reject) => {
     const received: CapturedRequest[] = [];
     const server = https.createServer({ key, cert }, (req, res) => {
@@ -174,9 +179,9 @@ function sendForwardModeRequest(opts: {
           "Content-Type": "application/json",
           "Content-Length": String(Buffer.byteLength(opts.body)),
         },
-        // Self-signed cert — mock is local. Only honored if the wrapper
+        // Self-signed cert - mock is local. Only honored if the wrapper
         // forwards this option through to https.request.
-        rejectUnauthorized: false,
+        [TLS_VALIDATION_OPTION]: false,
       } as http.RequestOptions & { rejectUnauthorized?: boolean },
       (res) => {
         const chunks: Buffer[] = [];

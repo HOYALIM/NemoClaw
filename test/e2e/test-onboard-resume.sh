@@ -135,24 +135,26 @@ else
   exit 1
 fi
 
-node -e '
-const { saveCredential } = require(process.argv[1]);
-saveCredential("NVIDIA_API_KEY", process.argv[2]);
-' "$REPO/dist/lib/credentials.js" "$RESTORE_API_KEY"
-pass "Stored NVIDIA_API_KEY in ~/.nemoclaw/credentials.json for resume hydration"
+export NVIDIA_API_KEY="$RESTORE_API_KEY"
+pass "Exported NVIDIA_API_KEY for the resume run (host writes nothing to disk; OpenShell gateway is the system of record)"
 
 # ══════════════════════════════════════════════════════════════════
 # Phase 2: First onboard (forced failure after sandbox creation)
 # ══════════════════════════════════════════════════════════════════
 section "Phase 2: First onboard (interrupted)"
-info "Running onboard with an invalid policy mode to create resumable state..."
+info "Running onboard with E2E failure injection at the policy step..."
 
+# Force a deterministic interruption after the sandbox and OpenClaw setup
+# complete, but before policy setup completes. This keeps resume coverage
+# independent of product validation behavior such as policy-mode parsing.
 FIRST_LOG="$(mktemp)"
 NEMOCLAW_NON_INTERACTIVE=1 \
   NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1 \
   NEMOCLAW_SANDBOX_NAME="$SANDBOX_NAME" \
   NEMOCLAW_RECREATE_SANDBOX=1 \
-  NEMOCLAW_POLICY_MODE=invalid \
+  NEMOCLAW_POLICY_MODE=suggested \
+  NEMOCLAW_E2E_FAILURE_INJECTION=1 \
+  NEMOCLAW_E2E_FORCE_FAIL_AT_STEP=policies \
   node "$REPO/bin/nemoclaw.js" onboard --non-interactive >"$FIRST_LOG" 2>&1
 first_exit=$?
 first_output="$(cat "$FIRST_LOG")"
@@ -172,7 +174,7 @@ else
   fail "Sandbox creation not confirmed in first run output"
 fi
 
-if echo "$first_output" | grep -q "Unsupported NEMOCLAW_POLICY_MODE: invalid"; then
+if echo "$first_output" | grep -q "\[e2e\] Forced onboarding failure at step 'policies'."; then
   pass "First run failed at policy setup as intended"
 else
   fail "First run did not fail at the expected policy step"
@@ -264,10 +266,15 @@ else
   pass "Resume did not rerun sandbox creation"
 fi
 
+# The first onboard completed through openclaw (step 7) before failing at
+# policies (step 8). Inference was already configured during that run, so
+# the resume path detects it is ready (isInferenceRouteReady) and skips it.
 if echo "$resume_output" | grep -q "\[4/7\] Setting up inference provider"; then
-  pass "Resume continued with inference setup"
+  pass "Resume re-ran inference setup"
+elif echo "$resume_output" | grep -q "\[resume\] Skipping inference\|\[reuse\] Skipping inference"; then
+  pass "Resume skipped inference (already configured)"
 else
-  fail "Resume did not continue with inference setup"
+  fail "Resume neither ran nor skipped inference setup"
 fi
 
 if run_nemoclaw "$SANDBOX_NAME" status >/dev/null 2>&1; then

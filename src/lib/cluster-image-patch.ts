@@ -42,6 +42,13 @@ export interface RunOpts {
   ignoreError?: boolean;
   /** Hard wall-clock timeout (ms). Child is killed on expiry. */
   timeoutMs?: number;
+  /**
+   * Drop captured stdout/stderr instead of forwarding them to the user's
+   * terminal. Used for noisy commands (`docker manifest inspect`,
+   * `docker build`) whose raw output is internal-only — the caller logs
+   * its own progress lines.
+   */
+  suppressOutput?: boolean;
 }
 
 export interface EnsurePatchedClusterImageOpts {
@@ -134,7 +141,7 @@ export function buildPatchDockerfile(snapshotter: SnapshotterChoice): string {
     "ARG UPSTREAM",
     "",
     `FROM ubuntu:24.04@${UBUNTU_BUILDER_DIGEST} AS bin-fetcher`,
-    'RUN set -eux; \\',
+    "RUN set -eux; \\",
     "    apt-get update; \\",
     "    apt-get install -y --no-install-recommends fuse-overlayfs ca-certificates; \\",
     "    rm -rf /var/lib/apt/lists/*; \\",
@@ -149,7 +156,7 @@ export function buildPatchDockerfile(snapshotter: SnapshotterChoice): string {
     "USER root",
     "COPY --from=bin-fetcher /export/fuse-overlayfs /usr/local/bin/fuse-overlayfs",
     "COPY --from=bin-fetcher /export/lib/libfuse3.so.3 /usr/local/lib/libfuse3.so.3",
-    'RUN ldconfig 2>/dev/null || true',
+    "RUN ldconfig 2>/dev/null || true",
     `CMD ["server", "--snapshotter=${snapshotter}"]`,
     "",
   ].join("\n");
@@ -195,9 +202,7 @@ export function computePatchedTag(opts: {
   const digestPart = opts.upstreamDigest ?? "";
   const sha = crypto
     .createHash("sha256")
-    .update(
-      `${opts.upstreamImage}\n${digestPart}\n${opts.snapshotter}\n${opts.dockerfile}`,
-    )
+    .update(`${opts.upstreamImage}\n${digestPart}\n${opts.snapshotter}\n${opts.dockerfile}`)
     .digest("hex")
     .slice(0, 8);
   return `${TAG_PREFIX}:${version}-${opts.snapshotter}-${sha}`;
@@ -248,11 +253,7 @@ export function ensurePatchedClusterImage(opts: EnsurePatchedClusterImageOpts): 
 
   // Phase 1: resolve the upstream digest. Prefer the local cache (works
   // air-gapped with pre-staged images, and is sub-second when warm).
-  let upstreamDigest = inspectImageDigest(
-    opts.upstreamImage,
-    runCaptureImpl,
-    inspectTimeoutMs,
-  );
+  let upstreamDigest = inspectImageDigest(opts.upstreamImage, runCaptureImpl, inspectTimeoutMs);
 
   if (!upstreamDigest) {
     // Upstream is not local. Probe network reachability with a short
@@ -260,13 +261,14 @@ export function ensurePatchedClusterImage(opts: EnsurePatchedClusterImageOpts): 
     // and restricted-network hosts fail in seconds instead of minutes.
     const probeResult = runImpl(["docker", "manifest", "inspect", opts.upstreamImage], {
       ignoreError: true,
+      suppressOutput: true,
       timeoutMs: inspectTimeoutMs,
     });
     if (probeResult.status !== 0) {
       throw new ClusterImagePatchError(
         `cannot reach upstream registry for ${opts.upstreamImage} ` +
           `(docker manifest inspect exit ${probeResult.status} within ${inspectTimeoutMs} ms). ` +
-          "See docs/reference/troubleshooting.md for the manual daemon.json workaround.",
+          "See docs/reference/troubleshooting.mdx for the manual daemon.json workaround.",
       );
     }
 
@@ -282,11 +284,7 @@ export function ensurePatchedClusterImage(opts: EnsurePatchedClusterImageOpts): 
       );
     }
 
-    upstreamDigest = inspectImageDigest(
-      opts.upstreamImage,
-      runCaptureImpl,
-      inspectTimeoutMs,
-    );
+    upstreamDigest = inspectImageDigest(opts.upstreamImage, runCaptureImpl, inspectTimeoutMs);
     if (!upstreamDigest) {
       throw new ClusterImagePatchError(
         `failed to resolve digest for ${opts.upstreamImage} after successful pull`,
@@ -321,13 +319,14 @@ export function ensurePatchedClusterImage(opts: EnsurePatchedClusterImageOpts): 
       [
         "docker",
         "build",
+        "--quiet",
         "--build-arg",
         `UPSTREAM=${opts.upstreamImage}`,
         "-t",
         tag,
         tmpDir,
       ],
-      { ignoreError: true, timeoutMs: buildTimeoutMs },
+      { ignoreError: true, suppressOutput: true, timeoutMs: buildTimeoutMs },
     );
 
     if (buildResult.status !== 0) {
@@ -371,10 +370,10 @@ function inspectImageDigest(
   runCaptureImpl: (cmd: readonly string[], opts?: RunOpts) => string,
   inspectTimeoutMs: number,
 ): string {
-  const out = runCaptureImpl(
-    ["docker", "image", "inspect", "--format", "{{.Id}}", imageRef],
-    { ignoreError: true, timeoutMs: inspectTimeoutMs },
-  );
+  const out = runCaptureImpl(["docker", "image", "inspect", "--format", "{{.Id}}", imageRef], {
+    ignoreError: true,
+    timeoutMs: inspectTimeoutMs,
+  });
   return (out || "").trim();
 }
 
@@ -397,6 +396,7 @@ function defaultRunCapture(cmd: readonly string[], opts: RunOpts = {}): string {
 function defaultRun(cmd: readonly string[], opts: RunOpts = {}): { status: number | null } {
   const result = runner.run(cmd, {
     ignoreError: opts.ignoreError,
+    suppressOutput: opts.suppressOutput,
     ...(opts.timeoutMs !== undefined ? { timeout: opts.timeoutMs } : {}),
   });
   return { status: result.status ?? null };

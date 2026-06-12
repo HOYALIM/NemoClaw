@@ -75,9 +75,7 @@ describe("extractUpstreamVersion", () => {
 
   it("strips an appended digest", () => {
     expect(
-      extractUpstreamVersion(
-        "ghcr.io/nvidia/openshell/cluster:0.0.36@sha256:abc123def456",
-      ),
+      extractUpstreamVersion("ghcr.io/nvidia/openshell/cluster:0.0.36@sha256:abc123def456"),
     ).toBe("0.0.36");
   });
 
@@ -293,9 +291,7 @@ describe("ensurePatchedClusterImage", () => {
       tmpdirImpl: () => "/tmp",
     });
     const [dockerfilePath] = Array.from(fsImpl.written.keys());
-    expect(fsImpl.written.get(dockerfilePath)).toContain(
-      'CMD ["server", "--snapshotter=native"]',
-    );
+    expect(fsImpl.written.get(dockerfilePath)).toContain('CMD ["server", "--snapshotter=native"]');
     expect(fsImpl.written.get(dockerfilePath)).not.toContain('"--snapshotter=fuse-overlayfs"');
   });
 
@@ -329,6 +325,42 @@ describe("ensurePatchedClusterImage", () => {
         tmpdirImpl: () => "/tmp",
       }),
     ).toThrow(ClusterImagePatchError);
+  });
+
+  it("suppresses raw docker manifest/build output so onboard does not leak internal noise (#3248)", () => {
+    // The manifest probe dumps a multi-line JSON manifest list, and `docker build`
+    // dumps its full BuildKit log (apt-get, layer hashes, debconf warnings) to
+    // the user's terminal. Both must be suppressed so the install transcript
+    // stays clean. The caller already prints its own "Pulling …"/"Building …"
+    // progress lines.
+    const fsImpl = createMockFs();
+    const runCalls: { cmd: string[]; opts: { suppressOutput?: boolean } | undefined }[] = [];
+    let upstreamInspectCount = 0;
+
+    ensurePatchedClusterImage({
+      upstreamImage: UPSTREAM,
+      runCaptureImpl: (cmd) => {
+        if (inspectAt(cmd) === "upstream") {
+          upstreamInspectCount += 1;
+          return upstreamInspectCount === 1 ? "" : "sha256:9999aaaa";
+        }
+        return "";
+      },
+      runImpl: (cmd, opts) => {
+        runCalls.push({ cmd: [...cmd], opts });
+        return { status: 0 };
+      },
+      logger: () => {},
+      fsImpl,
+      tmpdirImpl: () => "/tmp",
+    });
+
+    const manifestCall = runCalls.find((entry) => entry.cmd[1] === "manifest");
+    expect(manifestCall?.opts).toMatchObject({ suppressOutput: true });
+
+    const buildCall = runCalls.find((entry) => entry.cmd[1] === "build");
+    expect(buildCall?.cmd).toContain("--quiet");
+    expect(buildCall?.opts).toMatchObject({ suppressOutput: true });
   });
 
   it("throws ClusterImagePatchError on docker build failure", () => {
