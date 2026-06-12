@@ -299,7 +299,7 @@ const {
     inferenceCompat: LooseObject | null;
   };
 };
-const { sleepSeconds, waitUntil, waitUntilAsync } = require("./core/wait");
+const { sleepSeconds, waitUntil } = require("./core/wait");
 const platformUtils: typeof import("./platform") = require("./platform");
 const { isWsl, shouldPatchCoredns } = platformUtils;
 const {
@@ -308,6 +308,9 @@ const {
   rejectUnsupportedWindowsHostOllama,
   shouldFrontOllamaWithProxy,
 }: typeof import("./onboard/local-inference-topology") = require("./onboard/local-inference-topology");
+const {
+  waitForGatewayHealth,
+}: typeof import("./onboard/gateway-health-wait") = require("./onboard/gateway-health-wait");
 const { resolveOpenshell } = require("./adapters/openshell/resolve");
 const credentials: typeof import("./credentials/store") = require("./credentials/store");
 const {
@@ -2037,40 +2040,20 @@ async function startGatewayWithOptions(
           );
         }
 
-        const healthPollCount = healthWait.count;
-        const healthPollInterval = healthWait.interval;
-        const healthPollIntervalMs = Math.max(0, healthPollInterval * 1000);
-        const gatewayBecameHealthy =
-          healthPollCount > 0 &&
-          (await waitUntilAsync(
-            async () => {
-              const repairResult = repairGatewayBootstrapSecrets();
-              if (repairResult.repaired) {
-                attachGatewayMetadataIfNeeded({ forceRefresh: true });
-              } else if (gatewayClusterHealthcheckPassed()) {
-                attachGatewayMetadataIfNeeded();
-              }
-              // Ensure the gateway remains selected before each probe.
-              runCaptureOpenshell(["gateway", "select", GATEWAY_NAME], { ignoreError: true });
-              const status = runCaptureOpenshell(["status"], { ignoreError: true });
-              const namedInfo = runCaptureOpenshell(["gateway", "info", "-g", GATEWAY_NAME], {
-                ignoreError: true,
-              });
-              const currentInfo = runCaptureOpenshell(["gateway", "info"], { ignoreError: true });
-              if (!isGatewayHealthy(status, namedInfo, currentInfo)) {
-                return false;
-              }
-              return await isGatewayHttpReady();
-            },
-            {
-              initialIntervalMs: healthPollIntervalMs,
-              maxIntervalMs: healthPollIntervalMs,
-              backoffFactor: 1,
-              maxAttempts: healthPollCount,
-              sleep: (ms: number) => sleepSeconds(ms / 1000),
-            },
-          ));
-        if (gatewayBecameHealthy) {
+        if (
+          await waitForGatewayHealth({
+            attachGatewayMetadataIfNeeded,
+            gatewayClusterHealthcheckPassed,
+            gatewayName: GATEWAY_NAME,
+            healthPollCount: healthWait.count,
+            healthPollIntervalSeconds: healthWait.interval,
+            isGatewayHealthy,
+            isGatewayHttpReady,
+            repairGatewayBootstrapSecrets,
+            runCaptureOpenshell,
+            sleepSeconds,
+          })
+        ) {
           return;
         }
 
