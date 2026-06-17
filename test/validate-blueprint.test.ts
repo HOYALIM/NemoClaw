@@ -534,6 +534,8 @@ describe("Hermes sandbox policy", () => {
       { allow: { method: "POST", path: "/v1/chat/completions" } },
       { allow: { method: "POST", path: "/v1/messages" } },
       { allow: { method: "POST", path: "/v1/responses" } },
+      { allow: { method: "POST", path: "/v1/audio/transcriptions" } },
+      { allow: { method: "POST", path: "/v1/audio/speech" } },
       { allow: { method: "POST", path: "/v1/completions" } },
       { allow: { method: "POST", path: "/v1/embeddings" } },
       { allow: { method: "GET", path: "/v1/models" } },
