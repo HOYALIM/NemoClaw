@@ -3661,7 +3661,6 @@ async function handleRemoteProviderSelection(
   state.credentialEnv = remoteConfig.credentialEnv;
   state.endpointUrl = remoteConfig.endpointUrl;
   state.preferredInferenceApi = null;
-
   if (selected.key === "custom" || selected.key === "anthropicCompatible") {
     const kind = selected.key === "custom" ? "openai" : "anthropic";
     const _envUrl = (process.env.NEMOCLAW_ENDPOINT_URL || "").trim();
@@ -3702,7 +3701,6 @@ async function handleRemoteProviderSelection(
       );
     }
   }
-
   if (selected.key === "hermesProvider") {
     const selectedHermesAuthMethod = await promptHermesAuthMethod();
     if (isBackToSelection(selectedHermesAuthMethod)) {
@@ -3740,7 +3738,6 @@ async function handleRemoteProviderSelection(
       recordedHermesToolGateways,
       { prompt, note, isNonInteractive },
     );
-
     const defaultModel =
       requestedModel || (recoveredFromSandbox && recoveredModel) || remoteConfig.defaultModel;
     if (isNonInteractive()) {
@@ -3893,18 +3890,25 @@ async function handleRemoteProviderSelection(
         console.log("");
         return "retry-selection";
       }
-
       const validationResult = await validateSelectedRemoteModel({
         selected,
         remoteConfig,
         state,
         selectedCredentialEnv,
       });
-      if (validationResult === "selected") break;
+      if (validationResult === "selected") {
+        if (selected.key === "custom") {
+          await require("./onboard/reasoning-mode").configureCustomOpenAiReasoningModeOrExit({
+            isNonInteractive,
+            promptYesNoOrDefault,
+            note,
+          });
+        }
+        break;
+      }
       if (validationResult === "retry-selection") return "retry-selection";
     }
   }
-
   if (selected.key === "build") {
     const buildModel = requireValue(
       isBackToSelection(state.model) ? null : state.model,
@@ -3931,7 +3935,6 @@ async function handleRemoteProviderSelection(
     if (buildValidation.retrySelection) return "retry-selection";
     state.preferredInferenceApi = buildValidation.preferredInferenceApi;
   }
-
   console.log(`  Using ${remoteConfig.label} with model: ${state.model}`);
   return "selected";
 }
@@ -3953,7 +3956,6 @@ async function setupNim(
   skipHostInferenceSmoke: boolean;
 }> {
   step(3, 8, "Configuring inference provider");
-
   let model: string | typeof BACK_TO_SELECTION | null = null;
   let provider: string = REMOTE_PROVIDER_CONFIG.build.providerName;
   let nimContainer: string | null = null;

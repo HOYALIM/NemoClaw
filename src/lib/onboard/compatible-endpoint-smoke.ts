@@ -306,6 +306,13 @@ if not isinstance(content, str) or not content.strip():
             file=sys.stderr,
         )
         sys.exit(1)
+    if isinstance(reasoning_content, str) and reasoning_content.strip():
+        print(
+            "inference.local reached the model, but the %s smoke attempt returned non-empty reasoning_content with empty choices[0].message.content (finish_reason=%r). If this OpenAI-compatible model is reasoning-only, enable reasoning mode during Option 3 onboarding or set NEMOCLAW_REASONING=true before rerunning onboarding: %s"
+            % (attempt, finish_reason, json.dumps(data)[:1000]),
+            file=sys.stderr,
+        )
+        sys.exit(1)
     print(
         "inference.local response did not contain non-empty choices[0].message.content (finish_reason=%r): %s"
         % (finish_reason, json.dumps(data)[:1000]),

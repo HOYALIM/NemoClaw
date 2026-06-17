@@ -171,6 +171,32 @@ JSON
     expect(fs.readFileSync(callFile, "utf-8")).toBe("2");
   });
 
+  it("reports reasoning-only terminal responses with the Option 3 reasoning knob", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-compat-smoke-reasoning-only-"));
+    const model = "reasoning/provider-model";
+    const configPath = writeSmokeConfig(tmpDir, model);
+    const { binDir, callFile } = writeFakeCurl(
+      tmpDir,
+      String.raw`
+cat <<'JSON'
+{"id":"chatcmpl-123","choices":[{"index":0,"message":{"role":"assistant","content":"","reasoning_content":"PONG"},"finish_reason":"stop"}]}
+JSON
+`,
+    );
+    const script = buildCompatibleEndpointSandboxSmokeScript(model, {
+      configPath,
+      initialMaxTokens: 64,
+      retryMaxTokens: 128,
+    });
+
+    const result = runSmokeScript(script, tmpDir, binDir);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("returned non-empty reasoning_content");
+    expect(result.stderr).toContain("NEMOCLAW_REASONING=true");
+    expect(fs.readFileSync(callFile, "utf-8")).toBe("1");
+  });
+
   it("wraps the script as a base64 decoded temporary shell command", () => {
     const command = buildCompatibleEndpointSandboxSmokeCommand("nvidia/model");
 
