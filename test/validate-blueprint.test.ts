@@ -511,6 +511,10 @@ describe("permissive sandbox policy", () => {
 describe("Hermes sandbox policy", () => {
   const policy = loadYaml<SandboxPolicy>(HERMES_POLICY_PATH);
 
+  /**
+   * Verifies that Hermes managed inference keeps the same narrow allowlist
+   * shape as OpenClaw while including every sandbox-routed inference endpoint.
+   */
   function expectManagedInferenceSecurityShape(): void {
     const np = policy.network_policies ?? {};
     const managedInference = np.managed_inference;
