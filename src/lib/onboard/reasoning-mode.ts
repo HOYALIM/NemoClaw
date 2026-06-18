@@ -19,6 +19,7 @@ export type ReasoningModeExitDeps = ReasoningModeDeps & {
 
 const REASONING_ENV = "NEMOCLAW_REASONING";
 
+/** Normalizes the reasoning-mode environment value accepted by Option 3 onboarding. */
 export function normalizeReasoningMode(value: string | undefined): "true" | "false" | null {
   const normalized = String(value ?? "")
     .trim()
@@ -27,6 +28,7 @@ export function normalizeReasoningMode(value: string | undefined): "true" | "fal
   return null;
 }
 
+/** Resolves and records whether an OpenAI-compatible endpoint should use reasoning mode. */
 export async function configureCustomOpenAiReasoningMode(deps: ReasoningModeDeps): Promise<void> {
   const env = deps.env || process.env;
   const existing = String(env[REASONING_ENV] ?? "").trim();
@@ -53,6 +55,7 @@ export async function configureCustomOpenAiReasoningMode(deps: ReasoningModeDeps
   }
 }
 
+/** Applies reasoning-mode configuration and exits through the onboarding error path on invalid input. */
 export async function configureCustomOpenAiReasoningModeOrExit(
   deps: ReasoningModeExitDeps,
 ): Promise<void> {

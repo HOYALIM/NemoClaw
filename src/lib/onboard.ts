@@ -3651,6 +3651,7 @@ async function handleNimLocalSelection(
   return "selected";
 }
 
+/** Handles hosted and compatible remote provider selection, credentials, model prompts, and validation. */
 async function handleRemoteProviderSelection(
   args: RemoteProviderSelectionArgs,
   state: SetupNimSelectionState,
@@ -3939,6 +3940,7 @@ async function handleRemoteProviderSelection(
   return "selected";
 }
 
+/** Configures the selected inference provider and returns the sandbox-facing model route state. */
 async function setupNim(
   gpu: ReturnType<typeof nim.detectGpu>,
   sandboxName: string | null = null,
