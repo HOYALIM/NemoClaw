@@ -3968,7 +3968,6 @@ async function setupNim(
   let preferredInferenceApi: string | null = null;
   let allowToolsIncompatible = false;
   let skipHostInferenceSmoke = false;
-
   const providerHostState = detectInferenceProviderHostState({
     gpu,
     experimental: EXPERIMENTAL,
@@ -3996,7 +3995,6 @@ async function setupNim(
     ? getNonInteractiveModel(requestedProvider || "build")
     : null;
   const agentProviderOptions = getAgentInferenceProviderOptions(agent);
-
   // Model Router: complexity-based routing via blueprint config.
   const blueprintRouterCfg = loadBlueprintProfile("routed");
   const { options, hermesProviderAvailable } = buildInferenceProviderMenu({
