@@ -14,6 +14,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const inferenceOptionsPath = path.join(repoRoot, "docs", "inference", "inference-options.mdx");
 const inferenceConfigPath = path.join(repoRoot, "src", "lib", "inference", "config.ts");
 
+/** Extracts a bounded Markdown section so the assertions stay scoped to the guide. */
 function sectionBetween(markdown: string, heading: string, nextHeading: string): string {
   const start = markdown.indexOf(heading);
   const end = markdown.indexOf(nextHeading, start + heading.length);
@@ -22,10 +23,12 @@ function sectionBetween(markdown: string, heading: string, nextHeading: string):
   return markdown.slice(start, end);
 }
 
+/** Removes TypeScript `as const` wrappers before inspecting literal AST nodes. */
 function unwrapConstAssertion(expression: TypeScript.Expression): TypeScript.Expression {
   return ts.isAsExpression(expression) ? unwrapConstAssertion(expression.expression) : expression;
 }
 
+/** Reads the curated cloud model IDs from the source config instead of duplicating them in docs tests. */
 function readCuratedCloudModelIds(): string[] {
   const source = fs.readFileSync(inferenceConfigPath, "utf8");
   const sourceFile = ts.createSourceFile(
