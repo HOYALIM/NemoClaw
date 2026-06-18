@@ -8,6 +8,9 @@ import { assessHost, planHostRemediation } from "../../../dist/lib/onboard/prefl
 
 type HostAssessment = Parameters<typeof planHostRemediation>[0];
 
+/**
+ * Creates a Linux Docker host assessment with NVIDIA CDI defaults for focused overrides.
+ */
 function baseAssessment(overrides: Partial<HostAssessment> = {}): HostAssessment {
   return {
     platform: "linux",
@@ -38,6 +41,9 @@ function baseAssessment(overrides: Partial<HostAssessment> = {}): HostAssessment
   };
 }
 
+/**
+ * Emulates the systemctl/stat probes needed by CDI staleness remediation tests.
+ */
 function healthySystemctlAndStat(command: readonly string[]) {
   if (command[0] === "systemctl" && command[1] === "is-enabled") return "enabled";
   if (command[0] === "systemctl" && command[1] === "is-active") return "active";
@@ -65,6 +71,51 @@ describe("assessHost — CDI", () => {
 
     expect(result.dockerCdiSpecDirs).toEqual(["/etc/cdi", "/var/run/cdi"]);
     expect(result.cdiNvidiaGpuSpecMissing).toBe(true);
+  });
+
+  it("plans toolkit bootstrap when PCI detects NVIDIA hardware but nvidia-smi and nvidia-ctk are absent", () => {
+    const result = assessHost({
+      platform: "linux",
+      env: {},
+      release: "6.8.0-58-generic",
+      readFileImpl: (filePath: string) =>
+        filePath.endsWith("other.yaml")
+          ? "cdiVersion: 0.5.0\nkind: vendor.example/device\ndevices: []\n"
+          : "Linux version 6.8.0-58-generic",
+      readdirImpl: (dir: string) => (dir === "/etc/cdi" ? ["other.yaml"] : []),
+      runCaptureImpl: (command: readonly string[]) =>
+        new Map([
+          [["sh", "-c", 'command -v "$1"', "--", "apt-get"].join("\0"), "/usr/bin/apt-get"],
+          [
+            ["lspci", "-nn"].join("\0"),
+            "01:00.0 VGA compatible controller: NVIDIA Corporation GA102 [GeForce RTX 3090]\n",
+          ],
+          [["systemctl", "is-active", "docker"].join("\0"), "active"],
+          [["systemctl", "is-enabled", "docker"].join("\0"), "enabled"],
+        ]).get(command.join("\0")) ?? "",
+      dockerInfoOutput: JSON.stringify({
+        ServerVersion: "27.0",
+        OperatingSystem: "Ubuntu 24.04",
+        CDISpecDirs: ["/etc/cdi", "/var/run/cdi"],
+      }),
+      commandExistsImpl: (name: string) =>
+        name === "docker" || name === "lspci" || name === "systemctl",
+    });
+
+    expect(result.hasNvidiaGpu).toBe(true);
+    expect(result.nvidiaContainerToolkitInstalled).toBe(false);
+    expect(result.cdiNvidiaGpuSpecMissing).toBe(true);
+
+    const action = planHostRemediation(result).find(
+      (entry: { id: string }) => entry.id === "install_nvidia_container_toolkit",
+    );
+    expect(action).toBeTruthy();
+    expect(action?.blocking).toBe(true);
+    expect(action?.commands).toContain("sudo apt-get install -y nvidia-container-toolkit");
+    expect(action?.commands.some((command) => command.includes("nvidia-ctk cdi generate"))).toBe(
+      true,
+    );
+    expect(action?.commands.some((command) => command.includes("nvidia-ctk cdi list"))).toBe(true);
   });
 
   it("does not flag the host when an nvidia.com/gpu YAML spec is present", () => {

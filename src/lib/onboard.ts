@@ -1577,8 +1577,9 @@ function waitForSandboxReady(sandboxName: string, attempts = 10, delaySeconds = 
 
 // ── Step 1: Preflight ────────────────────────────────────────────
 
-// Keep the Docker CDI guard near preflight so resume hits the same early failure path.
-// Jetson/Tegra uses Docker's NVIDIA runtime backend and is exempt from CDI.
+/**
+ * Fails onboarding when Docker CDI injection is configured but the NVIDIA GPU spec is invalid.
+ */
 function assertCdiNvidiaGpuSpecPresent(
   host: ReturnType<typeof assessHost>,
   optedOutGpuPassthrough: boolean,
@@ -1601,11 +1602,9 @@ type PreflightOptions = Pick<
   optedOutGpuPassthrough?: boolean;
 };
 
-// Reject unsupported container runtimes (currently only Podman with the
-// Linux Docker-driver gateway) before any Docker-specific probes. Both
-// the fresh preflight and `--resume` backstop call this — if `docker`
-// resolves to Podman, surface the unsupported-runtime message instead of
-// running bridge/DNS diagnostics that would be misleading.
+/**
+ * Rejects unsupported runtimes before Docker-specific bridge, DNS, and CDI probes.
+ */
 function rejectUnsupportedContainerRuntime(host: ReturnType<typeof assessHost>): void {
   if (isLinuxDockerDriverGatewayEnabled() && host.runtime === "podman") {
     console.error(`  ✗ ${cliDisplayName()} onboarding now uses OpenShell's Docker driver.`);
@@ -1615,13 +1614,14 @@ function rejectUnsupportedContainerRuntime(host: ReturnType<typeof assessHost>):
   }
 }
 
+/**
+ * Runs host preflight and blocks early on Docker, GPU, CDI, and runtime problems.
+ */
 async function preflight(
   preflightOpts: PreflightOptions = {},
 ): Promise<ReturnType<typeof nim.detectGpu>> {
   step(1, 8, "Preflight checks");
-
   const host = assessHost();
-
   // Docker / runtime
   if (!host.dockerReachable) {
     console.error("  Docker is not reachable. Please fix Docker and try again.");
@@ -1640,12 +1640,11 @@ async function preflight(
     device: preflightOpts.sandboxGpuDevice ?? null,
   });
   exitOnSandboxGpuConfigErrors(sandboxGpuConfig);
-  const optedOutGpuPassthrough =
+  const explicitlyOptedOutGpuPassthrough =
     preflightOpts.optedOutGpuPassthrough === true ||
     preflightOpts.noGpu === true ||
-    !sandboxGpuConfig.sandboxGpuEnabled;
-  assertCdiNvidiaGpuSpecPresent(host, optedOutGpuPassthrough, sandboxGpuConfig.hostGpuPlatform);
-
+    sandboxGpuConfig.mode === "0";
+  assertCdiNvidiaGpuSpecPresent(host, explicitlyOptedOutGpuPassthrough, sandboxGpuConfig.hostGpuPlatform);
   assertDockerBridgeAndContainerDnsHealthy(host, isNonInteractive());
 
   if (host.runtime !== "unknown") {

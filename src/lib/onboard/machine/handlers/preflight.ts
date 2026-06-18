@@ -93,10 +93,17 @@ export interface PreflightStateResult<Gpu, Config extends PreflightSandboxGpuCon
   stateResult: OnboardStateTransitionResult;
 }
 
+/**
+ * Checks whether the environment pins sandbox GPU mode or device selection.
+ */
 function envHasSandboxGpuOverride(env: NodeJS.ProcessEnv): boolean {
   return env.NEMOCLAW_SANDBOX_GPU !== undefined || env.NEMOCLAW_SANDBOX_GPU_DEVICE !== undefined;
 }
 
+/**
+ * Executes or revalidates the preflight state while preserving the user's
+ * effective sandbox GPU intent across fresh onboarding and resume.
+ */
 export async function handlePreflightState<
   Gpu,
   SandboxEntry,
@@ -143,9 +150,7 @@ export async function handlePreflightState<
     });
     deps.validateSandboxGpuPreflight(resumeSandboxGpuConfig);
     const resumeOptedOutGpuPassthrough =
-      noGpu ||
-      (!gpuRequested && session?.gpuPassthrough === false) ||
-      !resumeSandboxGpuConfig.sandboxGpuEnabled;
+      noGpu || effectiveSandboxGpuFlag === "disable" || resumeSandboxGpuConfig.mode === "0";
     const resumeHost = deps.assessHost();
     // Reject unsupported runtimes (Podman) BEFORE the CDI GPU-spec
     // backstop and the Docker-specific bridge/DNS probes so Podman

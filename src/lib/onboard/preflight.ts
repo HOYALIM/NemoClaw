@@ -385,13 +385,37 @@ function isHeadlessLikely(env: NodeJS.ProcessEnv): boolean {
   return !env.DISPLAY && !env.WAYLAND_DISPLAY && !env.TERM_PROGRAM;
 }
 
-function detectNvidiaGpu(runCaptureImpl: RunCaptureFn): boolean {
-  if (!commandExists("nvidia-smi", runCaptureImpl)) {
-    return false;
+/**
+ * Detects NVIDIA hardware via nvidia-smi first, then Linux PCI data as a toolkit-free fallback.
+ */
+function detectNvidiaGpu(opts: {
+  platform: NodeJS.Platform | string;
+  isWsl: boolean;
+  runCaptureImpl: RunCaptureFn;
+  commandExistsImpl?: (commandName: string) => boolean;
+}): boolean {
+  const commandExistsImpl =
+    opts.commandExistsImpl ??
+    ((commandName: string) => commandExists(commandName, opts.runCaptureImpl));
+  if (commandExistsImpl("nvidia-smi")) {
+    const smiOutput = opts.runCaptureImpl(["nvidia-smi", "-L"], { ignoreError: true });
+    if (String(smiOutput || "").trim()) return true;
   }
-  return Boolean(String(runCaptureImpl(["nvidia-smi", "-L"], { ignoreError: true }) || "").trim());
+
+  if (opts.platform !== "linux" || opts.isWsl || !commandExistsImpl("lspci")) return false;
+  const pciOutput = opts.runCaptureImpl(["lspci", "-nn"], { ignoreError: true });
+  return String(pciOutput || "")
+    .split(/\r?\n/)
+    .some(
+      (line) =>
+        /nvidia/i.test(line) &&
+        /(vga compatible controller|3d controller|display controller)/i.test(line),
+    );
 }
 
+/**
+ * Detects the host package manager used for NVIDIA toolkit remediation commands.
+ */
 function detectPackageManager(runCaptureImpl: RunCaptureFn): PackageManager {
   if (commandExists("apt-get", runCaptureImpl)) return "apt";
   if (commandExists("dnf", runCaptureImpl)) return "dnf";
@@ -401,6 +425,9 @@ function detectPackageManager(runCaptureImpl: RunCaptureFn): PackageManager {
   return "unknown";
 }
 
+/**
+ * Normalizes systemctl active/enabled output into a tri-state service status.
+ */
 function parseSystemctlState(value = ""): boolean | null {
   const normalized = String(value || "")
     .trim()
@@ -447,6 +474,9 @@ export function buildContainerToolkitBootstrapCommands(
   ];
 }
 
+/**
+ * Builds the host capability snapshot used to plan preflight remediation.
+ */
 export function assessHost(opts: AssessHostOpts = {}): HostAssessment {
   const platform = opts.platform ?? process.platform;
   const env = opts.env ?? process.env;
@@ -456,12 +486,33 @@ export function assessHost(opts: AssessHostOpts = {}): HostAssessment {
       runCapture(command, { ignoreError: options?.ignoreError ?? false }));
   const readFileImpl = opts.readFileImpl ?? fs.readFileSync;
   const readdirImpl = opts.readdirImpl ?? ((dir: string) => fs.readdirSync(dir));
+  const shouldReadLinuxHostDetails = platform === "linux";
+  const release = opts.release ?? (shouldReadLinuxHostDetails ? os.release() : "");
+  const procVersion =
+    opts.procVersion ??
+    (shouldReadLinuxHostDetails
+      ? (() => {
+          try {
+            return readFileImpl("/proc/version", "utf-8");
+          } catch {
+            return "";
+          }
+        })()
+      : "");
+  const isWslHost = detectWsl({ platform, env, release, procVersion });
   const dockerInstalled =
     opts.commandExistsImpl?.("docker") ?? commandExists("docker", runCaptureImpl);
   const nodeInstalled = opts.commandExistsImpl?.("node") ?? commandExists("node", runCaptureImpl);
   const openshellInstalled =
     opts.commandExistsImpl?.("openshell") ?? commandExists("openshell", runCaptureImpl);
-  const hasNvidiaGpu = opts.gpuProbeImpl?.() ?? detectNvidiaGpu(runCaptureImpl);
+  const hasNvidiaGpu =
+    opts.gpuProbeImpl?.() ??
+    detectNvidiaGpu({
+      platform,
+      isWsl: isWslHost,
+      runCaptureImpl,
+      commandExistsImpl: opts.commandExistsImpl,
+    });
   const nvidiaContainerToolkitInstalled =
     opts.commandExistsImpl?.("nvidia-ctk") ?? commandExists("nvidia-ctk", runCaptureImpl);
   const packageManager = detectPackageManager(runCaptureImpl);
@@ -480,22 +531,10 @@ export function assessHost(opts: AssessHostOpts = {}): HostAssessment {
     dockerReachable = true;
     dockerRunning = true;
   }
-
-  const release = opts.release ?? os.release();
-  const procVersion =
-    opts.procVersion ??
-    (() => {
-      try {
-        return readFileImpl("/proc/version", "utf-8");
-      } catch {
-        return "";
-      }
-    })();
   let runtime = inferContainerRuntime(dockerInfoOutput);
   if (dockerReachable && runtime === "unknown" && platform === "linux") {
     runtime = "docker";
   }
-  const isWslHost = detectWsl({ platform, env, release, procVersion });
   const dockerCgroupVersion = dockerReachable
     ? parseDockerCgroupVersion(dockerInfoOutput)
     : "unknown";

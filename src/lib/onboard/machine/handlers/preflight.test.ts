@@ -186,11 +186,33 @@ describe("handlePreflightState", () => {
     expect(harness.deps.startRecordedStep).not.toHaveBeenCalled();
     expect(harness.deps.assertCdiNvidiaGpuSpecPresent).toHaveBeenCalledWith(
       { cdiNvidiaGpuSpecMissing: false },
-      true,
+      false,
       undefined,
     );
     expect(harness.deps.validateSandboxGpuPreflight).toHaveBeenCalledOnce();
     expect(result.resumePreflight).toBe(true);
+  });
+
+  it("keeps CDI guard active on resume when auto mode disables GPU after failed detection", async () => {
+    const session = createSession();
+    session.steps.preflight.status = "complete";
+    session.gpuPassthrough = false;
+    const assertCdiNvidiaGpuSpecPresent = vi.fn();
+    const host = { cdiNvidiaGpuSpecMissing: true };
+    const harness = createDeps({
+      detectGpu: vi.fn(() => null),
+      getResumeSandboxGpuOverrides: vi.fn(() => ({ flag: null, device: null })),
+      resolveSandboxGpuConfig,
+      assessHost: () => host,
+      assertCdiNvidiaGpuSpecPresent,
+    });
+
+    await handlePreflightState({
+      ...baseOptions(harness.deps, session),
+      resume: true,
+    });
+
+    expect(assertCdiNvidiaGpuSpecPresent).toHaveBeenCalledWith(host, false, null);
   });
 
   it("passes host GPU platform into the resumed CDI guard", async () => {
@@ -220,7 +242,7 @@ describe("handlePreflightState", () => {
 
     expect(assertCdiNvidiaGpuSpecPresent).toHaveBeenCalledWith(
       { cdiNvidiaGpuSpecMissing: false },
-      true,
+      false,
       "jetson",
     );
   });
