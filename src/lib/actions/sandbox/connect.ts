@@ -25,6 +25,7 @@ import {
 } from "../../inference/config";
 import { findReachableOllamaHost, probeLocalProviderHealth } from "../../inference/local";
 import { ensureOllamaAuthProxy, probeOllamaAuthProxyHealth } from "../../inference/ollama/proxy";
+import { recordMetricEvent } from "../../metrics";
 import { LOCAL_INFERENCE_TIMEOUT_SECS } from "../../onboard/env";
 import { resolveSandboxGatewayName } from "../../onboard/gateway-binding";
 import { isWsl } from "../../platform";
@@ -1073,6 +1074,11 @@ export async function connectSandbox(
     stdio: "inherit",
     cwd: ROOT,
     env: process.env,
+  });
+  recordMetricEvent("sandbox_connect", {
+    sandbox: sandboxName,
+    command: "connect",
+    status: result.status === 0 ? "success" : "failed",
   });
   exitWithSpawnResult(result);
 }

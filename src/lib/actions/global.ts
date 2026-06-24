@@ -18,6 +18,7 @@ import {
   runSetupSparkAction as executeSetupSparkAction,
 } from "./onboard";
 import { help, version } from "./root-help";
+import { recordMetricEvent } from "../metrics";
 
 type GatewayRecovery = { recovered: boolean };
 
@@ -33,16 +34,60 @@ export function setGlobalCliActionRuntimeHooksForTest(hooks: GlobalCliActionRunt
   runtimeHooks = hooks;
 }
 
+function shouldRecordOnboardLifecycle(args: readonly string[]): boolean {
+  return !args.includes("--help") && !args.includes("-h");
+}
+
+async function runWithOnboardMetrics(
+  args: string[],
+  command: string,
+  runCommand: () => Promise<void>,
+): Promise<void> {
+  const shouldRecord = shouldRecordOnboardLifecycle(args);
+  let completeRecorded = false;
+  const recordComplete = (status: "success" | "failed"): void => {
+    completeRecorded = true;
+    recordMetricEvent("onboard_complete", { command, status });
+  };
+  const recordCompleteOnExit = (code: number): void => {
+    if (shouldRecord && !completeRecorded) {
+      recordComplete(code === 0 ? "success" : "failed");
+    }
+  };
+
+  if (shouldRecord) {
+    recordMetricEvent("onboard_start", {
+      command,
+      data: { nonInteractive: args.includes("--non-interactive") },
+    });
+    process.once("exit", recordCompleteOnExit);
+  }
+
+  try {
+    await runCommand();
+    if (shouldRecord) {
+      process.removeListener("exit", recordCompleteOnExit);
+      recordComplete("success");
+    }
+  } catch (error) {
+    if (shouldRecord) {
+      process.removeListener("exit", recordCompleteOnExit);
+      recordComplete("failed");
+    }
+    throw error;
+  }
+}
+
 export async function runOnboardAction(args: string[] = []): Promise<void> {
-  await executeOnboardAction(args);
+  await runWithOnboardMetrics(args, "onboard", () => executeOnboardAction(args));
 }
 
 export async function runSetupAction(args: string[] = []): Promise<void> {
-  await executeSetupAction(args);
+  await runWithOnboardMetrics(args, "setup", () => executeSetupAction(args));
 }
 
 export async function runSetupSparkAction(args: string[] = []): Promise<void> {
-  await executeSetupSparkAction(args);
+  await runWithOnboardMetrics(args, "setup-spark", () => executeSetupSparkAction(args));
 }
 
 export async function runDeployAction(instanceName?: string): Promise<void> {

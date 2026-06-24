@@ -9,6 +9,7 @@ import { OPENSHELL_PROBE_TIMEOUT_MS } from "../../adapters/openshell/timeouts";
 import { CLI_NAME } from "../../cli/branding";
 import { G, R, YW } from "../../cli/terminal-style";
 import { prompt as askPrompt } from "../../credentials/store";
+import { recordMetricEvent } from "../../metrics";
 import {
   type DestroySandboxOptions,
   normalizeDestroySandboxOptions,
@@ -436,5 +437,11 @@ export async function destroySandbox(
   emitProviderDetachResidualHint(sandboxName, detachOutcome.failures, (m) =>
     console.warn(`  ${YW}⚠${R}${m}`),
   );
+  recordMetricEvent("sandbox_destroy", {
+    sandbox: sandboxName,
+    command: "destroy",
+    status: "success",
+    data: { alreadyGone },
+  });
   console.log(`  ${G}✓${R} Sandbox '${sandboxName}' destroyed`);
 }

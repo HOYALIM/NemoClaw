@@ -113,6 +113,13 @@ const PUBLIC_DISPLAY_LAYOUT: Record<string, readonly PublicDisplayLayout[]> = {
       flags: "[--json]",
     },
   ],
+  stats: [
+    {
+      group: "Troubleshooting",
+      order: 37.5,
+      flags: "[--reset]",
+    },
+  ],
   "root:version": [
     {
       group: "Getting Started",
@@ -427,6 +434,12 @@ const PUBLIC_DISPLAY_LAYOUT: Record<string, readonly PublicDisplayLayout[]> = {
       group: "Sandbox Management",
       order: 4,
       description: "Sandbox health + NIM status",
+    },
+  ],
+  "sandbox:stats": [
+    {
+      group: "Sandbox Management",
+      order: 4.1,
     },
   ],
   setup: [

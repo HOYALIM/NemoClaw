@@ -27,6 +27,7 @@ import {
 } from "../../messaging";
 import { hydrateMessagingChannelConfig } from "../../messaging-channel-config";
 import { hashCredential } from "../../security/credential-hash";
+import { recordMetricEvent } from "../../metrics";
 
 const { isNonInteractive } = require("../../onboard") as { isNonInteractive: () => boolean };
 const onboardProviders = require("../../onboard/providers");
@@ -187,7 +188,14 @@ export async function addSandboxPolicy(
     if (confirm.trim().toLowerCase().startsWith("n")) return;
   }
 
-  if (!policies.applyPreset(sandboxName, answer)) {
+  const presetApplied = policies.applyPreset(sandboxName, answer);
+  recordMetricEvent("policy_apply", {
+    sandbox: sandboxName,
+    command: "policy-add",
+    status: presetApplied ? "success" : "failed",
+    data: { preset: answer },
+  });
+  if (!presetApplied) {
     process.exit(1);
   }
   syncSessionPolicyPresetsWithRegistry(sandboxName, answer, "add");
