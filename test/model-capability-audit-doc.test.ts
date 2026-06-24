@@ -65,4 +65,13 @@ describe("model capability audit doc (#3123)", () => {
       "_build/agent-variants/inference/model-capability-audit.hermes.generated.mdx",
     );
   });
+
+  it("keeps next-step links for related inference docs", () => {
+    const markdown = fs.readFileSync(auditDocPath, "utf8");
+
+    expect(markdown).toContain("## Next Steps");
+    expect(markdown).toContain("[Inference Options](inference-options)");
+    expect(markdown).toContain("[Tool-Calling Reliability](tool-calling-reliability)");
+    expect(markdown).toContain("[Architecture](../reference/architecture)");
+  });
 });
