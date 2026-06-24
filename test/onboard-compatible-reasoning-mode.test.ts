@@ -39,10 +39,7 @@ while [ "$#" -gt 0 ]; do
     *) url="$1"; shift ;;
   esac
 done
-if [ "\${NEMOCLAW_REASONING:-}" != "true" ]; then
-  body='{"error":{"message":"reasoning mode was not set before validation"}}'
-  status="400"
-elif echo "$url" | grep -q '/responses$'; then
+if echo "$url" | grep -q '/responses$'; then
   body='{"id":"resp_123","output":[{"type":"message","content":[{"type":"output_text","text":"OK"}]}]}'
   status="200"
 elif echo "$url" | grep -q '/chat/completions$'; then

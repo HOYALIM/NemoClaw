@@ -13,8 +13,8 @@ export type ReasoningModeDeps = {
 };
 
 export type ReasoningModeExitDeps = ReasoningModeDeps & {
-  error: (message: string) => void;
-  exit: (code: number) => never;
+  error?: (message: string) => void;
+  exit?: (code: number) => never;
 };
 
 const REASONING_ENV = "NEMOCLAW_REASONING";
@@ -35,7 +35,9 @@ export async function configureCustomOpenAiReasoningMode(deps: ReasoningModeDeps
   if (existing) {
     const normalized = normalizeReasoningMode(existing);
     if (!normalized) {
-      throw new Error(`${REASONING_ENV} must be "true" or "false" for OpenAI-compatible endpoints.`);
+      throw new Error(
+        `${REASONING_ENV} must be "true" or "false" for OpenAI-compatible endpoints.`,
+      );
     }
     env[REASONING_ENV] = normalized;
     if (deps.isNonInteractive()) {
@@ -62,7 +64,9 @@ export async function configureCustomOpenAiReasoningModeOrExit(
   try {
     await configureCustomOpenAiReasoningMode(deps);
   } catch (err) {
-    deps.error(`  ${err instanceof Error ? err.message : String(err)}`);
-    deps.exit(1);
+    const error = deps.error ?? console.error;
+    const exit = deps.exit ?? process.exit;
+    error(`  ${err instanceof Error ? err.message : String(err)}`);
+    exit(1);
   }
 }
