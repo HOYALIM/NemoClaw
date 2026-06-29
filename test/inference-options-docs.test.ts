@@ -121,24 +121,7 @@ describe("inference options model task-fit docs (#4755)", () => {
     expect(section).not.toMatch(/\bTBD\b|\bTODO\b/i);
     expect(section).not.toContain("Very large context");
 
-    const expectedModelIds = [
-      ...readCuratedCloudModelIds(),
-      "gpt-5.4",
-      "gpt-5.4-mini",
-      "gpt-5.4-nano",
-      "gpt-5.4-pro-2026-03-05",
-      "claude-sonnet-4-6",
-      "claude-haiku-4-5",
-      "claude-opus-4-6",
-      "gemini-3.1-pro-preview",
-      "gemini-3.1-flash-lite-preview",
-      "gemini-3-flash-preview",
-      "gemini-2.5-pro",
-      "gemini-2.5-flash",
-      "gemini-2.5-flash-lite",
-    ];
-
-    for (const modelId of expectedModelIds) {
+    for (const modelId of readCuratedOnboardingModelIds()) {
       expect(section).toContain(`| \`${modelId}\` |`);
     }
   });
