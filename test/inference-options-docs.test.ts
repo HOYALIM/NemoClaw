@@ -13,6 +13,7 @@ const ts = require("typescript") as typeof TypeScript;
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const inferenceOptionsPath = path.join(repoRoot, "docs", "inference", "inference-options.mdx");
 const inferenceConfigPath = path.join(repoRoot, "src", "lib", "inference", "config.ts");
+const modelPromptsPath = path.join(repoRoot, "src", "lib", "inference", "model-prompts.ts");
 
 /**
  * Removes TypeScript `as const` wrappers before inspecting literal AST nodes.
@@ -21,12 +22,12 @@ function unwrapConstAssertion(expression: TypeScript.Expression): TypeScript.Exp
   return ts.isAsExpression(expression) ? unwrapConstAssertion(expression.expression) : expression;
 }
 
-/**
- * Reads curated cloud model IDs from source config instead of duplicating them in docs tests.
- */
-function readCuratedCloudModelIds(): string[] {
-  const source = fs.readFileSync(inferenceConfigPath, "utf8");
-  const sourceFile = ts.createSourceFile(inferenceConfigPath, source, ts.ScriptTarget.Latest, true);
+function readExportedConstInitializer(
+  sourcePath: string,
+  exportName: string,
+): { sourceFile: TypeScript.SourceFile; initializer: TypeScript.Expression } {
+  const source = fs.readFileSync(sourcePath, "utf8");
+  const sourceFile = ts.createSourceFile(sourcePath, source, ts.ScriptTarget.Latest, true);
 
   const declaration = sourceFile.statements
     .filter(
@@ -36,11 +37,21 @@ function readCuratedCloudModelIds(): string[] {
           false),
     )
     .flatMap((statement) => Array.from(statement.declarationList.declarations))
-    .find((candidate) => candidate.name.getText(sourceFile) === "CLOUD_MODEL_OPTIONS");
+    .find((candidate) => candidate.name.getText(sourceFile) === exportName);
   expect(declaration).toBeTruthy();
 
   const initializer = declaration?.initializer && unwrapConstAssertion(declaration.initializer);
-  expect(initializer && ts.isArrayLiteralExpression(initializer)).toBe(true);
+  expect(initializer).toBeTruthy();
+
+  return { sourceFile, initializer: initializer as TypeScript.Expression };
+}
+
+function readCuratedCloudModelIds(): string[] {
+  const { sourceFile, initializer } = readExportedConstInitializer(
+    inferenceConfigPath,
+    "CLOUD_MODEL_OPTIONS",
+  );
+  expect(ts.isArrayLiteralExpression(initializer)).toBe(true);
 
   return (initializer as TypeScript.ArrayLiteralExpression).elements.map((element) => {
     expect(ts.isObjectLiteralExpression(element)).toBe(true);
@@ -56,6 +67,42 @@ function readCuratedCloudModelIds(): string[] {
     );
     return (idInitializer as TypeScript.StringLiteral).text;
   });
+}
+
+function readRemoteModelIds(providerKey: string): string[] {
+  const { sourceFile, initializer } = readExportedConstInitializer(
+    modelPromptsPath,
+    "REMOTE_MODEL_OPTIONS",
+  );
+  expect(ts.isObjectLiteralExpression(initializer)).toBe(true);
+
+  const providerProperty = (initializer as TypeScript.ObjectLiteralExpression).properties.find(
+    (property) =>
+      ts.isPropertyAssignment(property) && property.name.getText(sourceFile) === providerKey,
+  );
+  expect(providerProperty).toBeTruthy();
+
+  const providerInitializer = unwrapConstAssertion(
+    (providerProperty as TypeScript.PropertyAssignment).initializer,
+  );
+  expect(ts.isArrayLiteralExpression(providerInitializer)).toBe(true);
+
+  return (providerInitializer as TypeScript.ArrayLiteralExpression).elements.map((element) => {
+    expect(ts.isStringLiteralLike(unwrapConstAssertion(element))).toBe(true);
+    return (unwrapConstAssertion(element) as TypeScript.StringLiteral).text;
+  });
+}
+
+/**
+ * Reads curated onboarding model IDs from source config instead of duplicating them in docs tests.
+ */
+function readCuratedOnboardingModelIds(): string[] {
+  return [
+    ...readCuratedCloudModelIds(),
+    ...readRemoteModelIds("openai"),
+    ...readRemoteModelIds("anthropic"),
+    ...readRemoteModelIds("gemini"),
+  ];
 }
 
 describe("inference options model task-fit docs (#4755)", () => {
