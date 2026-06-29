@@ -242,6 +242,19 @@ export function listRequiredCreateTimeMessagingPolicyPresetsByChannel(
   return result;
 }
 
+export function listMessagingPolicyPresetsByChannel(
+  options: MessagingManifestMetadataOptions = {},
+): Readonly<Record<string, readonly string[]>> {
+  const result: Record<string, string[]> = {};
+  for (const preset of listMessagingPolicyPresetMetadata(options)) {
+    result[preset.channelId] = uniqueStrings([
+      ...(result[preset.channelId] ?? []),
+      preset.presetName,
+    ]);
+  }
+  return result;
+}
+
 export function getMessagingPolicyKeyAliases(
   options: MessagingManifestMetadataOptions = {},
 ): Readonly<Record<string, readonly string[]>> {
@@ -316,7 +329,7 @@ export function listMessagingPackageInstallSpecs(
 }
 
 function selectManifests(options: MessagingManifestMetadataOptions): ChannelManifest[] {
-  const manifests = options.manifests ?? BUILT_IN_CHANNEL_MANIFESTS;
+  const manifests: readonly ChannelManifest[] = options.manifests ?? BUILT_IN_CHANNEL_MANIFESTS;
   const agent = options.agent;
   const selected = agent
     ? manifests.filter((manifest) => manifest.supportedAgents.includes(agent))

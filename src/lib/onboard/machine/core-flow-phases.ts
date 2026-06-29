@@ -3,11 +3,11 @@
 
 import type { WebSearchConfig } from "../../inference/web-search";
 import {
-  assertProviderSelectedContext,
   mergeProviderModelSelectedContext,
   mergeSandboxCreatedContext,
   type OnboardFlowContext,
 } from "./flow-context";
+import { createProviderInferencePhase, createSandboxPhase } from "./flow-phases/provider-sandbox";
 import { runCoreOnboardFlowSequence } from "./flow-slices";
 import {
   handleProviderInferenceState,
@@ -52,90 +52,86 @@ export function createCoreOnboardFlowPhases<
 >(
   options: CoreOnboardFlowPhaseOptions<Context, Host, MessagingChannelConfig, ResourceProfile>,
 ): [OnboardSequencePhase<Context>, OnboardSequencePhase<Context>] {
-  const providerInferencePhase: OnboardSequencePhase<Context> = {
-    state: "provider_selection",
-    async run(context) {
-      const providerInferenceResult = await handleProviderInferenceState({
-        resume: context.resume,
-        session: context.session,
-        gpu: context.gpu,
-        sandboxName: context.sandboxName,
-        agent: context.agent,
-        forceProviderSelection: options.forceProviderSelection,
-        initial: {
-          model: context.model,
-          provider: context.provider,
-          endpointUrl: context.endpointUrl,
-          credentialEnv: context.credentialEnv,
-          hermesAuthMethod: context.hermesAuthMethod,
-          hermesToolGateways: context.hermesToolGateways,
-          preferredInferenceApi: context.preferredInferenceApi,
-          nimContainer: context.nimContainer,
-          webSearchConfig: context.webSearchConfig,
-        },
-        selectedMessagingChannels: context.selectedMessagingChannels,
-        env: options.env,
-        constants: options.constants,
-        deps: options.providerDeps,
-      });
-
-      return {
-        context: mergeProviderModelSelectedContext(context, {
-          session: providerInferenceResult.session,
-          sandboxName: providerInferenceResult.sandboxName,
-          model: providerInferenceResult.model,
-          provider: providerInferenceResult.provider,
-          endpointUrl: providerInferenceResult.endpointUrl,
-          credentialEnv: providerInferenceResult.credentialEnv,
-          hermesAuthMethod: providerInferenceResult.hermesAuthMethod,
-          hermesToolGateways: providerInferenceResult.hermesToolGateways,
-          preferredInferenceApi: providerInferenceResult.preferredInferenceApi,
-          nimContainer: providerInferenceResult.nimContainer,
-          webSearchConfig: providerInferenceResult.webSearchConfig,
-        }),
-        result: providerInferenceResult.stateResults,
-      };
-    },
-  };
-
-  const sandboxPhase: OnboardSequencePhase<Context> = {
-    state: "sandbox",
-    async run(context) {
-      assertProviderSelectedContext(context, "sandbox setup");
-      const sandboxStateResult = await handleSandboxState({
-        resume: context.resume,
-        fresh: context.fresh,
-        resumeAgentChanged: options.sandbox.resumeAgentChanged,
-        session: context.session,
-        sandboxName: context.sandboxName,
+  const providerInferencePhase = createProviderInferencePhase<Context>(async (context) => {
+    const providerInferenceResult = await handleProviderInferenceState({
+      resume: context.resume,
+      fresh: context.fresh,
+      session: context.session,
+      gpu: context.gpu,
+      sandboxName: context.sandboxName,
+      agent: context.agent,
+      forceProviderSelection: options.forceProviderSelection,
+      initial: {
         model: context.model,
         provider: context.provider,
+        endpointUrl: context.endpointUrl,
+        credentialEnv: context.credentialEnv,
+        hermesAuthMethod: context.hermesAuthMethod,
+        hermesToolGateways: context.hermesToolGateways,
+        preferredInferenceApi: context.preferredInferenceApi,
+        compatibleEndpointReasoning: context.compatibleEndpointReasoning,
         nimContainer: context.nimContainer,
         webSearchConfig: context.webSearchConfig,
-        selectedMessagingChannels: context.selectedMessagingChannels,
-        fromDockerfile: context.fromDockerfile,
-        agent: context.agent,
-        gpu: context.gpu,
-        preferredInferenceApi: context.preferredInferenceApi,
-        sandboxGpuConfig: context.sandboxGpuConfig,
-        hermesToolGateways: context.hermesToolGateways,
-        controlUiPort: options.sandbox.controlUiPort,
-        rootDir: options.sandbox.rootDir,
-        deps: options.sandboxDeps,
-      });
+      },
+      selectedMessagingChannels: context.selectedMessagingChannels,
+      env: options.env,
+      constants: options.constants,
+      deps: options.providerDeps,
+    });
 
-      return {
-        context: mergeSandboxCreatedContext(context, {
-          session: sandboxStateResult.session,
-          sandboxName: sandboxStateResult.sandboxName,
-          webSearchConfig: sandboxStateResult.webSearchConfig,
-          selectedMessagingChannels: sandboxStateResult.selectedMessagingChannels,
-          webSearchSupported: sandboxStateResult.webSearchSupported,
-        }),
-        result: sandboxStateResult.stateResult,
-      };
-    },
-  };
+    return {
+      context: mergeProviderModelSelectedContext(context, {
+        session: providerInferenceResult.session,
+        sandboxName: providerInferenceResult.sandboxName,
+        model: providerInferenceResult.model,
+        provider: providerInferenceResult.provider,
+        endpointUrl: providerInferenceResult.endpointUrl,
+        credentialEnv: providerInferenceResult.credentialEnv,
+        hermesAuthMethod: providerInferenceResult.hermesAuthMethod,
+        hermesToolGateways: providerInferenceResult.hermesToolGateways,
+        preferredInferenceApi: providerInferenceResult.preferredInferenceApi,
+        compatibleEndpointReasoning: providerInferenceResult.compatibleEndpointReasoning,
+        nimContainer: providerInferenceResult.nimContainer,
+        webSearchConfig: providerInferenceResult.webSearchConfig,
+      }),
+      result: providerInferenceResult.stateResults,
+    };
+  });
+
+  const sandboxPhase = createSandboxPhase<Context>(async (context) => {
+    const sandboxStateResult = await handleSandboxState({
+      resume: context.resume,
+      fresh: context.fresh,
+      resumeAgentChanged: options.sandbox.resumeAgentChanged,
+      session: context.session,
+      sandboxName: context.sandboxName,
+      model: context.model,
+      provider: context.provider,
+      nimContainer: context.nimContainer,
+      webSearchConfig: context.webSearchConfig,
+      selectedMessagingChannels: context.selectedMessagingChannels,
+      fromDockerfile: context.fromDockerfile,
+      agent: context.agent,
+      gpu: context.gpu,
+      preferredInferenceApi: context.preferredInferenceApi,
+      sandboxGpuConfig: context.sandboxGpuConfig,
+      hermesToolGateways: context.hermesToolGateways,
+      controlUiPort: options.sandbox.controlUiPort,
+      rootDir: options.sandbox.rootDir,
+      deps: options.sandboxDeps,
+    });
+
+    return {
+      context: mergeSandboxCreatedContext(context, {
+        session: sandboxStateResult.session,
+        sandboxName: sandboxStateResult.sandboxName,
+        webSearchConfig: sandboxStateResult.webSearchConfig,
+        selectedMessagingChannels: sandboxStateResult.selectedMessagingChannels,
+        webSearchSupported: sandboxStateResult.webSearchSupported,
+      }),
+      result: sandboxStateResult.stateResult,
+    };
+  });
 
   return [providerInferencePhase, sandboxPhase];
 }
@@ -147,32 +143,36 @@ export async function runCoreOnboardFlowSlice<Context extends OnboardFlowContext
   resume: boolean;
   recordStateResult(result: OnboardStateResult): Promise<unknown>;
 }): Promise<OnboardMachineRunnerResult<Context>> {
-  // Compatibility bridge for live resume repair while legacy step helpers and
-  // OnboardRuntimeBoundary compatibility replay can leave the durable machine
-  // snapshot already downstream of this slice. The tolerated downstream family
-  // includes sandbox branch states and the final slice handoff states: openclaw,
-  // agent_setup, policies, finalizing, and post_verify. Resume still needs to
-  // re-run provider and sandbox repair/backstop checks before policy or final
-  // verification handling observes the session. This PR does not fix the
-  // broader persistence contract because those repairs are not strict FSM states
-  // yet. Remove this fallback once resume repairs are strict FSM states, or once
-  // direct legacy step helpers no longer write session.machine.
+  // Compatibility bridge for live resume repair when durable machine snapshots
+  // are already downstream of this slice even though provider/sandbox
+  // repair/backstop checks must still re-run. Those ahead-state snapshots can
+  // come from legacy/test step mutation that explicitly opts into
+  // `updateMachine === true` or from repaired-resume replay of persisted
+  // sessions. This slice cannot eliminate that source locally because the
+  // repair/backstop checks are still modeled as imperative resume work rather
+  // than strict FSM recovery states. The tolerated downstream family includes
+  // sandbox branch states and the final slice handoff states: openclaw,
+  // agent_setup, policies, finalizing, and post_verify. Phase tests cover
+  // ahead-state resume and terminal-state rejection; remove this fallback once
+  // those checks are strict FSM recovery states and legacy machine step mutation
+  // is gone.
   return runLiveOnboardFlowSlice({
     context: options.context,
     runtime: options.runtime,
     phases: options.phases,
-    resume: options.resume,
     runWhenState: ["provider_selection"],
-    compatibilityWhenState: [
-      "provider_selection",
-      "inference",
-      "sandbox",
-      "openclaw",
-      "agent_setup",
-      "policies",
-      "finalizing",
-      "post_verify",
-    ],
+    compatibilityWhenState: options.resume
+      ? [
+          "provider_selection",
+          "inference",
+          "sandbox",
+          "openclaw",
+          "agent_setup",
+          "policies",
+          "finalizing",
+          "post_verify",
+        ]
+      : ["inference", "sandbox", "openclaw", "agent_setup"],
     runSlice: runCoreOnboardFlowSequence,
     applyCompatibleResult: options.recordStateResult,
   });
