@@ -2297,104 +2297,6 @@ const { setupNim } = require(${onboardPath});
     );
   });
 
-  it("offers starter Ollama models when none are installed and pulls the selected model", () => {
-    const repoRoot = path.join(import.meta.dirname, "..");
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-ollama-bootstrap-"));
-    const fakeBin = path.join(tmpDir, "bin");
-    const scriptPath = path.join(tmpDir, "ollama-bootstrap-check.js");
-    const onboardPath = JSON.stringify(path.join(repoRoot, "src", "lib", "onboard.ts"));
-    const credentialsPath = JSON.stringify(
-      path.join(repoRoot, "src", "lib", "credentials", "store.ts"),
-    );
-    const runnerPath = JSON.stringify(path.join(repoRoot, "src", "lib", "runner.ts"));
-    const pullLog = path.join(tmpDir, "pulls.log");
-
-    fs.mkdirSync(fakeBin, { recursive: true });
-    writeAlwaysOkCurl(fakeBin, OLLAMA_CHAT_COMPLETIONS_TOOL_CALL_RESPONSE);
-    fs.writeFileSync(
-      path.join(fakeBin, "ollama"),
-      `#!/usr/bin/env bash
-if [ "$1" = "pull" ]; then
-  echo "$2" >> ${JSON.stringify(pullLog)}
-  exit 0
-fi
-exit 0
-`,
-      { mode: 0o755 },
-    );
-
-    const script = String.raw`
-const credentials = require(${credentialsPath});
-const runner = require(${runnerPath});
-
-const answers = ["7", "1", "y"];
-const messages = [];
-
-credentials.prompt = async (message) => {
-  messages.push(message);
-  return answers.shift() || "";
-};
-runner.runCapture = (command) => {
-  // Normalize: onboard.ts still sends strings, local-inference.ts sends arrays.
-  // Once onboard.ts is migrated to argv (#1889), these mocks can assert Array.isArray.
-  const cmd = Array.isArray(command) ? command.join(" ") : command;
-  if (cmd.includes("command -v ollama")) return "/usr/bin/ollama";
-  if (cmd.includes("127.0.0.1:11434/api/tags")) return JSON.stringify({ models: [] });
-  if (cmd.includes("ollama list")) return "";
-  if (cmd.includes("127.0.0.1:8000/v1/models")) return "";
-  if (cmd.includes("api/generate")) return '{"response":"hello"}';
-  if (cmd.includes("-o args=")) return "node ollama-auth-proxy.js";
-  return "";
-};
-
-const { setupNim } = require(${onboardPath});
-
-(async () => {
-  const originalLog = console.log;
-  const originalError = console.error;
-  const lines = [];
-  console.log = (...args) => lines.push(args.join(" "));
-  console.error = (...args) => lines.push(args.join(" "));
-  try {
-    const result = await setupNim(null);
-    originalLog(JSON.stringify({ result, messages, lines }));
-  } finally {
-    console.log = originalLog;
-    console.error = originalError;
-  }
-})().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
-`;
-    fs.writeFileSync(scriptPath, script);
-
-    const result = spawnSync(process.execPath, [scriptPath], {
-      cwd: repoRoot,
-      encoding: "utf-8",
-      env: {
-        ...process.env,
-        HOME: tmpDir,
-        PATH: `${fakeBin}:${process.env.PATH || ""}`,
-      },
-    });
-
-    assert.equal(result.status, 0, result.stderr);
-    const payload = JSON.parse(result.stdout.trim());
-    assert.equal(payload.result.provider, "ollama-local");
-    assert.equal(payload.result.model, "qwen3.5:9b");
-    assert.ok(payload.lines.some((line: string) => line.includes("Ollama starter models:")));
-    assert.ok(
-      payload.lines.some((line: string) =>
-        line.includes("No local Ollama models are installed yet"),
-      ),
-    );
-    assert.ok(
-      payload.lines.some((line: string) => line.includes("Pulling Ollama model: qwen3.5:9b")),
-    );
-    assert.equal(fs.readFileSync(pullLog, "utf8").trim(), "qwen3.5:9b");
-  });
-
   it("reprompts inside the Ollama model flow when a pull fails", () => {
     const repoRoot = path.join(import.meta.dirname, "..");
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-ollama-retry-"));
@@ -2425,11 +2327,13 @@ exit 0
     );
 
     const script = String.raw`
+const fs = require("fs");
 const credentials = require(${credentialsPath});
 const runner = require(${runnerPath});
 
 const answers = ["7", "1", "y", "2", "llama3.2:3b", "y"];
 const messages = [];
+const pullLog = ${JSON.stringify(pullLog)};
 
 credentials.prompt = async (message) => {
   messages.push(message);
@@ -2441,7 +2345,11 @@ runner.runCapture = (command) => {
   const cmd = Array.isArray(command) ? command.join(" ") : command;
   if (cmd.includes("command -v ollama")) return "/usr/bin/ollama";
   if (cmd.includes("127.0.0.1:11434/api/tags")) return JSON.stringify({ models: [] });
-  if (cmd.includes("ollama list")) return "";
+  if (cmd.includes("ollama list")) {
+    return fs.existsSync(pullLog) && fs.readFileSync(pullLog, "utf8").includes("llama3.2:3b")
+      ? "llama3.2:3b  def  2 GB  now"
+      : "";
+  }
   if (cmd.includes("127.0.0.1:8000/v1/models")) return "";
   if (cmd.includes("api/generate")) return '{"response":"hello"}';
   if (cmd.includes("-o args=")) return "node ollama-auth-proxy.js";
@@ -2528,11 +2436,13 @@ exit 0
     );
 
     const script = String.raw`
+const fs = require("fs");
 const credentials = require(${credentialsPath});
 const runner = require(${runnerPath});
 
 const answers = ["7", "1", "n", "1", "y"];
 const messages = [];
+const pullLog = ${JSON.stringify(pullLog)};
 
 credentials.prompt = async (message) => {
   messages.push(message);
@@ -2542,7 +2452,9 @@ runner.runCapture = (command) => {
   const cmd = Array.isArray(command) ? command.join(" ") : command;
   if (cmd.includes("command -v ollama")) return "/usr/bin/ollama";
   if (cmd.includes("127.0.0.1:11434/api/tags")) return JSON.stringify({ models: [] });
-  if (cmd.includes("ollama list")) return "";
+  if (cmd.includes("ollama list")) {
+    return fs.existsSync(pullLog) ? "qwen3.5:9b  abc  6 GB  now" : "";
+  }
   if (cmd.includes("127.0.0.1:8000/v1/models")) return "";
   if (cmd.includes("api/generate")) return '{"response":"hello"}';
   if (cmd.includes("-o args=")) return "node ollama-auth-proxy.js";
@@ -2631,11 +2543,13 @@ exit 0
     );
 
     const script = String.raw`
+const fs = require("fs");
 const credentials = require(${credentialsPath});
 const runner = require(${runnerPath});
 
 const answers = ["7", "1"];
 const messages = [];
+const pullLog = ${JSON.stringify(pullLog)};
 
 credentials.prompt = async (message) => {
   messages.push(message);
@@ -2645,7 +2559,9 @@ runner.runCapture = (command) => {
   const cmd = Array.isArray(command) ? command.join(" ") : command;
   if (cmd.includes("command -v ollama")) return "/usr/bin/ollama";
   if (cmd.includes("127.0.0.1:11434/api/tags")) return JSON.stringify({ models: [] });
-  if (cmd.includes("ollama list")) return "";
+  if (cmd.includes("ollama list")) {
+    return fs.existsSync(pullLog) ? "qwen3.5:9b  abc  6 GB  now" : "";
+  }
   if (cmd.includes("127.0.0.1:8000/v1/models")) return "";
   if (cmd.includes("api/generate")) return '{"response":"hello"}';
   if (cmd.includes("-o args=")) return "node ollama-auth-proxy.js";

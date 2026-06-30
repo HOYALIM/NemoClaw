@@ -11,7 +11,7 @@ const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 const { ROOT, SCRIPTS, redact, run, runCapture, shellQuote } = require("../../runner");
 const { OLLAMA_PORT, OLLAMA_PROXY_PORT } = require("../../core/ports");
-const { waitForPort } = require("../../core/wait");
+const { sleepMs, waitForPort } = require("../../core/wait");
 const {
   getDefaultOllamaModel,
   getBootstrapOllamaModelOptions,
@@ -763,6 +763,27 @@ async function pullOllamaModel(model) {
   return pullOllamaModelViaCli(model);
 }
 
+const PULLED_MODEL_LIST_ATTEMPTS = 8;
+const PULLED_MODEL_LIST_INITIAL_DELAY_MS = 250;
+const PULLED_MODEL_LIST_MAX_DELAY_MS = 2_000;
+
+/**
+ * Confirms that Ollama exposes a just-pulled model before onboarding continues.
+ */
+function waitForPulledOllamaModel(model): boolean {
+  let delayMs = PULLED_MODEL_LIST_INITIAL_DELAY_MS;
+  for (let attempt = 0; attempt < PULLED_MODEL_LIST_ATTEMPTS; attempt++) {
+    if (getOllamaModelOptions().includes(model)) return true;
+    if (attempt < PULLED_MODEL_LIST_ATTEMPTS - 1) {
+      if (process.env.VITEST !== "true" && process.env.NEMOCLAW_TEST_NO_SLEEP !== "1") {
+        sleepMs(delayMs);
+      }
+      delayMs = Math.min(PULLED_MODEL_LIST_MAX_DELAY_MS, delayMs * 2);
+    }
+  }
+  return false;
+}
+
 // ── Tools-capability gate (issue #2667) ─────────────────────────
 //
 // Ollama models without the "tools" capability fail at first agent prompt
@@ -857,6 +878,9 @@ async function checkOllamaModelToolSupport(
   return { ok: true, allowToolsIncompatible: true };
 }
 
+/**
+ * Pulls, validates, and warms the selected Ollama model for onboarding.
+ */
 async function prepareOllamaModel(
   model,
   installedModels: string[] = [],
@@ -876,6 +900,14 @@ async function prepareOllamaModel(
         message:
           `Failed to pull Ollama model '${model}'. ` +
           "Check the model name and that Ollama can access the registry, then try another model.",
+      };
+    }
+    if (!waitForPulledOllamaModel(model)) {
+      return {
+        ok: false,
+        message:
+          `Ollama pull for '${model}' completed, but Ollama did not list the model afterward. ` +
+          "Wait for Ollama to finish registering the model, then choose it again.",
       };
     }
   }
