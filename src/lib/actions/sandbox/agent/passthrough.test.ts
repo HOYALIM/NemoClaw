@@ -7,7 +7,16 @@ const execMock = vi.hoisted(() => vi.fn(async () => {}));
 const ensureLiveMock = vi.hoisted(() =>
   vi.fn(async () => ({ state: "present", output: "Phase: Ready" }) as { output?: string }),
 );
-const getSandboxMock = vi.hoisted(() => vi.fn(() => null as { agent?: string | null } | null));
+const getSandboxMock = vi.hoisted(() =>
+  vi.fn(
+    () =>
+      null as {
+        agent?: string | null;
+        provider?: string | null;
+        model?: string | null;
+      } | null,
+  ),
+);
 const listAgentsMock = vi.hoisted(() =>
   vi.fn(() => ["custom-terminal", "hermes", "langchain-deepagents-code", "openclaw"]),
 );
@@ -109,6 +118,98 @@ describe("runAgentPassthrough", () => {
       "alpha",
       ["openclaw", "agent", "--agent", "work", "--session-id", "s-1", "-m", "ping", "--json"],
       expect.objectContaining({ stderr: proc.stderr }),
+    );
+  });
+
+  it("checks Ollama model readiness before OpenClaw JSON dispatch", async () => {
+    const execJson = vi.fn(() => {
+      throw new Error("__exit:0");
+    });
+    const maybeWarmOllamaAfterDaemonRestart = vi.fn(() => ({
+      kind: "skipped" as const,
+      reason: "already-loaded" as const,
+    }));
+    getSandboxMock.mockReturnValueOnce({
+      agent: "openclaw",
+      provider: "ollama-local",
+      model: "qwen3.6:35b",
+    });
+    const { proc } = makeProcMock();
+
+    await expect(
+      runAgentPassthrough(
+        "alpha",
+        {
+          extraArgs: ["--agent", "work", "--session-id", "s-1", "-m", "ping", "--json"],
+        },
+        { execJson, maybeWarmOllamaAfterDaemonRestart, process: proc },
+      ),
+    ).rejects.toThrow("__exit:0");
+
+    expect(maybeWarmOllamaAfterDaemonRestart).toHaveBeenCalledWith({
+      provider: "ollama-local",
+      model: "qwen3.6:35b",
+    });
+    expect(maybeWarmOllamaAfterDaemonRestart.mock.invocationCallOrder[0]).toBeLessThan(
+      execJson.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("reports failed Ollama restart warm-up before OpenClaw dispatch", async () => {
+    const execJson = vi.fn(() => {
+      throw new Error("__exit:0");
+    });
+    const maybeWarmOllamaAfterDaemonRestart = vi.fn(() => ({
+      kind: "warmed" as const,
+      ok: false,
+      timedOut: true,
+    }));
+    getSandboxMock.mockReturnValueOnce({
+      agent: "openclaw",
+      provider: "ollama-local",
+      model: "qwen3.6:35b",
+    });
+    const { writes, proc } = makeProcMock();
+
+    await expect(
+      runAgentPassthrough(
+        "alpha",
+        {
+          extraArgs: ["--agent", "work", "--session-id", "s-1", "-m", "ping", "--json"],
+        },
+        { execJson, maybeWarmOllamaAfterDaemonRestart, process: proc },
+      ),
+    ).rejects.toThrow("__exit:0");
+
+    const stderr = writes.join("");
+    expect(stderr).toContain("Checking Ollama model readiness after daemon restart");
+    expect(stderr).toContain(
+      "Ollama warm-up after restart did not complete cleanly for 'qwen3.6:35b'",
+    );
+    expect(maybeWarmOllamaAfterDaemonRestart.mock.invocationCallOrder[0]).toBeLessThan(
+      execJson.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("does not run Ollama restart recovery for non-Ollama registered routes", async () => {
+    const maybeWarmOllamaAfterDaemonRestart = vi.fn();
+    getSandboxMock.mockReturnValueOnce({
+      agent: "openclaw",
+      provider: "vllm-local",
+      model: "meta/llama",
+    });
+
+    await runAgentPassthrough(
+      "alpha",
+      { extraArgs: ["--agent", "work", "--session-id", "s-1", "-m", "ping"] },
+      { maybeWarmOllamaAfterDaemonRestart },
+    );
+
+    expect(maybeWarmOllamaAfterDaemonRestart).not.toHaveBeenCalled();
+    expect(execMock).toHaveBeenCalledWith(
+      "alpha",
+      ["openclaw", "agent", "--agent", "work", "--session-id", "s-1", "-m", "ping"],
+      { tty: false },
     );
   });
 

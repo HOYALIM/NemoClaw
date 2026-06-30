@@ -1098,6 +1098,8 @@ For local Ollama and local vLLM, `$$nemoclaw <name> status` also prints an `Infe
 If that line shows `unreachable`, start the local backend first and then retry the request.
 For Local Ollama, current releases also print `Inference (auth proxy)` when a proxy token is available.
 If the backend is healthy but the auth proxy is `unauthorized` or `unreachable`, re-run onboarding so NemoClaw can recreate the proxy token, restart the proxy, and refresh the route.
+For Ollama-backed OpenClaw sandboxes, NemoClaw warms the registered model on the first agent passthrough after an Ollama daemon restart when the daemon is reachable but the model is unloaded.
+If the command still times out, confirm that the Ollama daemon is reachable and that the selected model can load with `ollama run <model>`.
 
 If the endpoint is correct but requests still fail, check for network policy rules that may block the connection.
 Then verify the credential and base URL for the provider you selected during onboarding.

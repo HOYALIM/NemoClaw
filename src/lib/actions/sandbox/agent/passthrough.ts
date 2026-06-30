@@ -99,6 +99,11 @@ import { parseSandboxPhase } from "../../../state/gateway";
 import * as registry from "../../../state/registry";
 import { execSandbox } from "../exec";
 import { ensureLiveSandboxOrExit } from "../gateway-state";
+import {
+  maybeWarmOllamaAfterDaemonRestart,
+  type OllamaRestartRecoveryResult,
+  type OllamaRestartRecoveryRoute,
+} from "./ollama-restart-recovery";
 import { hasAgentPassthroughHelpToken, printAgentPassthroughHelp } from "./passthrough-help";
 import { type AgentJsonPassthroughProcess, runAgentJsonPassthrough } from "./passthrough-json";
 import { maybeEmitShieldsRelockWarning } from "./passthrough-shields-warning";
@@ -134,6 +139,9 @@ export interface AgentPassthroughDeps {
   ensureLive?: typeof ensureLiveSandboxOrExit;
   exec?: typeof execSandbox;
   execJson?: typeof runAgentJsonPassthrough;
+  maybeWarmOllamaAfterDaemonRestart?: (
+    route: OllamaRestartRecoveryRoute,
+  ) => OllamaRestartRecoveryResult | undefined;
   getRecentShieldsAutoRestore?: (sandboxName: string) => ShieldsAutoRestoreReadResult;
   process?: {
     exit(code: number): never;
@@ -144,13 +152,16 @@ export interface AgentPassthroughDeps {
 
 type RegistryReadResult =
   | { kind: "missing" }
-  | { kind: "agent"; agent: string | null }
+  | { kind: "agent"; agent: string | null; provider: string | null; model: string | null }
   | { kind: "error"; message: string };
 type ResolvedRegistryReadResult = Exclude<RegistryReadResult, { kind: "error" }>;
 type TerminalCommandResult =
   | { kind: "command"; argv: string[] }
   | { kind: "unsupported"; message: string };
 
+/**
+ * Reads registered agent and inference route metadata for a sandbox.
+ */
 function readSandboxAgentFromRegistry(
   sandboxName: string,
   getSandbox: typeof registry.getSandbox = registry.getSandbox,
@@ -158,12 +169,31 @@ function readSandboxAgentFromRegistry(
   try {
     const sandbox = getSandbox(sandboxName);
     if (!sandbox) return { kind: "missing" };
-    return { kind: "agent", agent: sandbox.agent ?? null };
+    return {
+      kind: "agent",
+      agent: sandbox.agent ?? null,
+      provider: sandbox.provider ?? null,
+      model: sandbox.model ?? null,
+    };
   } catch (error) {
     return { kind: "error", message: (error as Error).message ?? String(error) };
   }
 }
 
+/**
+ * Builds an Ollama restart-recovery route from registry metadata when applicable.
+ */
+function getOllamaRestartRecoveryRoute(
+  lookup: ResolvedRegistryReadResult,
+): OllamaRestartRecoveryRoute | null {
+  if (lookup.kind !== "agent") return null;
+  if (lookup.provider !== "ollama-local") return null;
+  return { provider: lookup.provider, model: lookup.model };
+}
+
+/**
+ * Rejects registered agents that cannot use the OpenClaw passthrough path.
+ */
 function rejectNonOpenclawAgent(
   sandboxName: string,
   agent: string,
@@ -379,6 +409,9 @@ function rejectUnparseablePhase(
   return proc.exit(2);
 }
 
+/**
+ * Rejects passthrough dispatch when sandbox state is not ready for an agent.
+ */
 function rejectNotReadyForAgent(
   sandboxName: string,
   phase: string,
@@ -400,6 +433,9 @@ function rejectNotReadyForAgent(
   return proc.exit(1);
 }
 
+/**
+ * Dispatches agent passthrough commands after validating sandbox and agent state.
+ */
 export async function runAgentPassthrough(
   sandboxName: string,
   { extraArgs = [] }: AgentPassthroughOptions = {},
@@ -425,6 +461,18 @@ export async function runAgentPassthrough(
     rejectNoTargetSelector(proc);
   }
   if (isOpenClawPassthroughCommand(command)) {
+    const route = getOllamaRestartRecoveryRoute(lookup);
+    if (route) {
+      const recoverOllama =
+        deps.maybeWarmOllamaAfterDaemonRestart ?? maybeWarmOllamaAfterDaemonRestart;
+      proc.stderr.write("Checking Ollama model readiness after daemon restart...\n");
+      const recovery = recoverOllama(route);
+      if (recovery?.kind === "warmed" && (!recovery.ok || recovery.timedOut)) {
+        proc.stderr.write(
+          `Ollama warm-up after restart did not complete cleanly for '${route.model}'; continuing to OpenClaw dispatch.\n`,
+        );
+      }
+    }
     maybeEmitShieldsRelockWarning(proc, sandboxName, deps.getRecentShieldsAutoRestore);
   }
   if (isOpenClawPassthroughCommand(command) && requestsOpenClawJsonOutput(extraArgs)) {
