@@ -3780,7 +3780,7 @@ async function handleRemoteProviderSelection(
       (recoveredFromSandbox && recoveredModel) ||
       (isNonInteractive()
         ? DEFAULT_CLOUD_MODEL
-        : await promptCloudModel({ defaultModelId: _envModel || undefined })) ||
+        : await promptCloudModel(providerModels.getNvidiaFeaturedModelPromptOptions(_envModel))) ||
       DEFAULT_CLOUD_MODEL;
     if (isBackToSelection(state.model)) {
       console.log("  Returning to provider selection.");

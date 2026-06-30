@@ -6,14 +6,112 @@ import { describe, expect, it } from "vitest";
 import {
   BUILD_ENDPOINT_URL,
   fetchAnthropicModels,
+  fetchNvidiaFeaturedModels,
   fetchNvidiaEndpointModels,
   fetchOpenAiLikeModels,
+  getNvidiaFeaturedModelPromptOptions,
+  getNvidiaFeaturedModelOptions,
+  NVIDIA_FEATURED_MODELS_URL,
+  parseNvidiaFeaturedModels,
   validateAnthropicModel,
   validateNvidiaEndpointModel,
   validateOpenAiLikeModel,
 } from "./provider-models";
 
 describe("provider model helpers", () => {
+  it("parses NVIDIA featured models from the build catalog snapshot shape", () => {
+    expect(
+      parseNvidiaFeaturedModels(
+        JSON.stringify({
+          "featured-models": [
+            {
+              model: "nvidia/nemotron-3-ultra-550b-a55b",
+              "model-name": "Nemotron 3 Ultra 550B",
+            },
+            {
+              model: "nemotron-3-super-120b-a12b",
+              "model-name": "Nemotron 3 Super 120B",
+            },
+            { model: "z-ai/glm-5.1", "model-name": "GLM 5.1" },
+            { model: "minimaxai/minimax-m2.7", "model-name": "Minimax M2.7" },
+          ],
+        }),
+      ),
+    ).toEqual([
+      { id: "nvidia/nemotron-3-ultra-550b-a55b", label: "Nemotron 3 Ultra 550B" },
+      { id: "nvidia/nemotron-3-super-120b-a12b", label: "Nemotron 3 Super 120B" },
+      { id: "z-ai/glm-5.1", label: "GLM 5.1" },
+      { id: "minimaxai/minimax-m3", label: "Minimax M3" },
+    ]);
+  });
+
+  it("fetches NVIDIA featured models without requiring an API key", () => {
+    const result = fetchNvidiaFeaturedModels({
+      runCurlProbeImpl: (argv) => {
+        expect(argv.at(-1)).toBe(NVIDIA_FEATURED_MODELS_URL);
+        expect(argv.join(" ")).not.toContain("Authorization: Bearer");
+        return {
+          ok: true,
+          httpStatus: 200,
+          curlStatus: 0,
+          body: JSON.stringify({
+            "featured-models": [{ model: "moonshotai/kimi-k2.6", "model-name": "Kimi K2.6" }],
+          }),
+          stderr: "",
+          message: "",
+        };
+      },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      models: [{ id: "moonshotai/kimi-k2.6", label: "Kimi K2.6" }],
+    });
+  });
+
+  it("falls back to the curated NVIDIA featured model snapshot when the catalog is unavailable", () => {
+    const models = getNvidiaFeaturedModelOptions({
+      runCurlProbeImpl: () => ({
+        ok: false,
+        httpStatus: 503,
+        curlStatus: 0,
+        body: "",
+        stderr: "",
+        message: "HTTP 503",
+      }),
+    });
+
+    expect(models.map((model) => model.id)).toEqual([
+      "nvidia/nemotron-3-ultra-550b-a55b",
+      "nvidia/nemotron-3-super-120b-a12b",
+      "z-ai/glm-5.1",
+      "moonshotai/kimi-k2.6",
+      "minimaxai/minimax-m3",
+    ]);
+  });
+
+  it("builds NVIDIA featured model prompt options with the configured default model", () => {
+    const options = getNvidiaFeaturedModelPromptOptions(null, {
+      runCurlProbeImpl: () => ({
+        ok: true,
+        httpStatus: 200,
+        curlStatus: 0,
+        body: JSON.stringify({
+          "featured-models": [
+            { model: "nvidia/nemotron-3-ultra-550b-a55b", "model-name": "Nemotron Ultra" },
+          ],
+        }),
+        stderr: "",
+        message: "",
+      }),
+    });
+
+    expect(options).toEqual({
+      defaultModelId: "nvidia/nemotron-3-super-120b-a12b",
+      cloudModelOptions: [{ id: "nvidia/nemotron-3-ultra-550b-a55b", label: "Nemotron Ultra" }],
+    });
+  });
+
   it("fetches NVIDIA endpoint model ids", () => {
     const result = fetchNvidiaEndpointModels("nvapi-x", {
       runCurlProbeImpl: (argv) => {

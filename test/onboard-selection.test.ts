@@ -425,7 +425,7 @@ const { setupNim } = require(${onboardPath});
     assert.equal(payload.result.preferredInferenceApi, "openai-completions");
     assert.equal(payload.promptCalls, 2);
     assert.match(payload.messages[0], /Choose \[/);
-    assert.match(payload.messages[1], /Choose model \[1\]/);
+    assert.match(payload.messages[1], /Choose model \[2\]/);
     assert.ok(
       payload.lines.some((line: string) => line.includes("Detected local inference option")),
     );
@@ -508,14 +508,12 @@ const { setupNim } = require(${onboardPath});
     );
   });
 
-  it("selects DeepSeek V4 Pro from the NVIDIA Endpoints model list", () => {
+  it("selects GLM 5.1 from the NVIDIA Endpoints featured model list", () => {
     const repoRoot = path.join(import.meta.dirname, "..");
-    const tmpDir = fs.mkdtempSync(
-      path.join(os.tmpdir(), "nemoclaw-onboard-build-deepseek-selection-"),
-    );
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-build-glm-selection-"));
     const fakeBin = path.join(tmpDir, "bin");
-    const scriptPath = path.join(tmpDir, "build-deepseek-selection-check.js");
-    const curlArgsLog = path.join(tmpDir, "deepseek-curl-args.log");
+    const scriptPath = path.join(tmpDir, "build-glm-selection-check.js");
+    const curlArgsLog = path.join(tmpDir, "glm-curl-args.log");
     const onboardPath = JSON.stringify(path.join(repoRoot, "src", "lib", "onboard.ts"));
     const credentialsPath = JSON.stringify(
       path.join(repoRoot, "src", "lib", "credentials", "store.ts"),
@@ -553,7 +551,7 @@ printf '%s' "$status"
 const credentials = require(${credentialsPath});
 const runner = require(${runnerPath});
 
-const answers = ["1", "8"];
+const answers = ["1", "3"];
 const messages = [];
 
 credentials.prompt = async (message) => {
@@ -604,16 +602,15 @@ const { setupNim } = require(${onboardPath});
     assert.equal(result.status, 0, result.stderr);
     const payload = JSON.parse(result.stdout.trim());
     assert.equal(payload.result.provider, "nvidia-prod");
-    assert.equal(payload.result.model, "deepseek-ai/deepseek-v4-pro");
+    assert.equal(payload.result.model, "z-ai/glm-5.1");
     assert.equal(payload.result.preferredInferenceApi, "openai-completions");
-    assert.match(payload.messages[1], /Choose model \[1\]/);
-    assert.ok(payload.lines.some((line: string) => line.includes("DeepSeek V4 Pro")));
+    assert.match(payload.messages[1], /Choose model \[2\]/);
+    assert.ok(payload.lines.some((line: string) => line.includes("GLM 5.1")));
     assert.ok(
       payload.lines.some((line: string) => line.includes("Chat Completions API available")),
     );
     const curlInvocations = fs.readFileSync(curlArgsLog, "utf-8");
     assert.match(curlInvocations, /chat\/completions/);
-    assert.match(curlInvocations, /(^|\s)-N(\s|$)/);
   });
 
   it("accepts a manually entered NVIDIA Endpoints model after validating it against /models", () => {
@@ -656,7 +653,7 @@ printf '%s' "$status"
 const credentials = require(${credentialsPath});
 const runner = require(${runnerPath});
 
-const answers = ["1", "9", "custom/provider-model"];
+const answers = ["1", "6", "custom/provider-model"];
 const messages = [];
 
 credentials.prompt = async (message) => {
@@ -711,7 +708,7 @@ const { setupNim } = require(${onboardPath});
     assert.equal(payload.result.provider, "nvidia-prod");
     assert.equal(payload.result.model, "custom/provider-model");
     assert.equal(payload.result.preferredInferenceApi, "openai-completions");
-    assert.match(payload.messages[1], /Choose model \[1\]/);
+    assert.match(payload.messages[1], /Choose model \[2\]/);
     assert.match(payload.messages[2], /NVIDIA Endpoints model id:/);
     assert.ok(payload.lines.some((line: string) => line.includes("Other...")));
   });
@@ -754,7 +751,7 @@ printf '%s' "$status"
 const credentials = require(${credentialsPath});
 const runner = require(${runnerPath});
 
-const answers = ["1", "9", "bad/model", "z-ai/glm-5.1"];
+const answers = ["1", "6", "bad/model", "z-ai/glm-5.1"];
 const messages = [];
 
 credentials.prompt = async (message) => {
@@ -4232,7 +4229,7 @@ const { setupNim } = require(${onboardPath});
     );
     assert.equal(payload.messages.filter((message: string) => /Choose \[/.test(message)).length, 1);
     assert.equal(
-      payload.messages.filter((message: string) => /Choose model \[1\]/.test(message)).length,
+      payload.messages.filter((message: string) => /Choose model \[2\]/.test(message)).length,
       1,
     );
     assert.ok(payload.messages.some((message: string) => CREDENTIAL_RETRY_PROMPT_RE.test(message)));
@@ -4321,7 +4318,7 @@ const { setupNim } = require(${onboardPath});
     );
     assert.equal(payload.messages.filter((message: string) => /Choose \[/.test(message)).length, 1);
     assert.equal(
-      payload.messages.filter((message: string) => /Choose model \[1\]/.test(message)).length,
+      payload.messages.filter((message: string) => /Choose model \[2\]/.test(message)).length,
       1,
     );
   });
