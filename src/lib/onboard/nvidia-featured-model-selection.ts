@@ -4,7 +4,7 @@
 import { DEFAULT_CLOUD_MODEL } from "../inference/config";
 import type { ModelPromptResult } from "../inference/model-prompts";
 import { promptCloudModel } from "../inference/model-prompts";
-import { createNvidiaFeaturedModelPromptOptionsLoader } from "../inference/provider-models";
+import { createNvidiaFeaturedModelPromptOptionsLoader } from "../inference/nvidia-featured-models";
 
 export type NvidiaFeaturedModelSession = {
   select: (
@@ -30,7 +30,7 @@ export function createNvidiaFeaturedModelSession(
         writeLine("  Loading NVIDIA's featured model catalog...");
         announcedLoad = true;
       }
-      return (await promptCloudModel(loadPromptOptions(envModel?.trim()))) || DEFAULT_CLOUD_MODEL;
+      return promptCloudModel(loadPromptOptions(envModel?.trim()));
     },
   };
 }
