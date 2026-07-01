@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { CLOUD_MODEL_OPTIONS, DEFAULT_CLOUD_MODEL } from "./config";
 import type { CurlProbeResult } from "../adapters/http/probe";
 import { getCurlTimingArgs, runCurlProbe } from "../adapters/http/probe";
 import type { ModelCatalogFetchResult, ModelValidationResult } from "../onboard/types";
 import { isSafeModelId } from "../validation";
+import { CLOUD_MODEL_OPTIONS, DEFAULT_CLOUD_MODEL } from "./config";
 
 // credentials.ts still uses CommonJS-style exports.
 const { normalizeCredentialValue } = require("../credentials/store");
@@ -13,6 +13,13 @@ const { normalizeCredentialValue } = require("../credentials/store");
 export const BUILD_ENDPOINT_URL = "https://integrate.api.nvidia.com/v1";
 export const NVIDIA_FEATURED_MODELS_URL =
   "https://assets.ngc.nvidia.com/products/api-catalog/featured-models.json";
+const RETIRED_NVIDIA_FEATURED_MODEL_IDS = new Set(["z-ai/glm-5.1"]);
+const MAX_NVIDIA_FEATURED_CATALOG_BYTES = 1024 * 1024;
+const MAX_NVIDIA_FEATURED_MODELS = 100;
+const MAX_NVIDIA_FEATURED_MODEL_ID_LENGTH = 256;
+const MAX_NVIDIA_FEATURED_MODEL_LABEL_LENGTH = 160;
+const ANSI_ESCAPE_RE = /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)|[@-_])/g;
+const UNSAFE_TERMINAL_TEXT_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu;
 
 export interface ProviderModelOptions {
   runCurlProbeImpl?: (argv: string[]) => CurlProbeResult;
@@ -22,6 +29,7 @@ export interface ProviderModelOptions {
    *  an Authorization: Bearer header. Required for Google Gemini which rejects
    *  requests carrying both auth methods. See issue #1960. */
   authMode?: "bearer" | "query-param";
+  warn?: (message: string) => void;
 }
 
 type ModelCatalogItem = {
@@ -102,37 +110,63 @@ function normalizeFeaturedModelId(model: string): string {
   return trimmed;
 }
 
+function sanitizeFeaturedCatalogText(value: string, maxLength: number): string {
+  return value
+    .replace(ANSI_ESCAPE_RE, "")
+    .replace(UNSAFE_TERMINAL_TEXT_RE, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+}
+
 /**
  * Normalizes NVIDIA featured-model labels for known catalog lag cases.
  */
 function normalizeFeaturedModelLabel(id: string, label: string): string {
-  const trimmed = label.trim();
-  if (id === "minimaxai/minimax-m3" && /^minimax m2\.7$/i.test(trimmed)) {
+  const sanitized = sanitizeFeaturedCatalogText(label, MAX_NVIDIA_FEATURED_MODEL_LABEL_LENGTH);
+  if (id === "minimaxai/minimax-m3" && /^minimax m2\.7$/i.test(sanitized)) {
     return "Minimax M3";
   }
-  return trimmed;
+  return sanitized;
 }
 
 /**
  * Parses NVIDIA's featured-models catalog into safe onboarding menu options.
  */
 export function parseNvidiaFeaturedModels(body: string): FeaturedModelOption[] {
+  if (Buffer.byteLength(body, "utf8") > MAX_NVIDIA_FEATURED_CATALOG_BYTES) {
+    throw new Error("Unexpected featured model catalog response: body exceeds 1 MiB");
+  }
   const parsed = parseJson<FeaturedModelCatalogResponse>(body);
   const featuredModels = parsed["featured-models"];
   if (!Array.isArray(featuredModels)) {
     throw new Error('Unexpected featured model catalog response: expected "featured-models" array');
   }
 
-  return featuredModels
-    .map((item) => {
-      const id = typeof item?.model === "string" ? normalizeFeaturedModelId(item.model) : "";
-      const label =
-        typeof item?.["model-name"] === "string"
-          ? normalizeFeaturedModelLabel(id, item["model-name"])
-          : "";
-      return id && label && isSafeModelId(id) ? { id, label } : null;
-    })
-    .filter((value): value is FeaturedModelOption => value !== null);
+  const models: FeaturedModelOption[] = [];
+  const seenIds = new Set<string>();
+  for (const item of featuredModels) {
+    const id = typeof item?.model === "string" ? normalizeFeaturedModelId(item.model) : "";
+    const idKey = id.toLowerCase();
+    const label =
+      typeof item?.["model-name"] === "string"
+        ? normalizeFeaturedModelLabel(id, item["model-name"])
+        : "";
+    if (
+      !id ||
+      id.length > MAX_NVIDIA_FEATURED_MODEL_ID_LENGTH ||
+      !label ||
+      !isSafeModelId(id) ||
+      RETIRED_NVIDIA_FEATURED_MODEL_IDS.has(idKey) ||
+      seenIds.has(idKey)
+    ) {
+      continue;
+    }
+    models.push({ id, label });
+    seenIds.add(idKey);
+    if (models.length >= MAX_NVIDIA_FEATURED_MODELS) break;
+  }
+  return models;
 }
 
 /**
@@ -160,7 +194,16 @@ export function fetchNvidiaFeaturedModels(
         curlStatus: result.curlStatus,
       };
     }
-    return { ok: true, models: parseNvidiaFeaturedModels(result.body) };
+    try {
+      return { ok: true, models: parseNvidiaFeaturedModels(result.body) };
+    } catch (error) {
+      return {
+        ok: false,
+        httpStatus: result.httpStatus,
+        curlStatus: result.curlStatus,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
   } catch (error) {
     return {
       ok: false,
@@ -178,7 +221,30 @@ export function getNvidiaFeaturedModelOptions(
   options: ProviderModelOptions = {},
 ): FeaturedModelOption[] {
   const result = fetchNvidiaFeaturedModels(options);
-  return result.ok && result.models.length > 0 ? result.models : CLOUD_MODEL_OPTIONS;
+  if (result.ok && result.models.length > 0) {
+    return result.models;
+  }
+  const detail = result.ok
+    ? "catalog returned no safe model IDs"
+    : `${sanitizeFeaturedCatalogText(result.message, 200) || "catalog request failed without details"}${result.httpStatus > 0 ? `; HTTP ${result.httpStatus}` : ""}`;
+  (options.warn ?? console.warn)(
+    `  Warning: failed to load NVIDIA's featured model catalog; falling back to the bundled list (${detail}).`,
+  );
+  return CLOUD_MODEL_OPTIONS;
+}
+
+function buildNvidiaFeaturedModelPromptOptions(
+  defaultModelId: string | null | undefined,
+  cloudModelOptions: FeaturedModelOption[],
+): {
+  defaultModelId: string;
+  cloudModelOptions: FeaturedModelOption[];
+} {
+  const preferredDefault = defaultModelId || DEFAULT_CLOUD_MODEL;
+  const effectiveDefault = cloudModelOptions.some((option) => option.id === preferredDefault)
+    ? preferredDefault
+    : (cloudModelOptions[0]?.id ?? preferredDefault);
+  return { defaultModelId: effectiveDefault, cloudModelOptions };
 }
 
 /**
@@ -191,9 +257,22 @@ export function getNvidiaFeaturedModelPromptOptions(
   defaultModelId: string;
   cloudModelOptions: FeaturedModelOption[];
 } {
-  return {
-    defaultModelId: defaultModelId || DEFAULT_CLOUD_MODEL,
-    cloudModelOptions: getNvidiaFeaturedModelOptions(options),
+  return buildNvidiaFeaturedModelPromptOptions(
+    defaultModelId,
+    getNvidiaFeaturedModelOptions(options),
+  );
+}
+
+/**
+ * Caches one featured-model catalog lookup for a single onboarding session.
+ */
+export function createNvidiaFeaturedModelPromptOptionsLoader(
+  options: ProviderModelOptions = {},
+): (defaultModelId?: string | null) => ReturnType<typeof getNvidiaFeaturedModelPromptOptions> {
+  let cachedModels: FeaturedModelOption[] | null = null;
+  return (defaultModelId?: string | null) => {
+    cachedModels ??= getNvidiaFeaturedModelOptions(options);
+    return buildNvidiaFeaturedModelPromptOptions(defaultModelId, cachedModels);
   };
 }
 

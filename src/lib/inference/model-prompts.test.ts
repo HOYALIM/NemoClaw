@@ -34,13 +34,27 @@ describe("model prompt helpers", () => {
   });
 
   it("returns Minimax M3 from the default cloud model menu", async () => {
-    const promptFn = promptSequence(["5"]);
+    const promptFn = promptSequence(["4"]);
     const result = await promptCloudModel({
       promptFn,
       writeLine: vi.fn(),
     });
 
     expect(result).toBe("minimaxai/minimax-m3");
+  });
+
+  it("uses the effective live catalog default when the user presses enter", async () => {
+    const result = await promptCloudModel({
+      promptFn: promptSequence([""]),
+      writeLine: vi.fn(),
+      defaultModelId: "live/default",
+      cloudModelOptions: [
+        { id: "live/first", label: "First" },
+        { id: "live/default", label: "Default" },
+      ],
+    });
+
+    expect(result).toBe("live/default");
   });
 
   it("validates manual cloud model ids against the saved NVIDIA key", async () => {

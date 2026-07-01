@@ -508,12 +508,12 @@ const { setupNim } = require(${onboardPath});
     );
   });
 
-  it("selects GLM 5.1 from the NVIDIA Endpoints featured model list", () => {
+  it("selects Kimi K2.6 from the filtered NVIDIA Endpoints featured model list", () => {
     const repoRoot = path.join(import.meta.dirname, "..");
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-build-glm-selection-"));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-build-kimi-selection-"));
     const fakeBin = path.join(tmpDir, "bin");
-    const scriptPath = path.join(tmpDir, "build-glm-selection-check.js");
-    const curlArgsLog = path.join(tmpDir, "glm-curl-args.log");
+    const scriptPath = path.join(tmpDir, "build-kimi-selection-check.js");
+    const curlArgsLog = path.join(tmpDir, "kimi-curl-args.log");
     const onboardPath = JSON.stringify(path.join(repoRoot, "src", "lib", "onboard.ts"));
     const credentialsPath = JSON.stringify(
       path.join(repoRoot, "src", "lib", "credentials", "store.ts"),
@@ -528,17 +528,18 @@ args_log=${JSON.stringify(curlArgsLog)}
 printf '%s\\n' "$*" >> "$args_log"
 body='{"id":"ok"}'
 status="200"
-outfile=""
-streaming=""
+outfile="" streaming=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -o) outfile="$2"; shift 2 ;;
     -N) streaming="1"; shift ;;
     -w) shift 2 ;;
-    *) shift ;;
+    *) url="$1"; shift ;;
   esac
 done
-if [ "$streaming" = "1" ]; then
+if echo "$url" | grep -q 'featured-models.json$'; then
+  body='{"featured-models":[{"model":"nvidia/nemotron-3-ultra-550b-a55b","model-name":"Nemotron 3 Ultra 550B"},{"model":"nemotron-3-super-120b-a12b","model-name":"Nemotron 3 Super 120B"},{"model":"z-ai/glm-5.1","model-name":"GLM 5.1"},{"model":"moonshotai/kimi-k2.6","model-name":"Kimi K2.6"},{"model":"minimaxai/minimax-m2.7","model-name":"Minimax M2.7"}]}'
+elif [ "$streaming" = "1" ]; then
   body='data: {"id":"chatcmpl-test","choices":[{"delta":{"content":"OK"}}]}'$'\\n\\n''data: [DONE]'$'\\n'
 fi
 printf '%s' "$body" > "$outfile"
@@ -602,10 +603,12 @@ const { setupNim } = require(${onboardPath});
     assert.equal(result.status, 0, result.stderr);
     const payload = JSON.parse(result.stdout.trim());
     assert.equal(payload.result.provider, "nvidia-prod");
-    assert.equal(payload.result.model, "z-ai/glm-5.1");
+    assert.equal(payload.result.model, "moonshotai/kimi-k2.6");
     assert.equal(payload.result.preferredInferenceApi, "openai-completions");
     assert.match(payload.messages[1], /Choose model \[2\]/);
-    assert.ok(payload.lines.some((line: string) => line.includes("GLM 5.1")));
+    assert.ok(payload.lines.some((line: string) => line.includes("Loading NVIDIA")));
+    assert.ok(payload.lines.some((line: string) => line.includes("Kimi K2.6")));
+    assert.ok(!payload.lines.some((line: string) => line.includes("GLM 5.1")));
     assert.ok(
       payload.lines.some((line: string) => line.includes("Chat Completions API available")),
     );
@@ -653,7 +656,7 @@ printf '%s' "$status"
 const credentials = require(${credentialsPath});
 const runner = require(${runnerPath});
 
-const answers = ["1", "6", "custom/provider-model"];
+const answers = ["1", "5", "custom/provider-model"];
 const messages = [];
 
 credentials.prompt = async (message) => {
@@ -739,7 +742,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 if echo "$url" | grep -q '/v1/models$'; then
-  body='{"data":[{"id":"nvidia/nemotron-3-super-120b-a12b"},{"id":"z-ai/glm-5.1"}]}'
+  body='{"data":[{"id":"nvidia/nemotron-3-super-120b-a12b"},{"id":"custom/provider-model"}]}'
 fi
 printf '%s' "$body" > "$outfile"
 printf '%s' "$status"
@@ -751,7 +754,7 @@ printf '%s' "$status"
 const credentials = require(${credentialsPath});
 const runner = require(${runnerPath});
 
-const answers = ["1", "6", "bad/model", "z-ai/glm-5.1"];
+const answers = ["1", "5", "bad/model", "custom/provider-model"];
 const messages = [];
 
 credentials.prompt = async (message) => {
@@ -803,7 +806,7 @@ const { setupNim } = require(${onboardPath});
 
     assert.equal(result.status, 0, result.stderr);
     const payload = JSON.parse(result.stdout.trim());
-    assert.equal(payload.result.model, "z-ai/glm-5.1");
+    assert.equal(payload.result.model, "custom/provider-model");
     assert.equal(
       payload.messages.filter((message: string) => /NVIDIA Endpoints model id:/.test(message))
         .length,

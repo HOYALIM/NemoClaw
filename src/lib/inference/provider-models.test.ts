@@ -5,12 +5,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   BUILD_ENDPOINT_URL,
+  createNvidiaFeaturedModelPromptOptionsLoader,
   fetchAnthropicModels,
-  fetchNvidiaFeaturedModels,
   fetchNvidiaEndpointModels,
+  fetchNvidiaFeaturedModels,
   fetchOpenAiLikeModels,
-  getNvidiaFeaturedModelPromptOptions,
   getNvidiaFeaturedModelOptions,
+  getNvidiaFeaturedModelPromptOptions,
   NVIDIA_FEATURED_MODELS_URL,
   parseNvidiaFeaturedModels,
   validateAnthropicModel,
@@ -19,7 +20,7 @@ import {
 } from "./provider-models";
 
 describe("provider model helpers", () => {
-  it("parses NVIDIA featured models from the build catalog snapshot shape", () => {
+  it("normalizes current NVIDIA featured models and filters retired endpoint choices", () => {
     expect(
       parseNvidiaFeaturedModels(
         JSON.stringify({
@@ -34,15 +35,42 @@ describe("provider model helpers", () => {
             },
             { model: "z-ai/glm-5.1", "model-name": "GLM 5.1" },
             { model: "minimaxai/minimax-m2.7", "model-name": "Minimax M2.7" },
+            { model: "minimaxai/minimax-m3", "model-name": "Minimax M3 duplicate" },
           ],
         }),
       ),
     ).toEqual([
       { id: "nvidia/nemotron-3-ultra-550b-a55b", label: "Nemotron 3 Ultra 550B" },
       { id: "nvidia/nemotron-3-super-120b-a12b", label: "Nemotron 3 Super 120B" },
-      { id: "z-ai/glm-5.1", label: "GLM 5.1" },
       { id: "minimaxai/minimax-m3", label: "Minimax M3" },
     ]);
+  });
+
+  it("sanitizes untrusted catalog labels and bounds the rendered menu", () => {
+    const catalog = Array.from({ length: 105 }, (_value, index) => ({
+      model: `provider/model-${String(index)}`,
+      "model-name":
+        index === 0
+          ? "\u001b[31mSpoofed\n  2) fake\u202e"
+          : `Model ${String(index)}${"x".repeat(200)}`,
+    }));
+    catalog.unshift({ model: `provider/${"x".repeat(300)}`, "model-name": "Oversized ID" });
+
+    const models = parseNvidiaFeaturedModels(JSON.stringify({ "featured-models": catalog }));
+
+    expect(models).toHaveLength(100);
+    expect(models[0]).toEqual({ id: "provider/model-0", label: "Spoofed 2) fake" });
+    expect(models[1].label).toHaveLength(160);
+    expect(models.map((model) => model.label).join("\n")).not.toMatch(/[\u001b\u202e]/);
+    expect(models.some((model) => model.id.length > 256)).toBe(false);
+  });
+
+  it("rejects oversized featured catalog responses before rendering", () => {
+    expect(() =>
+      parseNvidiaFeaturedModels(
+        JSON.stringify({ "featured-models": [], padding: "x".repeat(1024 * 1024) }),
+      ),
+    ).toThrow(/exceeds 1 MiB/);
   });
 
   it("fetches NVIDIA featured models without requiring an API key", () => {
@@ -70,6 +98,7 @@ describe("provider model helpers", () => {
   });
 
   it("falls back to the curated NVIDIA featured model snapshot when the catalog is unavailable", () => {
+    const warnings: string[] = [];
     const models = getNvidiaFeaturedModelOptions({
       runCurlProbeImpl: () => ({
         ok: false,
@@ -77,20 +106,107 @@ describe("provider model helpers", () => {
         curlStatus: 0,
         body: "",
         stderr: "",
-        message: "HTTP 503",
+        message: "service unavailable",
       }),
+      warn: (message) => warnings.push(message),
     });
 
     expect(models.map((model) => model.id)).toEqual([
       "nvidia/nemotron-3-ultra-550b-a55b",
       "nvidia/nemotron-3-super-120b-a12b",
-      "z-ai/glm-5.1",
       "moonshotai/kimi-k2.6",
       "minimaxai/minimax-m3",
     ]);
+    expect(warnings).toEqual([
+      "  Warning: failed to load NVIDIA's featured model catalog; falling back to the bundled list (service unavailable; HTTP 503).",
+    ]);
   });
 
-  it("builds NVIDIA featured model prompt options with the configured default model", () => {
+  it("removes terminal controls from featured catalog fallback warnings", () => {
+    const warnings: string[] = [];
+    getNvidiaFeaturedModelOptions({
+      runCurlProbeImpl: () => ({
+        ok: false,
+        httpStatus: 503,
+        curlStatus: 0,
+        body: "",
+        stderr: "",
+        message: "\u001b[31mspoofed\nnext\u202e",
+      }),
+      warn: (message) => warnings.push(message),
+    });
+
+    expect(warnings).toEqual([
+      "  Warning: failed to load NVIDIA's featured model catalog; falling back to the bundled list (spoofed next; HTTP 503).",
+    ]);
+  });
+
+  it.each([
+    ["malformed JSON", "not-json", /JSON|Unexpected token|not-json/i],
+    ["a missing featured-models array", JSON.stringify({ data: [] }), /featured-models/],
+  ])("preserves probe status when the featured catalog contains %s", (_label, body, message) => {
+    const result = fetchNvidiaFeaturedModels({
+      runCurlProbeImpl: () => ({
+        ok: true,
+        httpStatus: 200,
+        curlStatus: 0,
+        body: String(body),
+        stderr: "",
+        message: "",
+      }),
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      httpStatus: 200,
+      curlStatus: 0,
+      message: expect.stringMatching(message as RegExp),
+    });
+  });
+
+  it("falls back with a warning when the featured catalog has no safe selectable models", () => {
+    const warnings: string[] = [];
+    const models = getNvidiaFeaturedModelOptions({
+      runCurlProbeImpl: () => ({
+        ok: true,
+        httpStatus: 200,
+        curlStatus: 0,
+        body: JSON.stringify({
+          "featured-models": [
+            { model: "unsafe model id", "model-name": "Unsafe" },
+            { model: "z-ai/glm-5.1", "model-name": "Retired" },
+          ],
+        }),
+        stderr: "",
+        message: "",
+      }),
+      warn: (message) => warnings.push(message),
+    });
+
+    expect(models).toEqual(
+      expect.arrayContaining([{ id: "minimaxai/minimax-m3", label: "Minimax M3" }]),
+    );
+    expect(warnings).toEqual([
+      "  Warning: failed to load NVIDIA's featured model catalog; falling back to the bundled list (catalog returned no safe model IDs).",
+    ]);
+  });
+
+  it("returns a structured failure when the featured catalog probe throws", () => {
+    expect(
+      fetchNvidiaFeaturedModels({
+        runCurlProbeImpl: () => {
+          throw new Error("network unavailable");
+        },
+      }),
+    ).toEqual({
+      ok: false,
+      httpStatus: 0,
+      curlStatus: 0,
+      message: "network unavailable",
+    });
+  });
+
+  it("uses the first live model when the configured default is absent", () => {
     const options = getNvidiaFeaturedModelPromptOptions(null, {
       runCurlProbeImpl: () => ({
         ok: true,
@@ -107,9 +223,41 @@ describe("provider model helpers", () => {
     });
 
     expect(options).toEqual({
-      defaultModelId: "nvidia/nemotron-3-super-120b-a12b",
+      defaultModelId: "nvidia/nemotron-3-ultra-550b-a55b",
       cloudModelOptions: [{ id: "nvidia/nemotron-3-ultra-550b-a55b", label: "Nemotron Ultra" }],
     });
+  });
+
+  it("reuses one featured catalog lookup but recomputes defaults across onboarding retries", () => {
+    let probeCount = 0;
+    const loadOptions = createNvidiaFeaturedModelPromptOptionsLoader({
+      runCurlProbeImpl: () => {
+        probeCount += 1;
+        return {
+          ok: true,
+          httpStatus: 200,
+          curlStatus: 0,
+          body: JSON.stringify({
+            "featured-models": [
+              { model: "moonshotai/kimi-k2.6", "model-name": "Kimi K2.6" },
+              {
+                model: "nvidia/nemotron-3-ultra-550b-a55b",
+                "model-name": "Nemotron Ultra",
+              },
+            ],
+          }),
+          stderr: "",
+          message: "",
+        };
+      },
+    });
+
+    const kimiDefault = loadOptions("moonshotai/kimi-k2.6");
+    const ultraDefault = loadOptions("nvidia/nemotron-3-ultra-550b-a55b");
+    expect(kimiDefault.defaultModelId).toBe("moonshotai/kimi-k2.6");
+    expect(ultraDefault.defaultModelId).toBe("nvidia/nemotron-3-ultra-550b-a55b");
+    expect(kimiDefault.cloudModelOptions).toBe(ultraDefault.cloudModelOptions);
+    expect(probeCount).toBe(1);
   });
 
   it("fetches NVIDIA endpoint model ids", () => {

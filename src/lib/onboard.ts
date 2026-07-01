@@ -2936,7 +2936,6 @@ async function createSandbox(
   // can be deregistered — if inline cleanup fails, we leave the handler
   // armed so the temp dir is still removed on process exit.
   process.on("exit", cleanupBuildCtx);
-
   const defaultPolicyPath = path.join(
     ROOT,
     "nemoclaw-blueprint",
@@ -2961,6 +2960,7 @@ async function createSandbox(
     messagingTokenDefs,
     reusableMessagingChannels,
     reusableMessagingProviders,
+    extraProviders: registry.listExtraProviders(),
     hermesToolGateways,
     sandboxGpuConfig: effectiveSandboxGpuConfig,
     dockerDriverGateway: isLinuxDockerDriverGatewayEnabled(),
@@ -3376,6 +3376,9 @@ type RemoteProviderSelectionArgs = {
   recoveredFromSandbox: boolean;
   recoveredModel: string | null;
   sandboxName: string | null;
+  getNvidiaFeaturedModelPromptOptions: (
+    defaultModelId?: string | null,
+  ) => ReturnType<typeof providerModels.getNvidiaFeaturedModelPromptOptions>;
 };
 
 async function handleVllmSelection(
@@ -3641,7 +3644,14 @@ async function handleRemoteProviderSelection(
   args: RemoteProviderSelectionArgs,
   state: SetupNimSelectionState,
 ): Promise<SetupNimSelectionResult> {
-  const { selected, requestedModel, recoveredFromSandbox, recoveredModel, sandboxName } = args;
+  const {
+    selected,
+    requestedModel,
+    recoveredFromSandbox,
+    recoveredModel,
+    sandboxName,
+    getNvidiaFeaturedModelPromptOptions,
+  } = args;
   const remoteConfig = REMOTE_PROVIDER_CONFIG[selected.key];
   state.provider = remoteConfig.providerName;
   state.credentialEnv = remoteConfig.credentialEnv;
@@ -3780,7 +3790,7 @@ async function handleRemoteProviderSelection(
       (recoveredFromSandbox && recoveredModel) ||
       (isNonInteractive()
         ? DEFAULT_CLOUD_MODEL
-        : await promptCloudModel(providerModels.getNvidiaFeaturedModelPromptOptions(_envModel))) ||
+        : await promptCloudModel(getNvidiaFeaturedModelPromptOptions(_envModel))) ||
       DEFAULT_CLOUD_MODEL;
     if (isBackToSelection(state.model)) {
       console.log("  Returning to provider selection.");
@@ -3941,6 +3951,16 @@ async function setupNim(
   let compatibleEndpointReasoning: string | null = null;
   let allowToolsIncompatible = false;
   let skipHostInferenceSmoke = false;
+  const loadNvidiaFeaturedModelPromptOptions =
+    providerModels.createNvidiaFeaturedModelPromptOptionsLoader();
+  let announcedNvidiaFeaturedModelLoad = false;
+  const getNvidiaFeaturedModelPromptOptions = (defaultModelId?: string | null) => {
+    if (!announcedNvidiaFeaturedModelLoad) {
+      console.log("  Loading NVIDIA's featured model catalog...");
+      announcedNvidiaFeaturedModelLoad = true;
+    }
+    return loadNvidiaFeaturedModelPromptOptions(defaultModelId);
+  };
 
   const providerHostState = detectInferenceProviderHostState({
     gpu,
@@ -4076,7 +4096,14 @@ async function setupNim(
           allowToolsIncompatible,
         };
         const result = await handleRemoteProviderSelection(
-          { selected, requestedModel, recoveredFromSandbox, recoveredModel, sandboxName },
+          {
+            selected,
+            requestedModel,
+            recoveredFromSandbox,
+            recoveredModel,
+            sandboxName,
+            getNvidiaFeaturedModelPromptOptions,
+          },
           state,
         );
         ({
