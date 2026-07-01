@@ -236,6 +236,29 @@ describe("NVIDIA featured model catalog", () => {
     });
   });
 
+  it("keeps Nemotron 3 Super as the default when it is present in the live catalog (#5827)", () => {
+    const options = getNvidiaFeaturedModelPromptOptions(null, {
+      runCurlProbeImpl: () => ({
+        ok: true,
+        httpStatus: 200,
+        curlStatus: 0,
+        body: JSON.stringify({
+          "featured-models": [
+            { model: "moonshotai/kimi-k2.6", "model-name": "Kimi K2.6" },
+            {
+              model: "nvidia/nemotron-3-super-120b-a12b",
+              "model-name": "Nemotron 3 Super 120B",
+            },
+          ],
+        }),
+        stderr: "",
+        message: "",
+      }),
+    });
+
+    expect(options.defaultModelId).toBe("nvidia/nemotron-3-super-120b-a12b");
+  });
+
   it("reuses one featured catalog lookup but recomputes defaults across onboarding retries", () => {
     let probeCount = 0;
     const loadOptions = createNvidiaFeaturedModelPromptOptionsLoader({
