@@ -65,6 +65,9 @@ During interactive NVIDIA Endpoints onboarding, NemoClaw loads NVIDIA's public f
 It excludes retired or unsafe choices and corrects known catalog lag before displaying the result.
 If the catalog is unavailable, malformed, or contains no safe model IDs, the wizard warns you and uses the bundled fallback list shown below.
 Nemotron 3 Super remains the default when it is present; otherwise, the first live featured model becomes the interactive default.
+If you set `NEMOCLAW_MODEL` to a safe custom model ID that is absent from the live catalog, it does not replace the live menu default.
+Choose **Other** to use that value as the pre-filled manual entry; NemoClaw validates it against NVIDIA Endpoints before continuing.
+NemoClaw neither displays nor accepts an unsafe `NEMOCLAW_MODEL` value as the manual-entry prefill.
 
 | Option | Description | Curated models |
 |--------|-------------|----------------|
