@@ -30,7 +30,11 @@ export function createNvidiaFeaturedModelSession(
         writeLine("  Loading NVIDIA's featured model catalog...");
         announcedLoad = true;
       }
-      return promptCloudModel(loadPromptOptions(envModel?.trim()));
+      const configuredModel = envModel?.trim();
+      return promptCloudModel({
+        ...loadPromptOptions(configuredModel),
+        manualDefaultModelId: configuredModel,
+      });
     },
   };
 }

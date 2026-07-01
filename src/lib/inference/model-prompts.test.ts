@@ -57,6 +57,55 @@ describe("model prompt helpers", () => {
     expect(result).toBe("live/default");
   });
 
+  it("keeps a separate safe custom model as the Other prefill (#5827)", async () => {
+    const promptFn = promptSequence(["2", ""]);
+    const validateNvidiaEndpointModelFn = vi.fn((model: string) => ({
+      ok: model === "custom/provider-model",
+    }));
+    const result = await promptCloudModel({
+      promptFn,
+      writeLine: vi.fn(),
+      defaultModelId: "live/default",
+      manualDefaultModelId: "custom/provider-model",
+      cloudModelOptions: [{ id: "live/default", label: "Default" }],
+      getCredentialFn: () => "nvapi-test",
+      validateNvidiaEndpointModelFn,
+    });
+
+    expect(result).toBe("custom/provider-model");
+    expect(promptFn).toHaveBeenNthCalledWith(1, "  Choose model [1]: ");
+    expect(promptFn).toHaveBeenNthCalledWith(
+      2,
+      "  NVIDIA Endpoints model id [custom/provider-model]: ",
+    );
+    expect(validateNvidiaEndpointModelFn).toHaveBeenCalledWith(
+      "custom/provider-model",
+      "nvapi-test",
+    );
+  });
+
+  it("does not render or accept an unsafe manual-entry default (#5827)", async () => {
+    const promptFn = promptSequence(["2", "safe/provider-model"]);
+    const validateNvidiaEndpointModelFn = vi.fn((model: string) => ({
+      ok: model === "safe/provider-model",
+    }));
+    const result = await promptCloudModel({
+      promptFn,
+      writeLine: vi.fn(),
+      defaultModelId: "live/default",
+      manualDefaultModelId: "bad\n  1) spoof",
+      cloudModelOptions: [{ id: "live/default", label: "Default" }],
+      getCredentialFn: () => "nvapi-test",
+      validateNvidiaEndpointModelFn,
+    });
+
+    expect(result).toBe("safe/provider-model");
+    expect(promptFn).toHaveBeenNthCalledWith(2, "  NVIDIA Endpoints model id: ");
+    expect(promptFn.mock.calls.flat().join("\n")).not.toContain("spoof");
+    expect(validateNvidiaEndpointModelFn).toHaveBeenCalledOnce();
+    expect(validateNvidiaEndpointModelFn).toHaveBeenCalledWith("safe/provider-model", "nvapi-test");
+  });
+
   it("validates manual cloud model ids against the saved NVIDIA key", async () => {
     const promptFn = promptSequence(["9", "bad-model", "nemotron-custom"]);
     const errorLine = vi.fn();

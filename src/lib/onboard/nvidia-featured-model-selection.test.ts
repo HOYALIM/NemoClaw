@@ -30,4 +30,22 @@ describe("NVIDIA featured model selection", () => {
 
     expect(selected).toBe(BACK_TO_SELECTION);
   });
+
+  it("preserves a custom environment model as the manual-entry default (#5827)", async () => {
+    vi.mocked(promptCloudModel).mockResolvedValueOnce("custom/provider-model");
+
+    const selected = await createNvidiaFeaturedModelSession(vi.fn()).select(
+      null,
+      null,
+      false,
+      " custom/provider-model ",
+    );
+
+    expect(selected).toBe("custom/provider-model");
+    expect(promptCloudModel).toHaveBeenCalledWith({
+      defaultModelId: "nvidia/nemotron-3-super-120b-a12b",
+      cloudModelOptions: [],
+      manualDefaultModelId: "custom/provider-model",
+    });
+  });
 });
