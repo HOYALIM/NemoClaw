@@ -20,30 +20,45 @@ import {
 } from "./provider-models";
 
 describe("provider model helpers", () => {
-  it("normalizes current NVIDIA featured models and filters retired endpoint choices", () => {
+  it("prefixes bare Nemotron catalog IDs with the canonical endpoint namespace (#5827)", () => {
     expect(
       parseNvidiaFeaturedModels(
         JSON.stringify({
           "featured-models": [
             {
-              model: "nvidia/nemotron-3-ultra-550b-a55b",
-              "model-name": "Nemotron 3 Ultra 550B",
-            },
-            {
               model: "nemotron-3-super-120b-a12b",
               "model-name": "Nemotron 3 Super 120B",
             },
-            { model: "z-ai/glm-5.1", "model-name": "GLM 5.1" },
+          ],
+        }),
+      ),
+    ).toEqual([{ id: "nvidia/nemotron-3-super-120b-a12b", label: "Nemotron 3 Super 120B" }]);
+  });
+
+  it("rewrites stale Minimax M2.7 catalog IDs and labels to M3 (#5827)", () => {
+    expect(
+      parseNvidiaFeaturedModels(
+        JSON.stringify({
+          "featured-models": [
             { model: "minimaxai/minimax-m2.7", "model-name": "Minimax M2.7" },
             { model: "minimaxai/minimax-m3", "model-name": "Minimax M3 duplicate" },
           ],
         }),
       ),
-    ).toEqual([
-      { id: "nvidia/nemotron-3-ultra-550b-a55b", label: "Nemotron 3 Ultra 550B" },
-      { id: "nvidia/nemotron-3-super-120b-a12b", label: "Nemotron 3 Super 120B" },
-      { id: "minimaxai/minimax-m3", label: "Minimax M3" },
-    ]);
+    ).toEqual([{ id: "minimaxai/minimax-m3", label: "Minimax M3" }]);
+  });
+
+  it("filters GLM 5.1 while it is retired from NVIDIA Endpoints (#6069)", () => {
+    expect(
+      parseNvidiaFeaturedModels(
+        JSON.stringify({
+          "featured-models": [
+            { model: "z-ai/glm-5.1", "model-name": "GLM 5.1" },
+            { model: "moonshotai/kimi-k2.6", "model-name": "Kimi K2.6" },
+          ],
+        }),
+      ),
+    ).toEqual([{ id: "moonshotai/kimi-k2.6", label: "Kimi K2.6" }]);
   });
 
   it("sanitizes untrusted catalog labels and bounds the rendered menu", () => {

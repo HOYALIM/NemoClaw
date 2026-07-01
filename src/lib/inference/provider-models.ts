@@ -13,6 +13,12 @@ const { normalizeCredentialValue } = require("../credentials/store");
 export const BUILD_ENDPOINT_URL = "https://integrate.api.nvidia.com/v1";
 export const NVIDIA_FEATURED_MODELS_URL =
   "https://assets.ngc.nvidia.com/products/api-catalog/featured-models.json";
+// GLM 5.1 retirement contract (#6069): the external featured feed may lag an
+// NVIDIA Endpoints retirement. The repository authority is CLOUD_MODEL_OPTIONS
+// plus the provider-boundary assertion in test/inference-options-docs.test.ts,
+// which retain GLM 5.1 only for Hermes. Keep this policy deny-list until a
+// deliberate product change reverses #6069; a transient feed omission alone is
+// not a removal signal.
 const RETIRED_NVIDIA_FEATURED_MODEL_IDS = new Set(["z-ai/glm-5.1"]);
 const MAX_NVIDIA_FEATURED_CATALOG_BYTES = 1024 * 1024;
 const MAX_NVIDIA_FEATURED_MODELS = 100;
@@ -101,9 +107,20 @@ function parseModelIds(body: string, itemKeys: Array<keyof ModelCatalogItem> = [
  */
 function normalizeFeaturedModelId(model: string): string {
   const trimmed = model.trim();
+  // Minimax rollout contract (#5827): the external feed has emitted the stale
+  // M2.7 ID/label while CLOUD_MODEL_OPTIONS and the task-fit docs define M3 as
+  // the NVIDIA Endpoints choice. This is an upstream-lag bridge; remove this ID
+  // rewrite together with the label rewrite and fixture only once the feed no
+  // longer emits M2.7 and publishes M3 directly.
   if (trimmed === "minimaxai/minimax-m2.7") {
     return "minimaxai/minimax-m3";
   }
+  // Nemotron namespace contract (#5827): the external feed has emitted bare
+  // nemotron-3-* IDs, while CLOUD_MODEL_OPTIONS and the matching OpenClaw
+  // model-specific setup manifest use the canonical nvidia/ endpoint namespace.
+  // The feed can lag that repository contract; remove this bridge and its
+  // bare-ID fixture only once affected entries no longer emit bare IDs and use
+  // the namespaced form.
   if (/^nemotron-3-/i.test(trimmed)) {
     return `nvidia/${trimmed}`;
   }
@@ -124,6 +141,7 @@ function sanitizeFeaturedCatalogText(value: string, maxLength: number): string {
  */
 function normalizeFeaturedModelLabel(id: string, label: string): string {
   const sanitized = sanitizeFeaturedCatalogText(label, MAX_NVIDIA_FEATURED_MODEL_LABEL_LENGTH);
+  // Keep the display label coupled to the Minimax rollout contract above.
   if (id === "minimaxai/minimax-m3" && /^minimax m2\.7$/i.test(sanitized)) {
     return "Minimax M3";
   }
