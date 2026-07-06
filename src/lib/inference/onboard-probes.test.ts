@@ -4,17 +4,19 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { captureAuthConfigPath } from "../adapters/http/auth-config-test-helpers";
 import {
   HARNESS_COUNTER,
   HARNESS_TMPDIR,
   makeFakeCurlScript,
+  makeResponsesToolCallUrlRecordingFakeCurlScript,
   withFakeCurlProbe,
 } from "./onboard-probes-curl-harness";
 
 const {
+  clearOpenAiLikeProbeValidationCacheForTests,
   getChatCompletionsProbeCurlArgs,
   getChatCompletionsProbePayload,
   getDeepSeekV4ProValidationProbeCurlArgs,
@@ -41,6 +43,10 @@ function restoreEnv(name: string, original: string | undefined): void {
 
 const FAKE_CONFIG_PATH = "/tmp/nemoclaw-test-credential.conf";
 const FAKE_CREDENTIAL_ARGS = ["--config", FAKE_CONFIG_PATH] as const;
+
+afterEach(() => {
+  clearOpenAiLikeProbeValidationCacheForTests();
+});
 
 describe("OpenAI-compatible inference probe response parsing", () => {
   it("detects tool-calling responses payloads conservatively", () => {
@@ -764,6 +770,75 @@ exit 28
           validated: false,
         });
         expect(lines.join("\n")).toContain("DeepSeek V4 Pro validation timed out");
+      },
+    );
+  });
+
+  it("reuses a successful chat-completions validation for a repeated chat-only probe", () => {
+    const body = `n=$(cat "${HARNESS_COUNTER}")
+n=$((n + 1))
+echo "$n" > "${HARNESS_COUNTER}"
+cat <<'JSON' > "$outfile"
+{"choices":[{"message":{"content":"OK"}}]}
+JSON
+printf '200'
+exit 0
+`;
+    withFakeCurlProbe(
+      {
+        script: makeFakeCurlScript(body),
+        dirPrefix: "nemoclaw-probe-cache-hit-",
+      },
+      ({ counter }) => {
+        const first = probeOpenAiLikeEndpoint(
+          "https://integrate.api.nvidia.com/v1",
+          "nvidia/nemotron-3-super-120b-a12b",
+          "nvapi-cache-test",
+          { skipResponsesProbe: true },
+        );
+        const second = probeOpenAiLikeEndpoint(
+          "https://integrate.api.nvidia.com/v1/",
+          "nvidia/nemotron-3-super-120b-a12b",
+          "nvapi-cache-test",
+          { skipResponsesProbe: true },
+        );
+
+        expect(first).toMatchObject({ ok: true, api: "openai-completions" });
+        expect(second).toMatchObject({ ok: true, api: "openai-completions" });
+        expect(fs.readFileSync(counter, "utf8").trim()).toBe("1");
+      },
+    );
+  });
+
+  it("keeps Responses-only and chat-only validations in separate cache entries", () => {
+    withFakeCurlProbe(
+      {
+        script: makeResponsesToolCallUrlRecordingFakeCurlScript(),
+        dirPrefix: "nemoclaw-probe-cache-api-",
+      },
+      ({ counter, tmpDir }) => {
+        const responses = probeOpenAiLikeEndpoint(
+          "https://proxy.example.com/v1",
+          "custom-model",
+          "proxy-cache-key",
+          { requireResponsesToolCalling: true },
+        );
+        const chatOnly = probeOpenAiLikeEndpoint(
+          "https://proxy.example.com/v1",
+          "custom-model",
+          "proxy-cache-key",
+          { skipResponsesProbe: true },
+        );
+
+        expect(responses).toMatchObject({ ok: true, api: "openai-responses" });
+        expect(chatOnly).toMatchObject({ ok: true, api: "openai-completions" });
+        expect(fs.readFileSync(counter, "utf8").trim()).toBe("2");
+        expect(fs.readFileSync(path.join(tmpDir, "request-1-url.txt"), "utf8")).toBe(
+          "https://proxy.example.com/v1/responses",
+        );
+        expect(fs.readFileSync(path.join(tmpDir, "request-2-url.txt"), "utf8")).toBe(
+          "https://proxy.example.com/v1/chat/completions",
+        );
       },
     );
   });

@@ -37,11 +37,7 @@ export function makeFakeCurlScript(bodyLogic: string): string {
   return `${FAKE_CURL_HEADER}${bodyLogic}`;
 }
 
-// Fake curl for the strict Responses API compatibility check. It records each
-// requested URL, returns a successful Responses payload without a tool call,
-// then returns a successful Chat Completions payload so callers can assert the
-// exact fallback order without duplicating shell parsing in a test body.
-export function makeResponsesFallbackUrlRecordingFakeCurlScript(): string {
+function makeUrlRecordingFakeCurlScript(responsesPayload: string): string {
   return `#!/usr/bin/env bash
 outfile=""
 url=""
@@ -58,12 +54,31 @@ n=$((n + 1))
 echo "$n" > "${HARNESS_COUNTER}"
 printf '%s' "$url" > "${HARNESS_TMPDIR}/request-$n-url.txt"
 if echo "$url" | grep -q '/responses$'; then
-  printf '%s' '{"output":[{"type":"message","content":[{"type":"output_text","text":"OK"}]}]}' > "$outfile"
+  printf '%s' '${responsesPayload}' > "$outfile"
 else
   printf '%s' '{"choices":[{"message":{"content":"OK"}}]}' > "$outfile"
 fi
 printf '200'
 `;
+}
+
+// Fake curl for the strict Responses API compatibility check. It records each
+// requested URL, returns a successful Responses payload without a tool call,
+// then returns a successful Chat Completions payload so callers can assert the
+// exact fallback order without duplicating shell parsing in a test body.
+export function makeResponsesFallbackUrlRecordingFakeCurlScript(): string {
+  return makeUrlRecordingFakeCurlScript(
+    '{"output":[{"type":"message","content":[{"type":"output_text","text":"OK"}]}]}',
+  );
+}
+
+// Fake curl for cache tests where /responses is a fully valid tool-call
+// success. It lets tests prove a later chat-completions-only smoke is not
+// satisfied by a Responses-only cache entry.
+export function makeResponsesToolCallUrlRecordingFakeCurlScript(): string {
+  return makeUrlRecordingFakeCurlScript(
+    '{"output":[{"type":"function_call","name":"emit_ok","arguments":"{\\"value\\":\\"OK\\"}"}]}',
+  );
 }
 
 // Restore an env var to its pre-test value without branching at the call

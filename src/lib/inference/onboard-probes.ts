@@ -28,6 +28,8 @@ const {
 const { isWsl } = require("../platform");
 const httpProbe = require("../adapters/http/probe");
 const authConfigModule = require("../adapters/http/auth-config");
+const { hashCredential } = require("../security/credential-hash");
+const { addTraceEvent } = require("../trace");
 const {
   getHostDockerInternalProbeFailure,
   isHijackedDockerInternalUrl,
@@ -84,6 +86,8 @@ const EXTENDED_NVIDIA_ENDPOINT_VALIDATION_MODELS = new Set([
   "qwen/qwen3.5-397b-a17b",
   "deepseek-ai/deepseek-v4-flash",
 ]);
+const OPENAI_LIKE_PROBE_CACHE_TTL_MS = 10 * 60 * 1000;
+const openAiLikeProbeValidationCache = new Map();
 
 // Hostnames that are normally meant for the sandbox/container host boundary.
 // host.openshell.internal only resolves inside the OpenShell sandbox network,
@@ -279,10 +283,85 @@ function getProbeProcessTimeoutMs(args) {
   return (getCurlMaxTimeSeconds(args) + 5) * 1000;
 }
 
+function normalizeOpenAiLikeProbeEndpoint(endpointUrl) {
+  return String(endpointUrl).replace(/\/+$/, "");
+}
+
+function normalizeProbeAuthMode(options = {}) {
+  return options.authMode === "query-param" ? "query-param" : "bearer";
+}
+
+function getOpenAiLikeProbeCacheKey(endpointUrl, model, apiKey, options = {}) {
+  const credentialHash = hashCredential(apiKey);
+  if (!credentialHash) return null;
+  return JSON.stringify({
+    endpointUrl: normalizeOpenAiLikeProbeEndpoint(endpointUrl),
+    model: String(model),
+    credentialHash,
+    authMode: normalizeProbeAuthMode(options),
+    allowHostDockerInternal: options.allowHostDockerInternal === true,
+    requirements: getOpenAiLikeProbeRequirements(options),
+  });
+}
+
+function getOpenAiLikeProbeRequirements(options = {}) {
+  return {
+    skipResponsesProbe: options.skipResponsesProbe === true,
+    requireResponsesToolCalling: options.requireResponsesToolCalling === true,
+    requireChatCompletionsToolCalling: options.requireChatCompletionsToolCalling === true,
+    probeStreaming: options.probeStreaming === true,
+  };
+}
+
+function isOpenAiLikeProbeCacheEntryFresh(entry) {
+  return entry.expiresAt > Date.now();
+}
+
+function getCachedOpenAiLikeProbeResult(cacheKey) {
+  if (!cacheKey) return null;
+  const entry = openAiLikeProbeValidationCache.get(cacheKey);
+  if (!entry) return null;
+  if (!isOpenAiLikeProbeCacheEntryFresh(entry)) {
+    openAiLikeProbeValidationCache.delete(cacheKey);
+    return null;
+  }
+  addTraceEvent("openai_like_probe_cache_hit", {
+    api: entry.api,
+    skip_responses_probe: entry.skipResponsesProbe,
+    require_responses_tool_calling: entry.requireResponsesToolCalling,
+    require_chat_completions_tool_calling: entry.requireChatCompletionsToolCalling,
+    probe_streaming: entry.probeStreaming,
+  });
+  return { ...entry.result };
+}
+
+function rememberOpenAiLikeProbeSuccess(cacheKey, options = {}, result = {}) {
+  if (!cacheKey || !result.ok || result.validated === false || !result.api) return result;
+  const requirements = getOpenAiLikeProbeRequirements(options);
+  openAiLikeProbeValidationCache.set(cacheKey, {
+    ...requirements,
+    api: result.api,
+    result: { ...result },
+    expiresAt: Date.now() + OPENAI_LIKE_PROBE_CACHE_TTL_MS,
+  });
+  addTraceEvent("openai_like_probe_cache_store", {
+    api: result.api,
+    skip_responses_probe: requirements.skipResponsesProbe,
+    require_responses_tool_calling: requirements.requireResponsesToolCalling,
+    require_chat_completions_tool_calling: requirements.requireChatCompletionsToolCalling,
+    probe_streaming: requirements.probeStreaming,
+  });
+  return result;
+}
+
+function clearOpenAiLikeProbeValidationCacheForTests() {
+  openAiLikeProbeValidationCache.clear();
+}
+
 // ── Responses API probe ──────────────────────────────────────────
 
 function probeResponsesToolCalling(endpointUrl, model, apiKey, options = {}) {
-  const baseUrl = String(endpointUrl).replace(/\/+$/, "");
+  const baseUrl = normalizeOpenAiLikeProbeEndpoint(endpointUrl);
   let authConfig;
   try {
     authConfig = buildOpenAiLikeAuthConfig(apiKey, options);
@@ -341,7 +420,7 @@ function probeResponsesToolCalling(endpointUrl, model, apiKey, options = {}) {
 }
 
 function probeChatCompletionsToolCalling(endpointUrl, model, apiKey, options = {}) {
-  const baseUrl = String(endpointUrl).replace(/\/+$/, "");
+  const baseUrl = normalizeOpenAiLikeProbeEndpoint(endpointUrl);
   let authConfig;
   try {
     authConfig = buildOpenAiLikeAuthConfig(apiKey, options);
@@ -634,7 +713,10 @@ function probeOpenAiLikeEndpoint(endpointUrl, model, apiKey, options = {}) {
     };
   }
 
-  const baseUrl = String(endpointUrl).replace(/\/+$/, "");
+  const baseUrl = normalizeOpenAiLikeProbeEndpoint(endpointUrl);
+  const cacheKey = getOpenAiLikeProbeCacheKey(endpointUrl, model, apiKey, options);
+  const cachedProbe = getCachedOpenAiLikeProbeResult(cacheKey);
+  if (cachedProbe) return cachedProbe;
   let authConfig;
   try {
     authConfig = buildOpenAiLikeAuthConfig(apiKey, options);
@@ -759,7 +841,11 @@ function probeOpenAiLikeEndpoint(endpointUrl, model, apiKey, options = {}) {
             };
           }
         }
-        return { ok: true, api: probe.api, label: probe.name };
+        return rememberOpenAiLikeProbeSuccess(cacheKey, options, {
+          ok: true,
+          api: probe.api,
+          label: probe.name,
+        });
       }
       if (
         probe.api === "openai-completions" &&
@@ -810,7 +896,11 @@ function probeOpenAiLikeEndpoint(endpointUrl, model, apiKey, options = {}) {
         authConfig,
       });
       if (retryResult.ok) {
-        return { ok: true, api: "openai-completions", label: "Chat Completions API" };
+        return rememberOpenAiLikeProbeSuccess(cacheKey, options, {
+          ok: true,
+          api: "openai-completions",
+          label: "Chat Completions API",
+        });
       }
       if (options.requireChatCompletionsToolCalling === true) {
         failures.push({
@@ -875,6 +965,7 @@ module.exports = {
   getKimiK26ValidationProbeCurlArgs,
   getChatCompletionsProbePayload,
   getChatCompletionsProbeCurlArgs,
+  clearOpenAiLikeProbeValidationCacheForTests,
   probeResponsesToolCalling,
   probeChatCompletionsToolCalling,
   probeOpenAiLikeEndpoint,
