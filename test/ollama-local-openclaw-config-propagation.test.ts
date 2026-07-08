@@ -167,9 +167,11 @@ describe("OpenClaw managed-route compaction policy (#5468, #4781)", () => {
     });
     expect(config.agents.defaults.compaction).toEqual({
       mode: "safeguard",
+      timeoutSeconds: 120,
       maxHistoryShare: 0.35,
       recentTurnsPreserve: 1,
       qualityGuard: { enabled: true, maxRetries: 0 },
+      notifyUser: true,
       truncateAfterCompaction: true,
     });
   });
@@ -189,7 +191,7 @@ describe("OpenClaw managed-route compaction policy (#5468, #4781)", () => {
     expect(config.agents.defaults.compaction).toBeUndefined();
   });
 
-  it("does not enable managed-inference safeguards outside inference.local", () => {
+  it("does not enable managed-inference safeguards outside inference.local (#4781)", () => {
     expect(
       buildManagedInferenceSafeguardCompaction(
         "inference",
@@ -197,6 +199,9 @@ describe("OpenClaw managed-route compaction policy (#5468, #4781)", () => {
         "https://integrate.api.nvidia.com/v1",
       ),
     ).toBeUndefined();
+  });
+
+  it("does not enable managed-inference safeguards for another provider key (#4781)", () => {
     expect(
       buildManagedInferenceSafeguardCompaction(
         "nvidia-prod",

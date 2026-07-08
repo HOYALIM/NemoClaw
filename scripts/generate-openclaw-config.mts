@@ -78,9 +78,11 @@ const MANAGED_INFERENCE_PROVIDER_KEY = "inference";
 const MANAGED_INFERENCE_HOSTNAME = "inference.local";
 const MANAGED_INFERENCE_SAFEGUARD_COMPACTION: JsonObject = {
   mode: "safeguard",
+  timeoutSeconds: 120,
   maxHistoryShare: 0.35,
   recentTurnsPreserve: 1,
   qualityGuard: { enabled: true, maxRetries: 0 },
+  notifyUser: true,
   truncateAfterCompaction: true,
 };
 const FALSE_VALUES = new Set(["0", "false", "no", "off"]);
@@ -1038,10 +1040,10 @@ function isManagedInferenceLocalRoute(
 }
 
 // Managed remote inference sessions use OpenClaw's safeguard compaction rather
-// than its plain runtime compactor. This keeps manual `/compact` bounded:
-// summarize aggressively, preserve only the latest turn verbatim, avoid extra
-// quality-regeneration LLM calls, and rotate the active transcript so future
-// token accounting reads the compacted successor log.
+// than its plain runtime compactor. A two-minute timeout bounds each attempt,
+// lifecycle notices expose automatic and agent-run compaction progress, and
+// successful compaction rotates the active transcript. These safeguards do not
+// guarantee that summarization succeeds or that the resulting context is smaller.
 export function buildManagedInferenceSafeguardCompaction(
   providerKey: string | undefined,
   upstreamProvider: string | undefined,
