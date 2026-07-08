@@ -3,6 +3,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { createVirtualClock } from "./__test-helpers__/virtual-clock";
 import { type GatewayHealthWaitOptions, waitForGatewayHealth } from "./gateway-health-wait";
 
 function buildOptions(overrides: Partial<GatewayHealthWaitOptions> = {}): GatewayHealthWaitOptions {
@@ -49,16 +50,19 @@ describe("waitForGatewayHealth", () => {
   });
 
   it("returns false when HTTP readiness never follows healthy metadata", async () => {
+    const clock = createVirtualClock();
     const options = buildOptions({
       healthPollCount: 2,
       isGatewayHttpReady: vi.fn(async () => false),
+      now: clock.now,
+      sleepSeconds: clock.sleeper,
     });
 
     await expect(waitForGatewayHealth(options)).resolves.toBe(false);
 
     expect(options.isGatewayHealthy).toHaveBeenCalledTimes(2);
     expect(options.isGatewayHttpReady).toHaveBeenCalledTimes(2);
-    expect(options.sleepSeconds).toHaveBeenCalledTimes(1);
+    expect(options.sleepSeconds).toHaveBeenCalledTimes(2);
   });
 
   it("force-refreshes metadata after bootstrap secret repair", async () => {
@@ -85,19 +89,27 @@ describe("waitForGatewayHealth", () => {
     expect(options.attachGatewayMetadataIfNeeded).toHaveBeenCalledWith();
   });
 
-  it("stops after healthPollCount attempts without sleeping after the final failed probe", async () => {
+  it("polls until the configured health deadline instead of stopping at the count cap (#3768)", async () => {
+    const clock = createVirtualClock();
+    const isGatewayHealthy = vi.fn(() => {
+      clock.advance(1);
+      return false;
+    });
     const options = buildOptions({
-      healthPollCount: 3,
-      isGatewayHealthy: vi.fn(() => false),
+      healthPollCount: 10,
+      healthPollIntervalSeconds: 1,
+      isGatewayHealthy,
+      now: clock.now,
+      sleepSeconds: clock.sleeper,
     });
 
     await expect(waitForGatewayHealth(options)).resolves.toBe(false);
 
-    expect(options.isGatewayHealthy).toHaveBeenCalledTimes(3);
+    expect(isGatewayHealthy).toHaveBeenCalled();
+    expect(isGatewayHealthy.mock.calls.length).toBeLessThan(10);
     expect(options.isGatewayHttpReady).not.toHaveBeenCalled();
-    expect(options.sleepSeconds).toHaveBeenCalledTimes(2);
-    expect(options.sleepSeconds).toHaveBeenNthCalledWith(1, 2);
-    expect(options.sleepSeconds).toHaveBeenNthCalledWith(2, 2);
+    expect(clock.sleeper).toHaveBeenCalled();
+    expect(clock.sleeper.mock.calls.every(([seconds]) => seconds === 1)).toBe(true);
   });
 
   it("returns false without probing when healthPollCount is zero", async () => {

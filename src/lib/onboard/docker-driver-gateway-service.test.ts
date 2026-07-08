@@ -3,13 +3,14 @@
 
 import { describe, expect, it, vi } from "vitest";
 
+import { createVirtualClock } from "./__test-helpers__/virtual-clock";
 import {
   getOpenShellGatewayUserServiceBinaryPaths,
   getOpenShellGatewayUserServicePaths,
   hasOpenShellGatewayUserService,
-  startPackageManagedDockerDriverGateway,
-  startOpenShellGatewayUserService,
   type SpawnSyncLikeResult,
+  startOpenShellGatewayUserService,
+  startPackageManagedDockerDriverGateway,
 } from "./docker-driver-gateway-service";
 
 const STATUS_CONNECTED = `
@@ -254,6 +255,7 @@ describe("docker-driver-gateway-service", () => {
 
   it("uses the package-managed service only after endpoint, metadata, and gRPC health are ready", async () => {
     const events: string[] = [];
+    const clock = createVirtualClock();
     let registerCount = 0;
     const registerDockerDriverGatewayEndpoint = vi.fn(() => {
       events.push("register");
@@ -268,14 +270,18 @@ describe("docker-driver-gateway-service", () => {
         gatewayName: "nemoclaw",
         hasOpenShellGatewayUserService: () => true,
         healthPollCount: 3,
-        healthPollInterval: 0,
+        healthPollInterval: 1,
         isDockerDriverGatewayReady: async () => {
           events.push("ready");
           return true;
         },
+        now: clock.now,
         registerDockerDriverGatewayEndpoint,
         runCaptureOpenshell: (args) => (args[0] === "status" ? STATUS_CONNECTED : GATEWAY_INFO),
-        sleepSeconds: () => events.push("sleep"),
+        sleepSeconds: (seconds) => {
+          events.push("sleep");
+          clock.advance(seconds);
+        },
         skipSandboxBridgeReachability: false,
         startOpenShellGatewayUserService: () => ({
           attempted: true,
@@ -318,6 +324,7 @@ describe("docker-driver-gateway-service", () => {
 
   it("keeps standalone runtime breadcrumbs when service health never becomes ready", async () => {
     const clearDockerDriverGatewayRuntimeFiles = vi.fn();
+    const clock = createVirtualClock();
 
     await expect(
       startPackageManagedDockerDriverGateway({
@@ -326,9 +333,12 @@ describe("docker-driver-gateway-service", () => {
         gatewayName: "nemoclaw",
         hasOpenShellGatewayUserService: () => true,
         healthPollCount: 1,
+        healthPollInterval: 1,
         isDockerDriverGatewayReady: async () => false,
+        now: clock.now,
         registerDockerDriverGatewayEndpoint: () => true,
         runCaptureOpenshell: (args) => (args[0] === "status" ? STATUS_CONNECTED : GATEWAY_INFO),
+        sleepSeconds: clock.advance,
         skipSandboxBridgeReachability: false,
         startOpenShellGatewayUserService: () => ({
           attempted: true,
@@ -337,7 +347,7 @@ describe("docker-driver-gateway-service", () => {
         }),
         verifySandboxBridgeGatewayReachableOrExit: vi.fn(),
       }),
-    ).rejects.toThrow("did not become healthy");
+    ).rejects.toThrow("configured 1s health deadline");
 
     expect(clearDockerDriverGatewayRuntimeFiles).not.toHaveBeenCalled();
   });

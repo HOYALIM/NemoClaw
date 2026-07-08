@@ -16,6 +16,29 @@ export interface GatewayHealthWaitOptions {
   repairGatewayBootstrapSecrets: () => { repaired: boolean };
   runCaptureOpenshell: RunCaptureOpenshell;
   sleepSeconds: (seconds: number) => void;
+  now?: () => number;
+}
+
+export function getGatewayHealthWaitBudgetMs(
+  healthPollCount: number,
+  healthPollIntervalSeconds: number,
+): number {
+  const normalizedCount = Number.isFinite(healthPollCount) ? Math.max(0, healthPollCount) : 0;
+  const normalizedIntervalSeconds = Number.isFinite(healthPollIntervalSeconds)
+    ? Math.max(0, healthPollIntervalSeconds)
+    : 0;
+  return normalizedCount <= 0 ? 0 : Math.max(1, normalizedCount * normalizedIntervalSeconds * 1000);
+}
+
+export function formatGatewayHealthWaitBudget(
+  healthPollCount: number,
+  healthPollIntervalSeconds: number,
+): string {
+  const budgetMs = getGatewayHealthWaitBudgetMs(healthPollCount, healthPollIntervalSeconds);
+  if (budgetMs <= 0) return "0s";
+  if (budgetMs < 1000) return `${Math.ceil(budgetMs)}ms`;
+  const seconds = budgetMs / 1000;
+  return Number.isInteger(seconds) ? `${seconds}s` : `${seconds.toFixed(1)}s`;
 }
 
 export async function waitForGatewayHealth({
@@ -29,8 +52,10 @@ export async function waitForGatewayHealth({
   repairGatewayBootstrapSecrets,
   runCaptureOpenshell,
   sleepSeconds,
+  now = Date.now,
 }: GatewayHealthWaitOptions): Promise<boolean> {
   const healthPollIntervalMs = Math.max(0, healthPollIntervalSeconds * 1000);
+  const waitBudgetMs = getGatewayHealthWaitBudgetMs(healthPollCount, healthPollIntervalSeconds);
   return (
     healthPollCount > 0 &&
     (await waitUntilAsync(
@@ -50,10 +75,11 @@ export async function waitForGatewayHealth({
         return isGatewayHealthy(status, namedInfo, currentInfo) && (await isGatewayHttpReady());
       },
       {
+        deadlineMs: now() + waitBudgetMs,
         initialIntervalMs: healthPollIntervalMs,
         maxIntervalMs: healthPollIntervalMs,
         backoffFactor: 1,
-        maxAttempts: healthPollCount,
+        now,
         sleep: (ms) => sleepSeconds(ms / 1000),
       },
     ))

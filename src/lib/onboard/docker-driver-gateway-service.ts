@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { spawnSync, type SpawnSyncOptions } from "node:child_process";
+import { type SpawnSyncOptions, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
 import { sleepSeconds, waitUntilAsync } from "../core/wait";
 import { isGatewayHealthy } from "../state/gateway";
 import { envInt } from "./env";
+import { formatGatewayHealthWaitBudget, getGatewayHealthWaitBudgetMs } from "./gateway-health-wait";
 import { isDockerDriverGatewayHttpReady } from "./gateway-http-readiness";
 
 export const OPENSHELL_GATEWAY_USER_SERVICE = "openshell-gateway";
@@ -49,6 +50,7 @@ export interface PackageManagedDockerDriverGatewayOptions {
   healthPollCount?: number;
   healthPollInterval?: number;
   isDockerDriverGatewayReady?: () => Promise<boolean>;
+  now?: () => number;
   registerDockerDriverGatewayEndpoint: () => boolean;
   runCaptureOpenshell: (args: string[], opts?: { ignoreError?: boolean }) => string;
   sleepSeconds?: (seconds: number) => void;
@@ -291,6 +293,7 @@ export async function startPackageManagedDockerDriverGateway({
   healthPollCount,
   healthPollInterval,
   isDockerDriverGatewayReady = isDockerDriverGatewayHttpReady,
+  now = Date.now,
   registerDockerDriverGatewayEndpoint,
   runCaptureOpenshell,
   sleepSeconds: sleepSecondsImpl = sleepSeconds,
@@ -324,6 +327,7 @@ export async function startPackageManagedDockerDriverGateway({
   const pollCount = healthPollCount ?? envInt("NEMOCLAW_HEALTH_POLL_COUNT", 30);
   const pollInterval = healthPollInterval ?? envInt("NEMOCLAW_HEALTH_POLL_INTERVAL", 2);
   const pollIntervalMs = Math.max(0, pollInterval * 1000);
+  const waitBudgetMs = getGatewayHealthWaitBudgetMs(pollCount, pollInterval);
   const healthy =
     pollCount > 0 &&
     (await waitUntilAsync(
@@ -339,10 +343,11 @@ export async function startPackageManagedDockerDriverGateway({
         );
       },
       {
+        deadlineMs: now() + waitBudgetMs,
         initialIntervalMs: pollIntervalMs,
         maxIntervalMs: pollIntervalMs,
         backoffFactor: 1,
-        maxAttempts: pollCount,
+        now,
         sleep: (ms) => sleepSecondsImpl(ms / 1000),
       },
     ));
@@ -355,7 +360,10 @@ export async function startPackageManagedDockerDriverGateway({
     return true;
   }
 
-  const message = "OpenShell gateway user service started but did not become healthy.";
+  const message = `OpenShell gateway user service started but did not become healthy within the configured ${formatGatewayHealthWaitBudget(
+    pollCount,
+    pollInterval,
+  )} health deadline.`;
   console.error(`  ${message}`);
   console.error("  Check: systemctl --user status openshell-gateway");
   if (exitOnFailure) process.exit(1);
