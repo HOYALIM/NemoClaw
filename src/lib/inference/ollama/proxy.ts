@@ -11,7 +11,7 @@ const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 const { ROOT, SCRIPTS, redact, run, runCapture, shellQuote } = require("../../runner");
 const { OLLAMA_PORT, OLLAMA_PROXY_PORT } = require("../../core/ports");
-const { waitForPort } = require("../../core/wait");
+const { waitForPort, waitUntil } = require("../../core/wait");
 const {
   getDefaultOllamaModel,
   getBootstrapOllamaModelOptions,
@@ -763,6 +763,40 @@ async function pullOllamaModel(model) {
   return pullOllamaModelViaCli(model);
 }
 
+const PULLED_MODEL_LIST_ATTEMPTS = 8;
+const PULLED_MODEL_LIST_INITIAL_DELAY_MS = 250;
+const PULLED_MODEL_LIST_MAX_DELAY_MS = 2_000;
+
+function normalizeOllamaModelRef(model: string): string {
+  const ref = String(model || "").trim();
+  const lastSegment = ref.slice(ref.lastIndexOf("/") + 1);
+  return ref && !lastSegment.includes(":") ? `${ref}:latest` : ref;
+}
+
+function ollamaModelRefsMatch(left: string, right: string): boolean {
+  return normalizeOllamaModelRef(left) === normalizeOllamaModelRef(right);
+}
+
+/**
+ * Confirms that Ollama exposes a just-pulled model before onboarding continues.
+ */
+function waitForPulledOllamaModel(model): boolean {
+  const noSleep = process.env.VITEST === "true" || process.env.NEMOCLAW_TEST_NO_SLEEP === "1";
+  return waitUntil(
+    () =>
+      getOllamaModelOptions().some((listedModel: string) =>
+        ollamaModelRefsMatch(listedModel, model),
+      ),
+    {
+      maxAttempts: PULLED_MODEL_LIST_ATTEMPTS,
+      initialIntervalMs: PULLED_MODEL_LIST_INITIAL_DELAY_MS,
+      maxIntervalMs: PULLED_MODEL_LIST_MAX_DELAY_MS,
+      backoffFactor: 2,
+      ...(noSleep ? { sleep: () => {} } : {}),
+    },
+  );
+}
+
 // ── Tools-capability gate (issue #2667) ─────────────────────────
 //
 // Ollama models without the "tools" capability fail at first agent prompt
@@ -857,6 +891,9 @@ async function checkOllamaModelToolSupport(
   return { ok: true, allowToolsIncompatible: true };
 }
 
+/**
+ * Pulls, validates, and warms the selected Ollama model for onboarding.
+ */
 async function prepareOllamaModel(
   model,
   installedModels: string[] = [],
@@ -867,7 +904,9 @@ async function prepareOllamaModel(
   allowToolsIncompatible?: boolean;
   daemonFailure?: boolean;
 }> {
-  const alreadyInstalled = installedModels.includes(model);
+  const alreadyInstalled = installedModels.some((listedModel) =>
+    ollamaModelRefsMatch(listedModel, model),
+  );
   if (!alreadyInstalled) {
     console.log(`  Pulling Ollama model: ${model}`);
     if (!(await pullOllamaModel(model))) {
@@ -876,6 +915,14 @@ async function prepareOllamaModel(
         message:
           `Failed to pull Ollama model '${model}'. ` +
           "Check the model name and that Ollama can access the registry, then try another model.",
+      };
+    }
+    if (!waitForPulledOllamaModel(model)) {
+      return {
+        ok: false,
+        message:
+          `Ollama pull for '${model}' completed, but Ollama did not list the model afterward. ` +
+          "Wait for Ollama to finish registering the model, then choose it again.",
       };
     }
   }
@@ -969,4 +1016,5 @@ export {
   pullOllamaModel,
   startOllamaAuthProxy,
   unloadOllamaModels,
+  waitForPulledOllamaModel,
 };
