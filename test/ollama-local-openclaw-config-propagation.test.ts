@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   buildConfig,
   buildLocalOllamaSmallContextCompaction,
+  buildManagedInferenceSafeguardCompaction,
 } from "../scripts/generate-openclaw-config.mts";
 import { patchStagedDockerfile } from "../src/lib/onboard/dockerfile-patch";
 
@@ -131,7 +132,7 @@ describe("ollama-local OpenClaw config propagation", () => {
   });
 });
 
-describe("ollama-local small-context compaction policy (#5468)", () => {
+describe("OpenClaw managed-route compaction policy (#5468, #4781)", () => {
   it("emits a lowered compaction reserve for a small Local Ollama window", () => {
     const config = buildConfig({
       NEMOCLAW_MODEL: "qwen2.5:0.5b",
@@ -152,7 +153,7 @@ describe("ollama-local small-context compaction policy (#5468)", () => {
     });
   });
 
-  it("does not touch compaction for a non-ollama upstream provider", () => {
+  it("uses safeguard compaction for remote managed inference (#4781)", () => {
     const config = buildConfig({
       NEMOCLAW_MODEL: "nvidia/nemotron-3-super-120b-a12b",
       NEMOCLAW_PROVIDER_KEY: "inference",
@@ -164,7 +165,13 @@ describe("ollama-local small-context compaction policy (#5468)", () => {
       NEMOCLAW_MAX_TOKENS: "4096",
       NEMOCLAW_AGENT_TIMEOUT: "600",
     });
-    expect(config.agents.defaults.compaction).toBeUndefined();
+    expect(config.agents.defaults.compaction).toEqual({
+      mode: "safeguard",
+      maxHistoryShare: 0.35,
+      recentTurnsPreserve: 1,
+      qualityGuard: { enabled: true, maxRetries: 0 },
+      truncateAfterCompaction: true,
+    });
   });
 
   it("leaves OpenClaw's default reserve intact for large Local Ollama windows", () => {
@@ -180,6 +187,23 @@ describe("ollama-local small-context compaction policy (#5468)", () => {
       NEMOCLAW_AGENT_TIMEOUT: "600",
     });
     expect(config.agents.defaults.compaction).toBeUndefined();
+  });
+
+  it("does not enable managed-inference safeguards outside inference.local", () => {
+    expect(
+      buildManagedInferenceSafeguardCompaction(
+        "inference",
+        "nvidia-prod",
+        "https://integrate.api.nvidia.com/v1",
+      ),
+    ).toBeUndefined();
+    expect(
+      buildManagedInferenceSafeguardCompaction(
+        "nvidia-prod",
+        "nvidia-prod",
+        "https://inference.local/v1",
+      ),
+    ).toBeUndefined();
   });
 
   it("clamps the reserve so the prompt budget never drops below OpenClaw's 8k minimum", () => {

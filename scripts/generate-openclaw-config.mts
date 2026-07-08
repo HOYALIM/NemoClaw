@@ -74,6 +74,15 @@ const OPENCLAW_MIN_PROMPT_BUDGET_TOKENS = 8_000;
 const SMALL_OLLAMA_CONTEXT_THRESHOLD =
   OPENCLAW_DEFAULT_RESERVE_TOKENS_FLOOR + OPENCLAW_MIN_PROMPT_BUDGET_TOKENS;
 const LOCAL_OLLAMA_UPSTREAM_PROVIDER = "ollama-local";
+const MANAGED_INFERENCE_PROVIDER_KEY = "inference";
+const MANAGED_INFERENCE_HOSTNAME = "inference.local";
+const MANAGED_INFERENCE_SAFEGUARD_COMPACTION: JsonObject = {
+  mode: "safeguard",
+  maxHistoryShare: 0.35,
+  recentTurnsPreserve: 1,
+  qualityGuard: { enabled: true, maxRetries: 0 },
+  truncateAfterCompaction: true,
+};
 const FALSE_VALUES = new Set(["0", "false", "no", "off"]);
 const WEB_SEARCH_PROVIDERS = {
   brave: { credentialEnv: "BRAVE_API_KEY" },
@@ -1018,6 +1027,38 @@ export function buildLocalOllamaSmallContextCompaction(
   return { reserveTokens, reserveTokensFloor: reserveTokens };
 }
 
+function isManagedInferenceLocalRoute(
+  providerKey: string | undefined,
+  inferenceBaseUrl: string,
+): boolean {
+  if ((providerKey || "").trim() !== MANAGED_INFERENCE_PROVIDER_KEY) {
+    return false;
+  }
+  return parseUrl(normalizeUrlForParse(inferenceBaseUrl)).hostname === MANAGED_INFERENCE_HOSTNAME;
+}
+
+// Managed remote inference sessions use OpenClaw's safeguard compaction rather
+// than its plain runtime compactor. This keeps manual `/compact` bounded:
+// summarize aggressively, preserve only the latest turn verbatim, avoid extra
+// quality-regeneration LLM calls, and rotate the active transcript so future
+// token accounting reads the compacted successor log.
+export function buildManagedInferenceSafeguardCompaction(
+  providerKey: string | undefined,
+  upstreamProvider: string | undefined,
+  inferenceBaseUrl: string,
+): JsonObject | undefined {
+  if (!isManagedInferenceLocalRoute(providerKey, inferenceBaseUrl)) {
+    return undefined;
+  }
+  if ((upstreamProvider || "").trim() === LOCAL_OLLAMA_UPSTREAM_PROVIDER) {
+    return undefined;
+  }
+  return {
+    ...MANAGED_INFERENCE_SAFEGUARD_COMPACTION,
+    qualityGuard: { ...MANAGED_INFERENCE_SAFEGUARD_COMPACTION.qualityGuard },
+  };
+}
+
 export function buildConfig(env: Env = process.env): JsonObject {
   const proxyHost = env.NEMOCLAW_PROXY_HOST || "10.200.0.1";
   const proxyPort = env.NEMOCLAW_PROXY_PORT || "3128";
@@ -1236,6 +1277,14 @@ export function buildConfig(env: Env = process.env): JsonObject {
   );
   if (smallOllamaCompaction) {
     agentDefaults.compaction = smallOllamaCompaction;
+  }
+  const managedInferenceCompaction = buildManagedInferenceSafeguardCompaction(
+    providerKey,
+    env.NEMOCLAW_UPSTREAM_PROVIDER,
+    inferenceBaseUrl,
+  );
+  if (managedInferenceCompaction) {
+    agentDefaults.compaction = managedInferenceCompaction;
   }
 
   const config: JsonObject = {
