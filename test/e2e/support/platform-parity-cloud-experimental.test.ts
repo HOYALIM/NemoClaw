@@ -27,6 +27,10 @@ const dcodeTavilyCheck = path.join(
   process.cwd(),
   "test/e2e/e2e-cloud-experimental/checks/09-deepagents-code-tavily-opt-in.sh",
 );
+const dcodeFreshReonboardCheck = path.join(
+  process.cwd(),
+  "test/e2e/e2e-cloud-experimental/checks/04-deepagents-code-fresh-reonboard.sh",
+);
 
 function shellResult(exitCode: number, stdout: string, stderr = ""): ShellProbeResult {
   return {
@@ -49,22 +53,13 @@ describe("P0-E cloud-experimental parity guardrails", () => {
     const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-fake-openshell-"));
     try {
       fs.writeFileSync(path.join(binDir, "openshell"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
-      const result = spawnSync(
-        "bash",
-        [
-          path.join(
-            process.cwd(),
-            "test/e2e/e2e-cloud-experimental/checks/04-deepagents-code-fresh-reonboard.sh",
-          ),
-        ],
-        {
-          encoding: "utf8",
-          env: {
-            PATH: `${binDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
-            SANDBOX_NAME: "openclaw-sandbox",
-          },
+      const result = spawnSync("bash", [dcodeFreshReonboardCheck], {
+        encoding: "utf8",
+        env: {
+          PATH: `${binDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+          SANDBOX_NAME: "openclaw-sandbox",
         },
-      );
+      });
 
       expect(result.status, result.stderr).toBe(0);
       expect(result.stdout).toContain(
@@ -73,6 +68,18 @@ describe("P0-E cloud-experimental parity guardrails", () => {
     } finally {
       fs.rmSync(binDir, { force: true, recursive: true });
     }
+  });
+
+  it("keeps live DCode config inspection and mutation-boundary coverage in the fresh re-onboard check", () => {
+    const script = fs.readFileSync(dcodeFreshReonboardCheck, "utf8");
+
+    expect(script).toContain('"$CLI" "$SANDBOX_NAME" config get');
+    expect(script).toContain("config get --key models.default");
+    expect(script).toContain("config get --format yaml");
+    expect(script).toContain("config set --key models.default");
+    expect(script).toContain("sha256sum /sandbox/.deepagents/config.toml");
+    expect(script).toContain("config is baked into the sandbox image at build time");
+    expect(script).toContain("re-onboard with the new selection");
   });
 
   it("preserves the repeated env-unset pairs from the failed observability invocation", async () => {
@@ -263,6 +270,73 @@ describe("P0-E cloud-experimental parity guardrails", () => {
     expect(commands[1]).toMatch(
       /^SINGLE_LINE_COMMAND:\/usr\/local\/lib\/nemoclaw\/dcode-managed-exec \/opt\/venv\/bin\/python3 -c /,
     );
+  });
+
+  it("keeps Deep Agents fetch_url probe command single-line for OpenShell exec", () => {
+    const result = spawnSync(
+      "bash",
+      [
+        path.join(
+          process.cwd(),
+          "test/e2e/e2e-cloud-experimental/checks/06-deepagents-code-python-egress.sh",
+        ),
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          NEMOCLAW_E2E_PYTHON_EGRESS_SELF_TEST: "fetch-probe-command-shape",
+          PATH: process.env.PATH ?? "/usr/bin:/bin",
+        },
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe("NO_NEWLINE_IN_FETCH_COMMAND");
+  });
+
+  it.each([
+    [
+      "accepts an explicit non-empty success response",
+      "fetch-success-classification",
+      "FETCH_SUCCESS:200:1234",
+      0,
+      "1 passed",
+    ],
+    [
+      "accepts explicit denial evidence",
+      "fetch-blocked-classification",
+      "FETCH_BLOCKED:network policy denied",
+      0,
+      "1 passed",
+    ],
+    [
+      "rejects an unclassified fetch error",
+      "fetch-blocked-classification",
+      "FETCH_ERROR:opaque 403",
+      1,
+      "lacked denial evidence",
+    ],
+  ] as const)("%s from the fetch_url probe", (_label, selfTest, fixture, status, expected) => {
+    const result = spawnSync(
+      "bash",
+      [
+        path.join(
+          process.cwd(),
+          "test/e2e/e2e-cloud-experimental/checks/06-deepagents-code-python-egress.sh",
+        ),
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          NEMOCLAW_E2E_PYTHON_EGRESS_SELF_TEST: selfTest,
+          NEMOCLAW_E2E_FETCH_URL_PROBE_FIXTURE: fixture,
+          PATH: process.env.PATH ?? "/usr/bin:/bin",
+        },
+      },
+    );
+
+    expect(result.status).toBe(status);
+    expect(`${result.stdout}\n${result.stderr}`).toContain(expected);
   });
 
   it("keeps Deep Agents secret-boundary probe command single-line for OpenShell exec", () => {

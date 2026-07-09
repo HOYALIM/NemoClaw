@@ -3480,9 +3480,17 @@ function validateJetsonRunnerDispatchGuard(errors: string[], jobs: WorkflowRecor
       "jetson-nvmap-gpu dispatch guard must run unless allow_jetson_runner_queue is true",
     );
   }
+  if (
+    asRecord(guard.env).JETSON_E2E_RUNNER_LABEL !==
+    "${{ vars.JETSON_E2E_RUNNER_LABEL || 'linux-arm64-gpu-jetson-orin-latest-1' }}"
+  ) {
+    errors.push(
+      "jetson-nvmap-gpu dispatch guard must receive the configured Jetson runner label",
+    );
+  }
   requireRunContains(errors, guard, "allow_jetson_runner_queue=true");
   requireRunContains(errors, guard, "timeout-minutes");
-  requireRunContains(errors, guard, "linux-arm64-gpu-jetson-orin-latest-1");
+  requireRunContains(errors, guard, "${JETSON_E2E_RUNNER_LABEL}");
 }
 
 /** Validates the top-level E2E workflow contract enforced by support tests. */

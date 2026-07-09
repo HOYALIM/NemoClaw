@@ -71,11 +71,17 @@ describe("Jetson nvmap GPU E2E workflow boundary", () => {
     }
   });
 
-  it("fails explicit Jetson dispatch on hosted runners unless runner queueing is confirmed", () => {
+  it("fails explicit Jetson dispatch on hosted runners unless runner queueing is confirmed (#6430)", () => {
     const workflow = readWorkflow();
     const job = (workflow.jobs as Record<string, unknown>)["jetson-nvmap-gpu"] as {
       "runs-on"?: string;
-      steps?: Array<{ if?: string; name?: string; run?: string; uses?: string }>;
+      steps?: Array<{
+        env?: Record<string, string>;
+        if?: string;
+        name?: string;
+        run?: string;
+        uses?: string;
+      }>;
     };
     const inputs = workflowDispatchInputs();
     const guard = job.steps?.find((step) => step.name === "Guard Jetson runner dispatch");
@@ -97,9 +103,12 @@ describe("Jetson nvmap GPU E2E workflow boundary", () => {
       "${{ inputs.allow_jetson_runner_queue && (vars.JETSON_E2E_RUNNER_LABEL || 'linux-arm64-gpu-jetson-orin-latest-1') || 'ubuntu-latest' }}",
     );
     expect(guard?.if).toBe("${{ !inputs.allow_jetson_runner_queue }}");
+    expect(guard?.env?.JETSON_E2E_RUNNER_LABEL).toBe(
+      "${{ vars.JETSON_E2E_RUNNER_LABEL || 'linux-arm64-gpu-jetson-orin-latest-1' }}",
+    );
     expect(guard?.run).toContain("allow_jetson_runner_queue=true");
     expect(guard?.run).toContain("timeout-minutes");
-    expect(guard?.run).toContain("linux-arm64-gpu-jetson-orin-latest-1");
+    expect(guard?.run).toContain("${JETSON_E2E_RUNNER_LABEL}");
     expect(checkoutIndex).toBeLessThan(guardIndex);
     expect(guardIndex).toBeLessThan(dockerAuthIndex);
     expect(upload?.if).toBe("always()");

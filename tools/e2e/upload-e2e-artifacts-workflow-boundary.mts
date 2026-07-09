@@ -46,7 +46,7 @@ type WorkflowStep = WorkflowRecord & {
 };
 
 type ExplicitUploadContract = {
-  name?: string;
+  name: string;
   path?: string;
 };
 
@@ -123,6 +123,12 @@ const EXPLICIT_UPLOAD_CONTRACTS = new Map<string, ExplicitUploadContract>([
     },
   ],
   [
+    "openshell-gateway-upgrade",
+    {
+      name: "e2e-openshell-gateway-upgrade-${{ matrix.legacy.id }}",
+    },
+  ],
+  [
     "bedrock-runtime-compatible-anthropic",
     {
       name: "e2e-bedrock-runtime-compatible-anthropic-${{ matrix.agent }}",
@@ -134,12 +140,6 @@ const EXPLICIT_UPLOAD_CONTRACTS = new Map<string, ExplicitUploadContract>([
     {
       name: "e2e-channels-stop-start-${{ matrix.agent }}",
       path: "e2e-artifacts/live/channels-stop-start/${{ matrix.agent }}/",
-    },
-  ],
-  [
-    "openshell-gateway-upgrade",
-    {
-      name: "e2e-openshell-gateway-upgrade-${{ matrix.legacy.id }}",
     },
   ],
   [
