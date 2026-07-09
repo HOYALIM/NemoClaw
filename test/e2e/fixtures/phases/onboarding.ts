@@ -47,6 +47,8 @@ const MISSING_SANDBOX_DELETE_PATTERNS = [
   /sandbox does not exist/i,
   /no such sandbox/i,
 ];
+const POLICY_PRESETS_REQUIRED_PATTERN =
+  /NEMOCLAW_POLICY_PRESETS is required when NEMOCLAW_POLICY_MODE=custom/i;
 
 export interface OnboardingSecrets {
   required(name: string): string;
@@ -63,8 +65,8 @@ export interface OnboardingOptions {
 }
 
 export interface OnboardingExpectedFailure {
-  phase: "preflight";
-  errorClass: "docker-missing";
+  phase: "onboarding" | "preflight";
+  errorClass: "docker-missing" | "policy-presets-required";
 }
 
 export interface NemoClawInstance {
@@ -171,6 +173,9 @@ export class OnboardingPhaseFixture {
       switch (environment.onboarding) {
         case "cloud-openclaw":
           result = await this.cloudOpenClaw(environment, options);
+          break;
+        case "cloud-openclaw-policy-custom-missing-presets":
+          result = await this.cloudOpenClawPolicyCustomMissingPresets(environment, options);
           break;
         case "cloud-openclaw-no-docker":
           result = await this.cloudOpenClawNoDocker(environment, options);
@@ -314,6 +319,51 @@ export class OnboardingPhaseFixture {
     } finally {
       await rm(shimDir, { force: true, recursive: true });
     }
+  }
+
+  async cloudOpenClawPolicyCustomMissingPresets(
+    environment: EnvironmentReady,
+    options: OnboardingOptions = {},
+  ): Promise<NemoClawInstance> {
+    if (!environment.docker.available) {
+      throw new Error(
+        "cloud-openclaw-policy-custom-missing-presets onboarding requires an available Docker runtime.",
+      );
+    }
+    const sandboxName = sandboxNameFromOptions(environment.onboarding, options);
+    const apiKey = this.secrets.required("NVIDIA_INFERENCE_API_KEY");
+    this.registerSandboxCleanup(sandboxName);
+    const result = await this.host.nemoclaw(ONBOARD_ARGS, {
+      artifactName: "onboard-cloud-openclaw-policy-custom-missing-presets",
+      env: commandEnv(sandboxName, {
+        NVIDIA_INFERENCE_API_KEY: apiKey,
+        NEMOCLAW_POLICY_MODE: "custom",
+        NEMOCLAW_POLICY_PRESETS: "",
+      }),
+      redactionValues: [apiKey],
+      timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    });
+    if (result.exitCode === 0) {
+      throw new Error("cloud-openclaw-policy-custom-missing-presets unexpectedly succeeded.");
+    }
+    if (!POLICY_PRESETS_REQUIRED_PATTERN.test(resultText(result))) {
+      throw new Error(
+        `cloud-openclaw-policy-custom-missing-presets failed without the policy preset signature: ${resultText(result)}`,
+      );
+    }
+    return {
+      onboarding: environment.onboarding,
+      sandboxName,
+      agent: "openclaw",
+      provider: "nvidia",
+      providerEnv: "cloud",
+      gatewayUrl: OPENCLAW_GATEWAY_URL,
+      result,
+      expectedFailure: {
+        phase: "onboarding",
+        errorClass: "policy-presets-required",
+      },
+    };
   }
 
   async destroySandbox(sandboxName: string, artifactName?: string): Promise<ShellProbeResult> {
