@@ -26,6 +26,9 @@ describe("release gate workflow resource contracts", () => {
     expect(tuiJob.needs).toBe("generate-matrix");
     expect(tuiJob.if).not.toContain("always()");
     expect(tuiJob.if).toContain(",openclaw-tui-chat-correlation,");
+    expect(tuiJob.env?.NEMOCLAW_PUBLIC_INSTALL_REF).toBe(
+      "${{ inputs.checkout_sha || github.sha }}",
+    );
   });
 
   it("budgets cold Ollama pulls in the consolidated GPU lane", () => {

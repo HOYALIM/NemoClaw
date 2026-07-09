@@ -77,11 +77,18 @@ export function buildInstallerInvocation({
   repoRoot,
   env = process.env,
 }: InstallerInvocationOptions): InstallerInvocation {
+  const publicInstallRef = env.NEMOCLAW_PUBLIC_INSTALL_REF;
   return env.NEMOCLAW_E2E_PUBLIC_INSTALL === "1"
     ? (() => {
         const installUrl = validatePublicInstallUrl(
           env.NEMOCLAW_INSTALL_SCRIPT_URL ?? DEFAULT_INSTALL_URL,
         );
+        const publicInstallerEnv = [
+          "NEMOCLAW_NON_INTERACTIVE=1",
+          "NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1",
+          publicInstallRef ? `NEMOCLAW_INSTALL_REF=${shellQuote(publicInstallRef)}` : "",
+          publicInstallRef ? `NEMOCLAW_INSTALL_TAG=${shellQuote(publicInstallRef)}` : "",
+        ].filter(Boolean);
         return {
           mode: "public" as const,
           installUrl,
@@ -90,8 +97,7 @@ export function buildInstallerInvocation({
             "&&",
             `curl -fsSL ${shellQuote(installUrl)}`,
             "|",
-            "NEMOCLAW_NON_INTERACTIVE=1",
-            "NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1",
+            ...publicInstallerEnv,
             "bash",
           ].join(" "),
         };
