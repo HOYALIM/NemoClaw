@@ -27,11 +27,57 @@ describe("LangChain Deep Agents Code image credential boundary", () => {
     const fakeSecret = "sk-TEST-FAKE-DO-NOT-USE-0000000000000000000000";
     const result = runWrapper(wrapperPath, ["-n", "hi"], { OPENAI_API_KEY: fakeSecret });
 
-    expect(result.status).not.toBe(0);
+    expect(result.status).toBe(2);
     expect(result.stderr).toContain("OPENAI_API_KEY");
     expect(result.stderr).not.toContain(fakeSecret);
     expect(result.stderr).toContain("nemoclaw credentials");
     expect(result.stdout).not.toContain("dcode-stub-ran");
+    expect(fs.existsSync(ranMarker)).toBe(false);
+  });
+
+  it.each([
+    { name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: "http://host.openshell.internal:4318" },
+    { name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: "http://localhost:4317/" },
+    {
+      name: "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+      value: "http://127.0.0.1:4318/v1/traces",
+    },
+    {
+      name: "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+      value: "http://[::1]:4318/v1/traces",
+    },
+  ])("allows local OTLP endpoint env var $name=$value", ({ name, value }) => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-dcode-local-otel-"));
+    const { wrapperPath, ranMarker } = makeWrapperFixture(tempDir);
+    const result = runWrapper(wrapperPath, ["-n", "hi"], { [name]: value });
+
+    expect(result.status, `${name}=${value}`).toBe(0);
+    expect(result.stdout).toContain("dcode-stub-ran");
+    expect(result.stderr).not.toContain("refusing to start");
+    expect(fs.existsSync(ranMarker)).toBe(true);
+  });
+
+  it.each([
+    { name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: "https://collector.example/v1/traces" },
+    { name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: "http://host.openshell.internal:9999" },
+    {
+      name: "OTEL_EXPORTER_OTLP_ENDPOINT",
+      value: "http://host.openshell.internal:4318/v1/traces?api_key=opaque",
+    },
+    {
+      name: "OTEL_EXPORTER_OTLP_ENDPOINT",
+      value: "http://token@host.openshell.internal:4318",
+    },
+    { name: "OTEL_EXPORTER_OTLP_HEADERS", value: "authorization=opaque-value" },
+    { name: "CUSTOM_API_KEY", value: "http://host.openshell.internal:4318" },
+  ])("rejects non-local or non-endpoint OTLP env var $name=$value", ({ name, value }) => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-dcode-otel-reject-"));
+    const { wrapperPath, ranMarker } = makeWrapperFixture(tempDir);
+    const result = runWrapper(wrapperPath, ["-n", "hi"], { [name]: value });
+
+    expect(result.status, `${name}=${value}`).toBe(2);
+    expect(result.stderr).toContain(name);
+    expect(result.stderr).not.toContain(value);
     expect(fs.existsSync(ranMarker)).toBe(false);
   });
 

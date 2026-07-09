@@ -350,6 +350,35 @@ check("disabled", False)
     }
   });
 
+  it("allows direct-module local OTLP endpoint env vars only for endpoint names", () => {
+    const tempDir = createPackageFixture();
+    patchFixture(tempDir);
+    const allowed = spawnSync("python3", ["-m", "deepagents_code"], {
+      env: {
+        PATH: process.env.PATH,
+        PYTHONPATH: tempDir,
+        OTEL_EXPORTER_OTLP_ENDPOINT: "http://host.openshell.internal:4318",
+        OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://127.0.0.1:4318/v1/traces",
+      },
+      encoding: "utf8",
+    });
+
+    expect(allowed.status, allowed.stderr).toBe(0);
+    expect(allowed.stdout).toContain("managed-posture-ok");
+
+    const rejected = spawnSync("python3", ["-m", "deepagents_code"], {
+      env: {
+        PATH: process.env.PATH,
+        PYTHONPATH: tempDir,
+        CUSTOM_API_KEY: "http://host.openshell.internal:4318",
+      },
+      encoding: "utf8",
+    });
+
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain("runtime environment variable CUSTOM_API_KEY");
+  });
+
   it("allows only scoped managed credential-shaped runtime values", () => {
     const tempDir = createPackageFixture();
     patchFixture(tempDir);

@@ -51,6 +51,20 @@ _CREDENTIAL_ENV_NAMES = {
     "OTEL_EXPORTER_OTLP_HEADERS",
     "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
 }
+_LOCAL_OTLP_ENDPOINT_ENV_NAMES = {
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+}
+_LOCAL_OTLP_ENDPOINT_HOSTS = {
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    "host.openshell.internal",
+    "host.docker.internal",
+    "host.containers.internal",
+}
+_LOCAL_OTLP_ENDPOINT_PORTS = {4317, 4318}
+_LOCAL_OTLP_ENDPOINT_PATHS = {"", "/", "/v1/traces"}
 # Python's \s also includes control separators that ECMAScript excludes, so
 # spell out the canonical whitespace set for cross-runtime parity.
 _ECMASCRIPT_NON_WHITESPACE_SECRET_CHAR = (
@@ -213,6 +227,44 @@ def _is_managed_value(name: str, value: str) -> bool:
     return False
 
 
+def _is_allowed_local_otlp_endpoint(name: str, value: str) -> bool:
+    if name.upper() not in _LOCAL_OTLP_ENDPOINT_ENV_NAMES:
+        return False
+    if not value.isascii() or any(
+        character.isspace()
+        or ord(character) < 32
+        or ord(character) == 127
+        for character in value
+    ):
+        return False
+    if any(character in value for character in ("%", "\\", "'", '"')):
+        return False
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme != "http"
+        or not value.startswith("http://")
+        or not parsed.netloc
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in _LOCAL_OTLP_ENDPOINT_PATHS
+    ):
+        return False
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    if (
+        port not in _LOCAL_OTLP_ENDPOINT_PORTS
+        or parsed.hostname not in _LOCAL_OTLP_ENDPOINT_HOSTS
+    ):
+        return False
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    return value == f"http://{host}:{port}{parsed.path}"
+
+
 def _assert_safe_environment() -> None:
     for name, value in os.environ.items():
         if _OPENSHELL_ENV_PLACEHOLDER_PREFIX in value:
@@ -224,14 +276,22 @@ def _assert_safe_environment() -> None:
             )
         if _is_managed_value(name, value):
             continue
-        if _contains_secret_shape(value) or (
-            len(value) >= 10
-            and (
-                _CREDENTIAL_NAME.search(name)
-                or _CREDENTIAL_CAMEL_NAME.search(name)
+        if _contains_secret_shape(value):
+            raise RuntimeError(
+                f"runtime environment variable {name} contains a credential; "
+                "use NemoClaw credential handling"
             )
-        ) or (
-            bool(value) and name.upper() in _CREDENTIAL_ENV_NAMES
+        if _is_allowed_local_otlp_endpoint(name, value):
+            continue
+        if (
+            (
+                len(value) >= 10
+                and (
+                    _CREDENTIAL_NAME.search(name)
+                    or _CREDENTIAL_CAMEL_NAME.search(name)
+                )
+            )
+            or (bool(value) and name.upper() in _CREDENTIAL_ENV_NAMES)
         ):
             raise RuntimeError(
                 f"runtime environment variable {name} contains a credential; "

@@ -119,6 +119,10 @@ run_dcode() {
 #       TELEGRAM_BOT_TOKEN, DISCORD_BOT_TOKEN) are allowed only when the value
 #       matches the platform-specific token shape AND does not embed a
 #       non-platform canonical secret prefix.
+#     * Local OTLP collector endpoints are allowed only for OTLP endpoint names,
+#       only as canonical HTTP URLs to loopback/OpenShell host aliases on
+#       standard OTLP ports, and never for OTLP headers or other credential
+#       names.
 #     * The env-file parser strips a leading `export ` keyword (mirroring
 #       python-dotenv) and rejects values containing dotenv expansion ($VAR,
 #       ${VAR}), command substitution ($(...) or backticks), because upstream
@@ -351,6 +355,59 @@ is_allowed_openshell_runtime_value() {
   [ "$name" = "OPENSHELL_TLS_KEY" ] && [ "$value" = "$OPENSHELL_TLS_KEY_PATH" ]
 }
 
+is_local_otlp_endpoint_name() {
+  case "$1" in
+    OTEL_EXPORTER_OTLP_ENDPOINT | OTEL_EXPORTER_OTLP_TRACES_ENDPOINT)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+is_allowed_local_otlp_endpoint_value() {
+  local value="$1"
+  local rest authority host port path
+  case "$value" in
+    http://*) rest="${value#http://}" ;;
+    *) return 1 ;;
+  esac
+  case "$rest" in
+    "" | *[[:space:]]* | *\'* | *\"* | *\\* | *\?* | *\#* | *%* | *@*)
+      return 1
+      ;;
+  esac
+  authority="${rest%%/*}"
+  [ -n "$authority" ] || return 1
+  path="${rest#"$authority"}"
+  if [[ "$authority" == \[::1\]:* ]]; then
+    host="::1"
+    port="${authority##*:}"
+  else
+    case "$authority" in
+      *:*)
+        host="${authority%%:*}"
+        port="${authority#*:}"
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  fi
+  [ "$port" = "4317" ] || [ "$port" = "4318" ] || return 1
+  case "$host" in
+    localhost | 127.0.0.1 | ::1 | host.openshell.internal | host.docker.internal | host.containers.internal) ;;
+    *)
+      return 1
+      ;;
+  esac
+  case "$path" in
+    "" | / | /v1/traces)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 is_dynamic_dotenv_value() {
   local value="$1"
   case "$value" in
@@ -444,6 +501,9 @@ assert_no_secret_runtime_env() {
     fi
     if is_secret_shaped_value "$value"; then
       refuse_secret_env "runtime environment variable" "$name"
+    fi
+    if is_local_otlp_endpoint_name "$name" && is_allowed_local_otlp_endpoint_value "$value"; then
+      continue
     fi
     if has_credential_name_context "$name" && [ ${#value} -ge 10 ] && ! is_allowed_openshell_runtime_value "$name" "$value"; then
       refuse_secret_env "runtime environment variable" "$name"
