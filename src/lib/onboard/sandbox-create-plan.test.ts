@@ -589,6 +589,46 @@ describe("prepareSandboxCreatePlan", () => {
     expect(providerArgs).toEqual(["tavily-search", "custom-provider"]);
   });
 
+  it("keeps only the selected managed web-search extra provider", () => {
+    const result = prepareSandboxCreatePlan({
+      basePolicyPath: "/repo/policy.yaml",
+      buildCtx: "/tmp/nemoclaw-build-1",
+      sandboxName: "sandbox",
+      channels,
+      enabledChannels: [],
+      disabledChannelNames: new Set(),
+      messagingTokenDefs: [],
+      reusableMessagingChannels: [],
+      reusableMessagingProviders: [],
+      extraProviders: ["brave-search", "tavily-search", "custom-provider"],
+      webSearchConfig: { fetchEnabled: true, provider: "brave" },
+      hermesToolGateways: [],
+      sandboxGpuConfig,
+      dockerDriverGateway: true,
+      appendResourceFlags: vi.fn(),
+      runProviderPreDeleteCleanup: vi.fn(),
+      upsertMessagingProviders: vi.fn(() => []),
+      getMessagingChannelForEnvKey: () => null,
+      getHermesToolGatewayProviderName: vi.fn(),
+      deps: {
+        resolveDockerGpuSandboxCreatePlan: vi.fn(() => ({
+          useDockerGpuPatch: false,
+          logMessage: null,
+        })),
+        prepareInitialSandboxCreatePolicy: vi.fn(() => ({
+          policyPath: "/tmp/policy.yaml",
+          appliedPresets: [],
+        })),
+        buildSandboxGpuCreateArgs: vi.fn(() => []),
+      },
+    });
+
+    const providerArgs = result.createArgs
+      .map((arg, index) => (arg === "--provider" ? result.createArgs[index + 1] : null))
+      .filter((value): value is string => value !== null);
+    expect(providerArgs).toEqual(["brave-search", "custom-provider"]);
+  });
+
   it("does not duplicate an extra provider that is already a messaging provider", () => {
     const result = prepareSandboxCreatePlan({
       basePolicyPath: "/repo/policy.yaml",

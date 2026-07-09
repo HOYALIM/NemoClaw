@@ -2749,7 +2749,7 @@ async function createSandboxWithBaseImageResolution(
     messagingTokenDefs,
     reusableMessagingChannels,
     reusableMessagingProviders,
-    extraProviders: registry.listExtraProviders(),
+    ...sandboxCreatePlan.extraProviderSelection(registry.listExtraProviders(), webSearchConfig),
     hermesToolGateways,
     sandboxGpuConfig: effectiveSandboxGpuConfig,
     dockerDriverGateway,
