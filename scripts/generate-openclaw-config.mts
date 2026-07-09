@@ -76,6 +76,18 @@ const SMALL_OLLAMA_CONTEXT_THRESHOLD =
 const LOCAL_OLLAMA_UPSTREAM_PROVIDER = "ollama-local";
 const MANAGED_INFERENCE_PROVIDER_KEY = "inference";
 const MANAGED_INFERENCE_HOSTNAME = "inference.local";
+// Upstream source of truth (#4781): OpenClaw's `AgentCompactionConfig` schema and
+// safeguard compactor/session runtime shipped by the exact `OPENCLAW_VERSION`
+// pin in the production image (`Dockerfile` and `Dockerfile.base`). The observed
+// long-running `/compact` operation and growing active context occur there after
+// NemoClaw hands off this config.
+// NemoClaw does not own that runtime, so this is a generator-side mitigation,
+// not a source fix.
+// The runtime-overrides E2E validates this object with the pinned OpenClaw CLI;
+// that does not prove live token reduction, so keep #4781 open. Remove this
+// override only after a newer pinned OpenClaw runtime has managed-inference
+// regression evidence that `/compact` completes and leaves a no-larger active
+// context without it.
 const MANAGED_INFERENCE_SAFEGUARD_COMPACTION: JsonObject = {
   mode: "safeguard",
   timeoutSeconds: 120,
@@ -1039,9 +1051,10 @@ function isManagedInferenceLocalRoute(
   return parseUrl(normalizeUrlForParse(inferenceBaseUrl)).hostname === MANAGED_INFERENCE_HOSTNAME;
 }
 
-// Managed remote inference sessions use OpenClaw's safeguard compaction rather
-// than its plain runtime compactor. A two-minute timeout bounds each attempt,
-// lifecycle notices expose automatic and agent-run compaction progress, and
+// Managed inference sessions other than Local Ollama use OpenClaw's safeguard
+// compaction rather than its plain runtime compactor. A two-minute timeout
+// bounds each attempt, lifecycle notices expose automatic and agent-run
+// compaction progress, and
 // successful compaction rotates the active transcript. These safeguards do not
 // guarantee that summarization succeeds or that the resulting context is smaller.
 export function buildManagedInferenceSafeguardCompaction(

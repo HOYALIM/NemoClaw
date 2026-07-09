@@ -176,6 +176,24 @@ describe("OpenClaw managed-route compaction policy (#5468, #4781)", () => {
     });
   });
 
+  it("treats a missing legacy upstream provider as remote managed inference (#4781)", () => {
+    expect(
+      buildManagedInferenceSafeguardCompaction(
+        "inference",
+        undefined,
+        "https://inference.local/v1",
+      ),
+    ).toEqual({
+      mode: "safeguard",
+      timeoutSeconds: 120,
+      maxHistoryShare: 0.35,
+      recentTurnsPreserve: 1,
+      qualityGuard: { enabled: true, maxRetries: 0 },
+      notifyUser: true,
+      truncateAfterCompaction: true,
+    });
+  });
+
   it("leaves OpenClaw's default reserve intact for large Local Ollama windows", () => {
     const config = buildConfig({
       NEMOCLAW_MODEL: "qwen2.5:7b",
@@ -198,6 +216,15 @@ describe("OpenClaw managed-route compaction policy (#5468, #4781)", () => {
         "nvidia-prod",
         "https://integrate.api.nvidia.com/v1",
       ),
+    ).toBeUndefined();
+  });
+
+  it.each([
+    "https://inference.local.evil/v1",
+    "https://inference.local@evil.example/v1",
+  ])("rejects a confusing managed-inference hostname %s (#4781)", (baseUrl) => {
+    expect(
+      buildManagedInferenceSafeguardCompaction("inference", "nvidia-prod", baseUrl),
     ).toBeUndefined();
   });
 
