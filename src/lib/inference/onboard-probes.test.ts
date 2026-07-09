@@ -825,6 +825,42 @@ exit 0
     );
   });
 
+  it("does not reuse a validation across different pinned address sets (#3771)", () => {
+    const body = `n=$(cat "${HARNESS_COUNTER}")
+n=$((n + 1))
+echo "$n" > "${HARNESS_COUNTER}"
+cat <<'JSON' > "$outfile"
+{"choices":[{"message":{"content":"OK"}}]}
+JSON
+printf '200'
+exit 0
+`;
+    withFakeCurlProbe(
+      {
+        script: makeFakeCurlScript(body),
+        dirPrefix: "nemoclaw-probe-cache-pins-",
+      },
+      ({ counter }) => {
+        const first = probeOpenAiLikeEndpoint(
+          "https://proxy.example.com/v1",
+          "custom-model",
+          "proxy-cache-key",
+          { skipResponsesProbe: true, pinnedAddresses: ["93.184.216.34"] },
+        );
+        const rebound = probeOpenAiLikeEndpoint(
+          "https://proxy.example.com/v1",
+          "custom-model",
+          "proxy-cache-key",
+          { skipResponsesProbe: true, pinnedAddresses: ["93.184.216.35"] },
+        );
+
+        expect(first).toMatchObject({ ok: true, api: "openai-completions" });
+        expect(rebound).toMatchObject({ ok: true, api: "openai-completions" });
+        expect(fs.readFileSync(counter, "utf8").trim()).toBe("2");
+      },
+    );
+  });
+
   it("keeps Responses-only and chat-only validations in separate cache entries", () => {
     withFakeCurlProbe(
       {

@@ -236,61 +236,6 @@ function getProbeAuthMode(_provider) {
   return undefined;
 }
 
-// Per-validation-probe curl timing. Tighter than the default 60s in
-// getCurlTimingArgs() because validation must not hang the wizard for a
-// minute on a misbehaving model. See issue #1601 (Bug 3).
-function getValidationProbeCurlArgs(opts) {
-  const args = isWsl(opts)
-    ? ["--connect-timeout", "20", "--max-time", "30"]
-    : ["--connect-timeout", "10", "--max-time", "15"];
-  return withValidationMaxTimeOverride(args);
-}
-
-function getDeepSeekV4ProValidationProbeCurlArgs(opts) {
-  const args = isWsl(opts)
-    ? ["--connect-timeout", "30", "--max-time", "150"]
-    : ["--connect-timeout", "20", "--max-time", "120"];
-  return withValidationMaxTimeOverride(args);
-}
-
-function getKimiK26ValidationProbeCurlArgs(opts) {
-  const args = isWsl(opts)
-    ? ["--connect-timeout", "20", "--max-time", "90"]
-    : ["--connect-timeout", "10", "--max-time", "60"];
-  return withValidationMaxTimeOverride(args);
-}
-
-function getExtendedNvidiaEndpointValidationProbeCurlArgs(opts) {
-  const args = isWsl(opts)
-    ? ["--connect-timeout", "30", "--max-time", "300"]
-    : ["--connect-timeout", "10", "--max-time", "300"];
-  return withValidationMaxTimeOverride(args);
-}
-
-function getCurlMaxTimeSeconds(args) {
-  const maxTimeIndex = args.indexOf("--max-time");
-  if (maxTimeIndex === -1) return 30;
-  const value = Number(args[maxTimeIndex + 1]);
-  return Number.isFinite(value) && value > 0 ? value : 30;
-}
-
-function withValidationMaxTimeOverride(args) {
-  const raw = (process.env[ONBOARD_VALIDATION_TIMEOUT_ENV] || "").trim();
-  if (!raw) return args;
-  const overrideSeconds = Math.ceil(Number(raw));
-  if (!Number.isFinite(overrideSeconds) || overrideSeconds <= 0) return args;
-  if (overrideSeconds <= getCurlMaxTimeSeconds(args)) return args;
-  const maxTimeIndex = args.indexOf("--max-time");
-  if (maxTimeIndex === -1) return args;
-  const next = [...args];
-  next[maxTimeIndex + 1] = String(overrideSeconds);
-  return next;
-}
-
-function getProbeProcessTimeoutMs(args) {
-  return (getCurlMaxTimeSeconds(args) + 5) * 1000;
-}
-
 function normalizeOpenAiLikeProbeEndpoint(endpointUrl) {
   return String(endpointUrl).replace(/\/+$/, "");
 }
@@ -308,6 +253,7 @@ function getOpenAiLikeProbeCacheKey(endpointUrl, model, apiKey, options = {}) {
     credentialHash,
     authMode: normalizeProbeAuthMode(options),
     allowHostDockerInternal: options.allowHostDockerInternal === true,
+    pinnedAddresses: Array.isArray(options.pinnedAddresses) ? [...options.pinnedAddresses] : null,
     requirements: getOpenAiLikeProbeRequirements(options),
   });
 }
@@ -734,10 +680,6 @@ function probeOpenAiLikeEndpoint(endpointUrl, model, apiKey, options = {}) {
     };
   }
 
-  const baseUrl = normalizeOpenAiLikeProbeEndpoint(endpointUrl);
-  const cacheKey = getOpenAiLikeProbeCacheKey(endpointUrl, model, apiKey, options);
-  const cachedProbe = getCachedOpenAiLikeProbeResult(cacheKey);
-  if (cachedProbe) return cachedProbe;
   // SSRF source boundary: reject a private/internal endpoint before any curl.
   // The sandbox-internal alias is handled above, and host.docker.internal is
   // gated by the allowHostDockerInternal check at the top of this function —
@@ -793,6 +735,9 @@ function probeOpenAiLikeEndpoint(endpointUrl, model, apiKey, options = {}) {
   // captured, so a second DNS lookup here cannot rebind the hostname to a
   // private/internal address after the public preflight (TOCTOU — cv, #6293).
   const pinnedAddresses = options.pinnedAddresses;
+  const cacheKey = getOpenAiLikeProbeCacheKey(endpointUrl, model, apiKey, options);
+  const cachedProbe = getCachedOpenAiLikeProbeResult(cacheKey);
+  if (cachedProbe) return cachedProbe;
   let authConfig;
   try {
     authConfig = buildOpenAiLikeAuthConfig(apiKey, options);
