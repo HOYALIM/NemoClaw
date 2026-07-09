@@ -35,7 +35,7 @@ const MCP_SCANNED_UPLOAD_CONDITION =
   "${{ always() && steps.mcp_artifact_secret_scan.outcome == 'success' }}";
 const TARGET_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 const EXPECTED_UPLOAD_JOB_COUNT = 75;
-const EXPECTED_DEFAULT_CALLER_COUNT = 64;
+const EXPECTED_DEFAULT_CALLER_COUNT = 63;
 
 type WorkflowRecord = Record<string, unknown>;
 type WorkflowStep = WorkflowRecord & {
@@ -46,8 +46,8 @@ type WorkflowStep = WorkflowRecord & {
 };
 
 type ExplicitUploadContract = {
-  name: string;
-  path: string;
+  name?: string;
+  path?: string;
 };
 
 const EXPLICIT_UPLOAD_CONTRACTS = new Map<string, ExplicitUploadContract>([
@@ -137,6 +137,12 @@ const EXPLICIT_UPLOAD_CONTRACTS = new Map<string, ExplicitUploadContract>([
     },
   ],
   [
+    "openshell-gateway-upgrade",
+    {
+      name: "e2e-openshell-gateway-upgrade-${{ matrix.legacy.id }}",
+    },
+  ],
+  [
     "mcp-bridge",
     {
       name: "e2e-mcp-bridge",
@@ -178,20 +184,61 @@ const EXPECTED_UPLOAD_POLICY = {
   "retention-days": 14,
 };
 
+/** Coerces parsed YAML nodes into object records for boundary validation. */
 function record(value: unknown): WorkflowRecord {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as WorkflowRecord)
     : {};
 }
 
+/** Coerces parsed YAML step lists into workflow step records. */
 function steps(value: unknown): WorkflowStep[] {
   return Array.isArray(value) ? (value as WorkflowStep[]) : [];
 }
 
+/** Returns stable object keys for exact schema comparisons. */
 function sortedKeys(value: WorkflowRecord): string[] {
   return Object.keys(value).sort();
 }
 
+/** Returns jobs that should use the shared E2E artifact upload action. */
+function collectExpectedUploadJobs(jobs: WorkflowRecord): Set<string> {
+  const expectedJobs = new Set<string>();
+  for (const [jobName, value] of Object.entries(jobs)) {
+    const job = record(value);
+    if (jobName === "live" || record(job.env).E2E_JOB === "1") expectedJobs.add(jobName);
+  }
+  return expectedJobs;
+}
+
+/** Returns expected upload callers that rely on action defaults. */
+function collectDefaultUploadJobs(expectedJobs: ReadonlySet<string>): string[] {
+  const defaultJobs: string[] = [];
+  for (const jobName of expectedJobs) {
+    if (!EXPLICIT_UPLOAD_CONTRACTS.has(jobName)) defaultJobs.push(jobName);
+  }
+  return defaultJobs;
+}
+
+/** Returns invocations of the reviewed E2E artifact upload action. */
+function collectUploadSteps(jobSteps: readonly WorkflowStep[]): WorkflowStep[] {
+  const uploadSteps: WorkflowStep[] = [];
+  for (const step of jobSteps) {
+    if (step.uses === UPLOAD_E2E_ARTIFACTS_ACTION) uploadSteps.push(step);
+  }
+  return uploadSteps;
+}
+
+/** Returns whether steps after upload contain work other than Docker auth cleanup. */
+function hasUnexpectedPostUploadStep(stepsAfterUpload: readonly WorkflowStep[]): boolean {
+  if (stepsAfterUpload.length > 1) return true;
+  for (const step of stepsAfterUpload) {
+    if (step.name !== "Clean up Docker auth") return true;
+  }
+  return false;
+}
+
+/** Validates the reviewed upload-e2e-artifacts composite action contract. */
 export function validateUploadE2eArtifactsAction(actionPath = DEFAULT_ACTION_PATH): string[] {
   const source = readFileSync(actionPath, "utf8");
   const action = record(YAML.parse(source));
@@ -249,20 +296,12 @@ export function validateUploadE2eArtifactsAction(actionPath = DEFAULT_ACTION_PAT
   return errors;
 }
 
+/** Validates every E2E workflow caller of the upload-e2e-artifacts action. */
 export function validateUploadE2eArtifactsInvocations(workflow: WorkflowRecord): string[] {
   const errors: string[] = [];
   const jobs = record(workflow.jobs);
-  const expectedJobs = new Set(
-    Object.entries(jobs)
-      .filter(([jobName, value]) => {
-        const job = record(value);
-        return jobName === "live" || record(job.env).E2E_JOB === "1";
-      })
-      .map(([jobName]) => jobName),
-  );
-  const defaultJobs = [...expectedJobs].filter(
-    (jobName) => !EXPLICIT_UPLOAD_CONTRACTS.has(jobName),
-  );
+  const expectedJobs = collectExpectedUploadJobs(jobs);
+  const defaultJobs = collectDefaultUploadJobs(expectedJobs);
 
   if (expectedJobs.size !== EXPECTED_UPLOAD_JOB_COUNT) {
     errors.push(
@@ -301,7 +340,7 @@ export function validateUploadE2eArtifactsInvocations(workflow: WorkflowRecord):
       }
     }
 
-    const uploadSteps = jobSteps.filter((step) => step.uses === UPLOAD_E2E_ARTIFACTS_ACTION);
+    const uploadSteps = collectUploadSteps(jobSteps);
     if (!expected) {
       if (uploadSteps.length > 0) {
         errors.push(`${jobName} must not use upload-e2e-artifacts`);
@@ -331,10 +370,7 @@ export function validateUploadE2eArtifactsInvocations(workflow: WorkflowRecord):
       );
     }
     const stepsAfterUpload = jobSteps.slice(jobSteps.indexOf(upload) + 1);
-    if (
-      stepsAfterUpload.length > 1 ||
-      stepsAfterUpload.some((step) => step.name !== "Clean up Docker auth")
-    ) {
+    if (hasUnexpectedPostUploadStep(stepsAfterUpload)) {
       errors.push(
         `${jobName} upload-e2e-artifacts invocation must follow artifact producers and precede only Docker auth cleanup`,
       );
@@ -363,6 +399,7 @@ export function validateUploadE2eArtifactsInvocations(workflow: WorkflowRecord):
   return errors;
 }
 
+/** Validates the upload action and all workflow invocations together. */
 export function validateUploadE2eArtifactsWorkflowBoundary(
   workflow: WorkflowRecord,
   actionPath = DEFAULT_ACTION_PATH,

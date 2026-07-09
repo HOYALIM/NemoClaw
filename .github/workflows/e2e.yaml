@@ -18,6 +18,11 @@ on:
         required: false
         default: ""
         type: string
+      allow_jetson_runner_queue:
+        description: "Required for jetson-nvmap-gpu: set true only after confirming an online Jetson runner; queued self-hosted jobs do not honor timeout-minutes before assignment."
+        required: false
+        default: false
+        type: boolean
       pr_number:
         description: Optional PR number for selective-dispatch result comments.
         required: false
@@ -2664,7 +2669,10 @@ jobs:
     # Required validation path: dispatch with jobs=jetson-nvmap-gpu or targets=jetson-nvmap-gpu.
     # Re-enable default dispatch only after a stable Jetson runner exists, then remove E2E_DEFAULT_ENABLED.
     if: ${{ contains(format(',{0},', inputs.jobs), ',jetson-nvmap-gpu,') || contains(format(',{0},', inputs.targets), ',jetson-nvmap-gpu,') }}
-    runs-on: ${{ vars.JETSON_E2E_RUNNER_LABEL || 'linux-arm64-gpu-jetson-orin-latest-1' }}
+    # GitHub does not apply timeout-minutes until after runner assignment. Keep
+    # unconfirmed manual Jetson dispatches on a hosted runner so they fail fast
+    # instead of queueing forever on an offline self-hosted runner label.
+    runs-on: ${{ inputs.allow_jetson_runner_queue && (vars.JETSON_E2E_RUNNER_LABEL || 'linux-arm64-gpu-jetson-orin-latest-1') || 'ubuntu-latest' }}
     timeout-minutes: 60
     env:
       E2E_JOB: "1"
@@ -2683,6 +2691,15 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
+
+      - name: Guard Jetson runner dispatch
+        if: ${{ !inputs.allow_jetson_runner_queue }}
+        run: |
+          set -euo pipefail
+          echo "::error::jetson-nvmap-gpu was selected without allow_jetson_runner_queue=true."
+          echo "::error::GitHub Actions does not apply timeout-minutes while a self-hosted job is queued before runner assignment."
+          echo "::error::Confirm an online runner with label ${JETSON_E2E_RUNNER_LABEL:-linux-arm64-gpu-jetson-orin-latest-1}, then re-run with allow_jetson_runner_queue=true."
+          exit 1
 
       - *dockerhub-auth
 
@@ -4894,7 +4911,7 @@ jobs:
               'jetson-nvmap-gpu': {
                 job: 'jetson-nvmap-gpu',
                 target: 'jetson-nvmap-gpu',
-                reason: 'default dispatch excludes Jetson until a stable Jetson runner is available',
+                reason: 'default dispatch excludes Jetson; explicit dispatch requires allow_jetson_runner_queue=true after confirming an online Jetson runner because queued jobs do not honor timeout-minutes before assignment',
               },
               'sandbox-rlimits-connect': {
                 job: 'sandbox-rlimits-connect',

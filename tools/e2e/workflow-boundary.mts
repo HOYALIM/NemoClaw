@@ -1997,20 +1997,50 @@ function requireCanonicalDockerHubCleanupRun(
   }
 }
 
+/** Returns workflow job names marked as standalone E2E execution jobs. */
+function collectE2eJobNames(jobs: WorkflowRecord): string[] {
+  const jobNames: string[] = [];
+  for (const [jobName, rawJob] of Object.entries(jobs)) {
+    if (asRecord(asRecord(rawJob).env).E2E_JOB === "1") jobNames.push(jobName);
+  }
+  return jobNames;
+}
+
+/** Returns image-consuming E2E jobs that must run Docker Hub authentication. */
+function collectImageJobNames(e2eJobNames: readonly string[]): string[] {
+  const imageJobNames = ["live"];
+  for (const jobName of e2eJobNames) {
+    if (!NO_IMAGE_E2E_JOBS.has(jobName)) imageJobNames.push(jobName);
+  }
+  return imageJobNames;
+}
+
+/** Returns the first step index whose action reference starts with the given prefix. */
+function indexOfStepUsingPrefix(steps: readonly WorkflowStep[], prefix: string): number {
+  for (let index = 0; index < steps.length; index += 1) {
+    if (stringValue(steps[index]?.uses).startsWith(prefix)) return index;
+  }
+  return -1;
+}
+
+/** Returns the first step index with the given display name. */
+function indexOfStepNamed(steps: readonly WorkflowStep[], name: string): number {
+  for (let index = 0; index < steps.length; index += 1) {
+    if (steps[index]?.name === name) return index;
+  }
+  return -1;
+}
+
+/** Validates Docker Hub auth placement and secret scoping for E2E execution jobs. */
 function validateDockerHubAuthBoundary(errors: string[], jobs: WorkflowRecord): void {
-  const e2eJobNames = Object.entries(jobs)
-    .filter(([, rawJob]) => asRecord(asRecord(rawJob).env).E2E_JOB === "1")
-    .map(([jobName]) => jobName);
+  const e2eJobNames = collectE2eJobNames(jobs);
   for (const exemptJobName of NO_IMAGE_E2E_JOBS) {
     if (!e2eJobNames.includes(exemptJobName)) {
       errors.push(`Docker Hub no-image exemption references unknown E2E job: ${exemptJobName}`);
     }
   }
 
-  const imageJobNames = [
-    "live",
-    ...e2eJobNames.filter((jobName) => !NO_IMAGE_E2E_JOBS.has(jobName)),
-  ];
+  const imageJobNames = collectImageJobNames(e2eJobNames);
   const liveSteps = asSteps(asRecord(jobs.live).steps);
   const canonicalAuth = namedStep(liveSteps, DOCKER_HUB_AUTH_STEP);
   requireCanonicalDockerHubAuthRun(errors, canonicalAuth);
@@ -2043,13 +2073,17 @@ function validateDockerHubAuthBoundary(errors: string[], jobs: WorkflowRecord): 
     }
     requireCanonicalDockerHubCleanupRun(errors, jobName, cleanup);
 
-    const checkoutIndex = steps.findIndex((step) =>
-      stringValue(step.uses).startsWith("actions/checkout@"),
-    );
+    const checkoutIndex = indexOfStepUsingPrefix(steps, "actions/checkout@");
     const authIndex = steps.indexOf(auth);
     const cleanupIndex = steps.indexOf(cleanup);
-    if (checkoutIndex < 0 || authIndex !== checkoutIndex + 1) {
-      errors.push(`${jobName} Docker Hub auth must run immediately after checkout`);
+    const expectedAuthIndex =
+      jobName === "jetson-nvmap-gpu" ? checkoutIndex + 2 : checkoutIndex + 1;
+    if (checkoutIndex < 0 || authIndex !== expectedAuthIndex) {
+      errors.push(
+        jobName === "jetson-nvmap-gpu"
+          ? `${jobName} Docker Hub auth must run immediately after the Jetson dispatch guard`
+          : `${jobName} Docker Hub auth must run immediately after checkout`,
+      );
     }
     if (authIndex < 0 || cleanupIndex <= authIndex) {
       errors.push(`${jobName} Docker Hub cleanup must run after authentication and test work`);
@@ -3393,6 +3427,65 @@ function validateBedrockRuntimeCompatibleAnthropicJob(
   requireRunDoesNotContain(errors, runVitest, "${{ inputs.");
 }
 
+/** Validates the manual opt-in input required before dispatching Jetson runner jobs. */
+function validateAllowJetsonRunnerQueueInput(
+  errors: string[],
+  dispatchInputs: WorkflowRecord,
+): void {
+  const input = requireInput(errors, dispatchInputs, "allow_jetson_runner_queue");
+  if (input.type !== "boolean") {
+    errors.push("workflow_dispatch allow_jetson_runner_queue input must be boolean");
+  }
+  if (input.default !== false) {
+    errors.push("workflow_dispatch allow_jetson_runner_queue input must default to false");
+  }
+  const description = stringValue(input.description);
+  if (!description.includes("Jetson runner") || !description.includes("timeout-minutes")) {
+    errors.push(
+      "workflow_dispatch allow_jetson_runner_queue input must document runner confirmation and queued timeout behavior",
+    );
+  }
+}
+
+/** Validates Jetson runner dispatch fails fast unless runner queuing was explicitly allowed. */
+function validateJetsonRunnerDispatchGuard(errors: string[], jobs: WorkflowRecord): void {
+  validateFreeStandingJobSelector(errors, jobs, "jetson-nvmap-gpu", "jetson-nvmap-gpu", true);
+
+  const job = asRecord(jobs["jetson-nvmap-gpu"]);
+  const guardedRunsOn =
+    "${{ inputs.allow_jetson_runner_queue && (vars.JETSON_E2E_RUNNER_LABEL || 'linux-arm64-gpu-jetson-orin-latest-1') || 'ubuntu-latest' }}";
+  if (job["runs-on"] !== guardedRunsOn) {
+    errors.push(
+      "jetson-nvmap-gpu job must use ubuntu-latest unless allow_jetson_runner_queue is true",
+    );
+  }
+
+  const steps = asSteps(job.steps);
+  const guard = namedStep(steps, "Guard Jetson runner dispatch");
+  const checkoutIndex = indexOfStepUsingPrefix(steps, "actions/checkout@");
+  const guardIndex = indexOfStepNamed(steps, "Guard Jetson runner dispatch");
+  const dockerAuthIndex = indexOfStepNamed(steps, DOCKER_HUB_AUTH_STEP);
+  if (!guard) {
+    errors.push("jetson-nvmap-gpu job missing step: Guard Jetson runner dispatch");
+    return;
+  }
+  if (checkoutIndex < 0 || guardIndex <= checkoutIndex) {
+    errors.push("jetson-nvmap-gpu dispatch guard must run after checkout");
+  }
+  if (dockerAuthIndex >= 0 && guardIndex >= dockerAuthIndex) {
+    errors.push("jetson-nvmap-gpu dispatch guard must run before Docker Hub auth");
+  }
+  if (guard.if !== "${{ !inputs.allow_jetson_runner_queue }}") {
+    errors.push(
+      "jetson-nvmap-gpu dispatch guard must run unless allow_jetson_runner_queue is true",
+    );
+  }
+  requireRunContains(errors, guard, "allow_jetson_runner_queue=true");
+  requireRunContains(errors, guard, "timeout-minutes");
+  requireRunContains(errors, guard, "linux-arm64-gpu-jetson-orin-latest-1");
+}
+
+/** Validates the top-level E2E workflow contract enforced by support tests. */
 export function validateE2eWorkflowBoundary(workflowPath = DEFAULT_E2E_WORKFLOW_PATH): string[] {
   const workflow = readWorkflowRecord(workflowPath);
   const errors: string[] = [];
@@ -3412,6 +3505,7 @@ export function validateE2eWorkflowBoundary(workflowPath = DEFAULT_E2E_WORKFLOW_
 
   const dispatchInputs = asRecord(workflowDispatch.inputs);
   requireInput(errors, dispatchInputs, "targets");
+  validateAllowJetsonRunnerQueueInput(errors, dispatchInputs);
   const jobsInput = requireInput(errors, dispatchInputs, "jobs");
   const jobsDescription = stringValue(jobsInput.description);
   if (!jobsDescription.includes("default-enabled jobs")) {
@@ -3870,13 +3964,7 @@ export function validateE2eWorkflowBoundary(workflowPath = DEFAULT_E2E_WORKFLOW_
 
   validateFreeStandingJobSelector(errors, jobs, "gateway-health-honest", "gateway-health-honest");
 
-  const jetsonJob = asRecord(jobs["jetson-nvmap-gpu"]);
-  if (jetsonJob.needs !== "generate-matrix") {
-    errors.push("jetson-nvmap-gpu job must depend on generate-matrix");
-  }
-  if (jetsonJob.if !== explicitOnlyFreeStandingJobIf("jetson-nvmap-gpu", "jetson-nvmap-gpu")) {
-    errors.push("jetson-nvmap-gpu job must run only when explicitly selected");
-  }
+  validateJetsonRunnerDispatchGuard(errors, jobs);
 
   const sandboxRlimitConnectJob = asRecord(jobs["sandbox-rlimits-connect"]);
   if (sandboxRlimitConnectJob.needs !== "generate-matrix") {

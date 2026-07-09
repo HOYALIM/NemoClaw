@@ -127,7 +127,9 @@ describe("shared Docker Hub authentication workflow boundary", () => {
         -1;
       const authIndex = job.steps?.findIndex((step) => step.name === AUTH_STEP_NAME) ?? -1;
       const cleanupIndex = job.steps?.findIndex((step) => step.name === CLEANUP_STEP_NAME) ?? -1;
-      expect(authIndex, `${jobName} auth order`).toBe(checkoutIndex + 1);
+      const expectedAuthIndex =
+        jobName === "jetson-nvmap-gpu" ? checkoutIndex + 2 : checkoutIndex + 1;
+      expect(authIndex, `${jobName} auth order`).toBe(expectedAuthIndex);
       expect(cleanupIndex, `${jobName} cleanup order`).toBe((job.steps?.length ?? 0) - 1);
     }
     expect(new Set(cleanupSteps).size, "cleanup steps must not consume the YAML alias budget").toBe(

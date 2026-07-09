@@ -16,6 +16,19 @@ import {
 } from "../../../tools/e2e/workflow-boundary.mts";
 import { readWorkflow } from "../../helpers/e2e-workflow-contract.ts";
 
+function workflowDispatchInputs(): Record<
+  string,
+  { default?: unknown; description?: string; type?: string }
+> {
+  const workflow = readWorkflow();
+  const triggers = (workflow.on ?? workflow[true as unknown as string]) as {
+    workflow_dispatch?: {
+      inputs?: Record<string, { default?: unknown; description?: string; type?: string }>;
+    };
+  };
+  return triggers.workflow_dispatch?.inputs ?? {};
+}
+
 describe("Jetson nvmap GPU E2E workflow boundary", () => {
   it("keeps Jetson selectable but excluded from full-suite dispatch", () => {
     const inventory = readFreeStandingJobsInventory();
@@ -56,6 +69,41 @@ describe("Jetson nvmap GPU E2E workflow boundary", () => {
         registryTargets: [],
       });
     }
+  });
+
+  it("fails explicit Jetson dispatch on hosted runners unless runner queueing is confirmed", () => {
+    const workflow = readWorkflow();
+    const job = (workflow.jobs as Record<string, unknown>)["jetson-nvmap-gpu"] as {
+      "runs-on"?: string;
+      steps?: Array<{ if?: string; name?: string; run?: string; uses?: string }>;
+    };
+    const inputs = workflowDispatchInputs();
+    const guard = job.steps?.find((step) => step.name === "Guard Jetson runner dispatch");
+    const checkoutIndex =
+      job.steps?.findIndex((step) => String(step.uses ?? "").startsWith("actions/checkout@")) ?? -1;
+    const guardIndex =
+      job.steps?.findIndex((step) => step.name === "Guard Jetson runner dispatch") ?? -1;
+    const dockerAuthIndex =
+      job.steps?.findIndex((step) => step.name === "Authenticate to Docker Hub") ?? -1;
+    const upload = job.steps?.find((step) => step.name === "Upload Jetson nvmap GPU artifacts");
+    const cleanup = job.steps?.find((step) => step.name === "Clean up Docker auth");
+
+    expect(inputs.allow_jetson_runner_queue).toMatchObject({
+      default: false,
+      type: "boolean",
+    });
+    expect(inputs.allow_jetson_runner_queue?.description).toContain("timeout-minutes");
+    expect(job["runs-on"]).toBe(
+      "${{ inputs.allow_jetson_runner_queue && (vars.JETSON_E2E_RUNNER_LABEL || 'linux-arm64-gpu-jetson-orin-latest-1') || 'ubuntu-latest' }}",
+    );
+    expect(guard?.if).toBe("${{ !inputs.allow_jetson_runner_queue }}");
+    expect(guard?.run).toContain("allow_jetson_runner_queue=true");
+    expect(guard?.run).toContain("timeout-minutes");
+    expect(guard?.run).toContain("linux-arm64-gpu-jetson-orin-latest-1");
+    expect(checkoutIndex).toBeLessThan(guardIndex);
+    expect(guardIndex).toBeLessThan(dockerAuthIndex);
+    expect(upload?.if).toBe("always()");
+    expect(cleanup?.if).toBe("always()");
   });
 
   it("reports default jobs without claiming explicit-only Jetson ran", () => {
