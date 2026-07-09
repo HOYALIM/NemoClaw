@@ -83,6 +83,25 @@ describe("LangChain Deep Agents Code config generator", () => {
     expect(config).toContain('models = ["gpt-oss-120b"]');
   });
 
+  it("uses the native Deep Agents OpenRouter provider for OpenRouter routes (#6549)", () => {
+    const config = runGenerator({
+      NEMOCLAW_MODEL: "nvidia/nemotron-3-ultra-550b-a55b",
+      NEMOCLAW_UPSTREAM_PROVIDER: "openrouter-api",
+    });
+
+    expect(config).toContain('default = "openrouter:nvidia/nemotron-3-ultra-550b-a55b"');
+    expect(config).toContain("[models.providers.openrouter]");
+    expect(config).toContain('models = ["nvidia/nemotron-3-ultra-550b-a55b"]');
+    expect(config).toContain('api_key_env = "DEEPAGENTS_CODE_OPENAI_API_KEY"');
+    expect(config).toContain('base_url = "https://inference.local/v1"');
+    expect(config).toContain(
+      "# NemoClaw provider route: inference; upstream provider: openrouter-api; API: openai-completions.",
+    );
+    expect(config).not.toContain("[models.providers.openai]");
+    expect(config).not.toContain("use_responses_api");
+    expect(config).not.toContain("force_nonempty_content");
+  });
+
   it.each([
     "nvidia/nemotron-3-ultra-550b-a55b",
     "nvidia/nvidia/nemotron-3-ultra",
