@@ -443,10 +443,12 @@ function serializeSandboxEntryForDisk(entry: SandboxEntry): SandboxEntry {
   const {
     recoveredFromGateway: _recovered,
     livePhase: _phase,
+    providerCredentialHashes: _legacyProviderCredentialHashes,
     ...durable
   } = entry as SandboxEntry & {
     recoveredFromGateway?: boolean;
     livePhase?: string | null;
+    providerCredentialHashes?: unknown;
   };
   const messaging = serializeSandboxMessagingStateForDisk(durable.messaging);
   const mcp = serializeSandboxMcpStateForDisk(durable.mcp);
