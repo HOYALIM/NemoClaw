@@ -297,6 +297,42 @@ describe("docker-driver-gateway-service", () => {
     expect(events).toEqual(["register", "sleep", "register", "ready", "clear", "verify"]);
   });
 
+  it("preserves bounded immediate package-service probes when the interval is zero", async () => {
+    let registerCount = 0;
+    const sleepSeconds = vi.fn();
+
+    await expect(
+      startPackageManagedDockerDriverGateway({
+        clearDockerDriverGatewayRuntimeFiles: vi.fn(),
+        exitOnFailure: false,
+        gatewayName: "nemoclaw",
+        hasOpenShellGatewayUserService: () => true,
+        healthPollCount: 3,
+        healthPollInterval: 0,
+        isDockerDriverGatewayReady: async () => true,
+        now: () => Number.MAX_SAFE_INTEGER,
+        registerDockerDriverGatewayEndpoint: () => {
+          registerCount += 1;
+          return registerCount >= 3;
+        },
+        runCaptureOpenshell: (args) => (args[0] === "status" ? STATUS_CONNECTED : GATEWAY_INFO),
+        sleepSeconds,
+        skipSandboxBridgeReachability: false,
+        startOpenShellGatewayUserService: () => ({
+          attempted: true,
+          fallbackAllowed: false,
+          started: true,
+        }),
+        verifySandboxBridgeGatewayReachableOrExit: vi.fn(),
+      }),
+    ).resolves.toBe(true);
+
+    expect(registerCount).toBe(3);
+    expect(sleepSeconds).toHaveBeenCalledTimes(2);
+    expect(sleepSeconds).toHaveBeenNthCalledWith(1, 0);
+    expect(sleepSeconds).toHaveBeenNthCalledWith(2, 0);
+  });
+
   it("falls back to standalone when package-managed service startup is unavailable", async () => {
     const registerDockerDriverGatewayEndpoint = vi.fn(() => true);
 

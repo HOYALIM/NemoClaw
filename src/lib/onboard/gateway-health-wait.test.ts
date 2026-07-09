@@ -4,7 +4,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createVirtualClock } from "./__test-helpers__/virtual-clock";
-import { type GatewayHealthWaitOptions, waitForGatewayHealth } from "./gateway-health-wait";
+import {
+  formatGatewayHealthWaitLimit,
+  type GatewayHealthWaitOptions,
+  getGatewayHealthWaitBudgetMs,
+  waitForGatewayHealth,
+} from "./gateway-health-wait";
 
 function buildOptions(overrides: Partial<GatewayHealthWaitOptions> = {}): GatewayHealthWaitOptions {
   return {
@@ -110,6 +115,67 @@ describe("waitForGatewayHealth", () => {
     expect(options.isGatewayHttpReady).not.toHaveBeenCalled();
     expect(clock.sleeper).toHaveBeenCalled();
     expect(clock.sleeper.mock.calls.every(([seconds]) => seconds === 1)).toBe(true);
+  });
+
+  it("preserves the configured immediate probes when the interval is zero (#3768)", async () => {
+    const isGatewayHealthy = vi
+      .fn<() => boolean>()
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+    const sleepSeconds = vi.fn();
+    const options = buildOptions({
+      healthPollCount: 3,
+      healthPollIntervalSeconds: 0,
+      isGatewayHealthy,
+      now: vi.fn(() => Number.MAX_SAFE_INTEGER),
+      sleepSeconds,
+    });
+
+    await expect(waitForGatewayHealth(options)).resolves.toBe(true);
+
+    expect(isGatewayHealthy).toHaveBeenCalledTimes(3);
+    expect(options.isGatewayHttpReady).toHaveBeenCalledOnce();
+    expect(sleepSeconds).toHaveBeenCalledTimes(2);
+    expect(sleepSeconds).toHaveBeenNthCalledWith(1, 0);
+    expect(sleepSeconds).toHaveBeenNthCalledWith(2, 0);
+    expect(formatGatewayHealthWaitLimit(3, 0)).toBe("3 immediate health probes");
+  });
+
+  it("does not probe after a positive health deadline expires before the first attempt", async () => {
+    const now = vi.fn().mockReturnValueOnce(0).mockReturnValue(1000);
+    const options = buildOptions({
+      healthPollCount: 1,
+      healthPollIntervalSeconds: 1,
+      now,
+    });
+
+    await expect(waitForGatewayHealth(options)).resolves.toBe(false);
+
+    expect(options.runCaptureOpenshell).not.toHaveBeenCalled();
+    expect(options.isGatewayHealthy).not.toHaveBeenCalled();
+    expect(options.isGatewayHttpReady).not.toHaveBeenCalled();
+  });
+
+  it("preserves a rejected HTTP readiness probe error", async () => {
+    const probeError = new Error("readiness transport failed");
+    const options = buildOptions({
+      healthPollCount: 3,
+      healthPollIntervalSeconds: 0,
+      isGatewayHttpReady: vi.fn(async () => Promise.reject(probeError)),
+    });
+
+    await expect(waitForGatewayHealth(options)).rejects.toBe(probeError);
+
+    expect(options.isGatewayHealthy).toHaveBeenCalledOnce();
+    expect(options.isGatewayHttpReady).toHaveBeenCalledOnce();
+    expect(options.sleepSeconds).not.toHaveBeenCalled();
+  });
+
+  it("clamps an overflowing health deadline budget to a finite value", () => {
+    expect(getGatewayHealthWaitBudgetMs(Number.MAX_VALUE, Number.MAX_VALUE)).toBe(
+      Number.MAX_SAFE_INTEGER,
+    );
   });
 
   it("returns false without probing when healthPollCount is zero", async () => {
