@@ -133,6 +133,20 @@ describe("LangChain Deep Agents Code config generator", () => {
     expect(config).not.toContain("[models.providers.openrouter]");
   });
 
+  it("rejects upstream endpoint URLs with control characters before writing config", () => {
+    const result = runGeneratorProcess({
+      NEMOCLAW_UPSTREAM_PROVIDER: "compatible-endpoint",
+      NEMOCLAW_UPSTREAM_ENDPOINT_URL: "https://example.test/v1\t[update]",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toContain(
+      "NEMOCLAW_UPSTREAM_ENDPOINT_URL must not contain control characters.",
+    );
+    expect(`${result.stdout}\n${result.stderr}`).not.toContain("[update]");
+    expect(fs.existsSync(path.join(result.home, ".deepagents", "config.toml"))).toBe(false);
+  });
+
   it.each([
     "nvidia/nemotron-3-ultra-550b-a55b",
     "nvidia/nvidia/nemotron-3-ultra",

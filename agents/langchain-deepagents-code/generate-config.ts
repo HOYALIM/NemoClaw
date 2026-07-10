@@ -78,8 +78,8 @@ function normalizeCommentMetadata(value: string, name: string): string {
 
 function normalizeOptionalEndpointUrl(value: string | undefined, name: string): string | null {
   if (value === undefined || value.trim() === "") return null;
-  if (/[\r\n]/.test(value)) {
-    throw new Error(`${name} must not contain line breaks.`);
+  if (/[\p{Cc}\p{Cf}]/u.test(value)) {
+    throw new Error(`${name} must not contain control characters.`);
   }
   const text = value.trim();
   let url: URL;
@@ -97,7 +97,7 @@ function normalizeOptionalEndpointUrl(value: string | undefined, name: string): 
   if (url.search || url.hash) {
     throw new Error(`${name} must not include query strings or fragments.`);
   }
-  return text;
+  return url.href;
 }
 
 function normalizeInferenceBaseUrl(value: string): string {
