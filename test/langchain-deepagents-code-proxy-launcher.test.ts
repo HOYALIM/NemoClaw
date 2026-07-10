@@ -40,12 +40,16 @@ function writeManagedProxyFiles(
 ): void {
   const hostFile = path.join(tempDir, "trusted-proxy-host");
   const portFile = path.join(tempDir, "trusted-proxy-port");
+  const caFile = path.join(tempDir, "trusted-ca-bundle.pem");
   fs.rmSync(hostFile, { force: true });
   fs.rmSync(portFile, { force: true });
+  fs.rmSync(caFile, { force: true });
   fs.writeFileSync(hostFile, `${managedProxy.host}\n`);
   fs.writeFileSync(portFile, `${managedProxy.port}\n`);
+  fs.writeFileSync(caFile, "trusted CA bundle\n");
   fs.chmodSync(hostFile, 0o444);
   fs.chmodSync(portFile, 0o444);
+  fs.chmodSync(caFile, 0o444);
 }
 
 function replaceManagedProxyFileConstants(source: string, tempDir: string): string {
@@ -64,6 +68,10 @@ function replaceManagedProxyFileConstants(source: string, tempDir: string): stri
     .replace(
       'readonly MANAGED_PROXY_PORT_FILE="/usr/local/share/nemoclaw/dcode-proxy-port"',
       `readonly MANAGED_PROXY_PORT_FILE="${path.join(tempDir, "trusted-proxy-port")}"`,
+    )
+    .replace(
+      'readonly MANAGED_FETCH_CA_BUNDLE_FILE="/etc/openshell-tls/ca-bundle.pem"',
+      `readonly MANAGED_FETCH_CA_BUNDLE_FILE="${path.join(tempDir, "trusted-ca-bundle.pem")}"`,
     )
     .replace(
       "readonly MANAGED_PROXY_OWNER_UID=0",
@@ -487,6 +495,42 @@ describe("Deep Agents Code direct-exec proxy launcher", () => {
     expect(`${launcherResult.stderr}\n${startResult.stderr}`).toContain(
       "Unsafe ownership or mode on trusted managed proxy host file",
     );
+  });
+
+  it("rejects writable managed fetch CA bundles in start, connect, and direct dcode paths (#6636)", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-dcode-ca-bundle-"));
+    const launcherPath = makeLauncherProxyProbeFixture(tempDir);
+    const { envFile, scriptPath } = makeStartProxyProbeFixture(tempDir);
+    const caFile = path.join(tempDir, "trusted-ca-bundle.pem");
+
+    const safeStart = spawnSync("bash", [scriptPath, "true"], {
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      encoding: "utf8",
+    });
+    expect(safeStart.status, safeStart.stderr).toBe(0);
+    expect(fs.existsSync(envFile)).toBe(true);
+
+    fs.chmodSync(caFile, 0o666);
+    const launcherResult = runLauncher(launcherPath, ["-n", "PONG"], {});
+    const startResult = spawnSync("bash", [scriptPath, "true"], {
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      encoding: "utf8",
+    });
+    const connectSourceResult = spawnSync(
+      "bash",
+      ["--noprofile", "--norc", "-c", '. "$1"', "bash", envFile],
+      {
+        env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+        encoding: "utf8",
+      },
+    );
+
+    expect(launcherResult.status).not.toBe(0);
+    expect(startResult.status).not.toBe(0);
+    expect(connectSourceResult.status).not.toBe(0);
+    const combined = `${launcherResult.stderr}\n${startResult.stderr}\n${connectSourceResult.stderr}`;
+    expect(combined).toContain("Unsafe ownership or mode on managed fetch CA bundle file");
+    expect(combined).not.toContain(caFile);
   });
 
   it("keeps dcode shell proxy validators aligned with onboard validation (#6191)", () => {
