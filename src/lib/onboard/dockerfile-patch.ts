@@ -64,6 +64,7 @@ export interface PatchStagedDockerfileOptions {
   requireToolDisclosureContract?: boolean;
   baseImageResolutionMetadata?: SandboxBaseImageResolutionMetadata | null;
   dcodeAutoApprovalMode?: DcodeAutoApprovalMode;
+  upstreamEndpointUrl?: string | null;
 }
 
 export function patchDcodeAutoApprovalDockerArg(
@@ -170,6 +171,10 @@ export function patchStagedDockerfile(
   dockerfile = dockerfile.replace(
     /^ARG NEMOCLAW_UPSTREAM_PROVIDER=.*$/m,
     `ARG NEMOCLAW_UPSTREAM_PROVIDER=${sanitizeDockerArg(upstreamProvider)}`,
+  );
+  dockerfile = dockerfile.replace(
+    /^ARG NEMOCLAW_UPSTREAM_ENDPOINT_URL=.*$/m,
+    `ARG NEMOCLAW_UPSTREAM_ENDPOINT_URL=${sanitizeDockerArg(options.upstreamEndpointUrl ?? "")}`,
   );
   dockerfile = dockerfile.replace(
     /^ARG NEMOCLAW_PRIMARY_MODEL_REF=.*$/m,

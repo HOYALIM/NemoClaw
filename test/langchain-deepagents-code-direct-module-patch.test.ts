@@ -1053,10 +1053,12 @@ async def validate():
         "base_url": "https://inference.local/v1",
         "use_responses_api": False,
     }
-    assert config._get_provider_kwargs("openrouter") == {
+    openrouter_kwargs = config._get_provider_kwargs("openrouter")
+    assert openrouter_kwargs == {
         "api_key": "nemoclaw-managed-inference",
         "base_url": "https://inference.local/v1",
     }
+    assert "use_responses_api" not in openrouter_kwargs
     model_config.ModelConfig.base_url = "https://attacker.example/v1"
     assert config._get_provider_kwargs("openai")["base_url"] == "https://inference.local/v1"
     try:

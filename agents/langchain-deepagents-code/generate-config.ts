@@ -15,6 +15,7 @@ type Settings = {
   baseUrl: string;
   providerKey: string;
   upstreamProvider: string;
+  upstreamEndpointUrl: string | null;
   inferenceApi: string;
 };
 
@@ -33,6 +34,8 @@ const NEMOTRON_ULTRA_MODEL_IDS = new Set([
 ]);
 
 const OPENROUTER_UPSTREAM_PROVIDERS = new Set(["openrouter", "openrouter-api"]);
+const OPENROUTER_ENDPOINT_HOST = "openrouter.ai";
+const OPENROUTER_ENDPOINT_PATH = "/api/v1";
 
 function readSettings(env: NodeJS.ProcessEnv): Settings {
   const providerKey = normalizeCommentMetadata(
@@ -48,6 +51,10 @@ function readSettings(env: NodeJS.ProcessEnv): Settings {
     upstreamProvider: normalizeCommentMetadata(
       env.NEMOCLAW_UPSTREAM_PROVIDER || env.NEMOCLAW_PROVIDER_KEY || "inference",
       "NEMOCLAW_UPSTREAM_PROVIDER",
+    ),
+    upstreamEndpointUrl: normalizeOptionalEndpointUrl(
+      env.NEMOCLAW_UPSTREAM_ENDPOINT_URL,
+      "NEMOCLAW_UPSTREAM_ENDPOINT_URL",
     ),
     inferenceApi: normalizeCommentMetadata(
       env.NEMOCLAW_INFERENCE_API || "openai-completions",
@@ -67,6 +74,30 @@ function normalizeCommentMetadata(value: string, name: string): string {
     throw new Error(`${name} must not contain control characters.`);
   }
   return value.trim();
+}
+
+function normalizeOptionalEndpointUrl(value: string | undefined, name: string): string | null {
+  if (value === undefined || value.trim() === "") return null;
+  if (/[\r\n]/.test(value)) {
+    throw new Error(`${name} must not contain line breaks.`);
+  }
+  const text = value.trim();
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    throw new Error(`${name} must be a valid URL.`);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`${name} must use HTTP or HTTPS.`);
+  }
+  if (url.username || url.password) {
+    throw new Error(`${name} must not include credentials.`);
+  }
+  if (url.search || url.hash) {
+    throw new Error(`${name} must not include query strings or fragments.`);
+  }
+  return text;
 }
 
 function normalizeInferenceBaseUrl(value: string): string {
@@ -103,7 +134,24 @@ function tomlArray(values: readonly string[]): string {
 }
 
 function managedDeepAgentsProviderFor(settings: Settings): ManagedDeepAgentsProvider {
-  return OPENROUTER_UPSTREAM_PROVIDERS.has(settings.upstreamProvider) ? "openrouter" : "openai";
+  if (OPENROUTER_UPSTREAM_PROVIDERS.has(settings.upstreamProvider)) return "openrouter";
+  if (
+    settings.upstreamProvider === "compatible-endpoint" &&
+    isOpenRouterEndpointUrl(settings.upstreamEndpointUrl)
+  ) {
+    return "openrouter";
+  }
+  return "openai";
+}
+
+function isOpenRouterEndpointUrl(value: string | null): boolean {
+  if (!value) return false;
+  const url = new URL(value);
+  return (
+    url.protocol === "https:" &&
+    url.hostname.toLowerCase() === OPENROUTER_ENDPOINT_HOST &&
+    url.pathname.replace(/\/+$/, "") === OPENROUTER_ENDPOINT_PATH
+  );
 }
 
 function modelNameForManagedProvider(model: string): string {
