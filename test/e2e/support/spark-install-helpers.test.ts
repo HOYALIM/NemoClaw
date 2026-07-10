@@ -103,12 +103,14 @@ describe("spark install live test helpers", () => {
     });
 
     expect(invocation.mode).toBe("public");
-    expect(invocation.script).toContain(
+    const installerCommand = invocation.script.replace(/^.* \| /, "");
+    expect(installerCommand).toContain(
       "NEMOCLAW_INSTALL_REF='0123456789abcdef0123456789abcdef01234567'",
     );
-    expect(invocation.script).toContain(
+    expect(installerCommand).toContain(
       "NEMOCLAW_INSTALL_TAG='0123456789abcdef0123456789abcdef01234567'",
     );
+    expect(installerCommand).toMatch(/\bbash$/);
   });
 
   it("rejects non-test-owned sandbox names before destructive cleanup can use them", () => {
