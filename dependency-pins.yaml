@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Repo-owned integration pins for the agent runtimes NemoClaw builds or
+# installs. This intentionally avoids release-channel state; `latest` and `lkg`
+# remain Git refs, while this file records the dependency contract that CI can
+# check for drift.
+schemaVersion: 1
+
+openshell:
+  installVersion: "0.0.72"
+  minVersion: "0.0.72"
+  maxVersion: "0.0.72"
+
+openclaw:
+  version: "2026.6.10"
+  minVersion: "2026.3.11"
+  npmIntegrity: "sha512-LcooND2tBQw8A+kc1Ujltu3lg30bJ0w7XaeRy7eYzobb8BBdcW6DOGbwJL4vpj1vl9+gjRceOtlh5nh9OARcug=="
+  tarball: "https://registry.npmjs.org/openclaw/-/openclaw-2026.6.10.tgz"
+
+hermes:
+  tag: "v2026.6.19"
+  expectedVersion: "0.17.0"
+  tarballSha256: "69b805ec0a7a7be880068ba8a3b17479d7ba29f0cac0a2e9c6692c02f346ba91"
+  npmIntegrity: "sha512-PzSJiYqmwpTudmakYs2oCJ57OW3VwEJYf8buTuKvuRvcYEUf/KOTu2dD6pLf2XYgDKErpvcDaoSAJ1nGCyvzAA=="

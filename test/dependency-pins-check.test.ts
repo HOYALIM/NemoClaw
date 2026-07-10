@@ -1,0 +1,117 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { describe, expect, it } from "vitest";
+
+import { verifyDependencyPins } from "../scripts/checks/dependency-pins";
+
+const OPENCLAW_INTEGRITY =
+  "sha512-LcooND2tBQw8A+kc1Ujltu3lg30bJ0w7XaeRy7eYzobb8BBdcW6DOGbwJL4vpj1vl9+gjRceOtlh5nh9OARcug==";
+const OPENCLAW_TARBALL = "https://registry.npmjs.org/openclaw/-/openclaw-2026.6.10.tgz";
+const HERMES_INTEGRITY =
+  "sha512-PzSJiYqmwpTudmakYs2oCJ57OW3VwEJYf8buTuKvuRvcYEUf/KOTu2dD6pLf2XYgDKErpvcDaoSAJ1nGCyvzAA==";
+
+function writeFixture(root: string, overrides: Partial<Record<string, string>> = {}): void {
+  const files = {
+    "dependency-pins.yaml": `
+schemaVersion: 1
+openshell:
+  installVersion: "${overrides.openshellInstallVersion ?? "0.0.72"}"
+  minVersion: "0.0.72"
+  maxVersion: "0.0.72"
+openclaw:
+  version: "2026.6.10"
+  minVersion: "2026.3.11"
+  npmIntegrity: "${OPENCLAW_INTEGRITY}"
+  tarball: "${OPENCLAW_TARBALL}"
+hermes:
+  tag: "v2026.6.19"
+  expectedVersion: "0.17.0"
+  tarballSha256: "69b805ec0a7a7be880068ba8a3b17479d7ba29f0cac0a2e9c6692c02f346ba91"
+  npmIntegrity: "${HERMES_INTEGRITY}"
+`,
+    "nemoclaw-blueprint/blueprint.yaml": `
+min_openshell_version: '${overrides.minOpenshellVersion ?? "0.0.72"}' # parser handles comments
+max_openshell_version: '0.0.72'
+min_openclaw_version: '2026.3.11'
+`,
+    "scripts/brev-launchable-ci-cpu.sh": `
+case "$NEMOCLAW_REF" in
+    stable | auto) OPENSHELL_VERSION="v0.0.72" ;;
+esac
+`,
+    "src/lib/actions/sandbox/openshell-child-visible-credentials.v0.0.72.json": `
+{
+  "openshellVersion"
+    : "0.0.72"
+}
+`,
+    "src/lib/actions/sandbox/mcp-bridge-validation.ts": `
+import childVisibleCredentialManifest from "./openshell-child-visible-credentials.v0.0.72.json";
+`,
+    Dockerfile: `
+ARG OPENCLAW_VERSION=${overrides.openclawDockerfileVersion ?? "2026.6.10"}
+ARG OPENCLAW_2026_6_10_INTEGRITY=${OPENCLAW_INTEGRITY}
+ARG OPENCLAW_2026_6_10_TARBALL=${OPENCLAW_TARBALL}
+`,
+    "Dockerfile.base": `
+ARG OPENCLAW_VERSION=2026.6.10
+ARG OPENCLAW_2026_6_10_INTEGRITY=${OPENCLAW_INTEGRITY}
+ARG OPENCLAW_2026_6_10_TARBALL=${OPENCLAW_TARBALL}
+`,
+    "agents/openclaw/manifest.yaml": `
+expected_version: '2026.6.10' # parser handles comments
+`,
+    "agents/hermes/Dockerfile.base": `
+ARG HERMES_VERSION=v2026.6.19
+ARG HERMES_SEMVER=0.17.0
+ARG HERMES_TARBALL_SHA256=69b805ec0a7a7be880068ba8a3b17479d7ba29f0cac0a2e9c6692c02f346ba91
+ARG HERMES_NPM_INTEGRITY=${overrides.hermesNpmIntegrity ?? HERMES_INTEGRITY}
+`,
+    "agents/hermes/manifest.yaml": `
+expected_version: '0.17.0' # parser handles comments
+`,
+  };
+
+  for (const [relativePath, contents] of Object.entries(files)) {
+    const target = path.join(root, relativePath);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, contents.trimStart());
+  }
+}
+
+describe("dependency pin drift check", () => {
+  it("accepts matching OpenShell, OpenClaw, and Hermes pins (#5242)", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-dependency-pins-"));
+    try {
+      writeFixture(root);
+
+      expect(verifyDependencyPins(root)).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports governed file drift with the exact stale surface (#5242)", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-dependency-pins-drift-"));
+    try {
+      writeFixture(root, {
+        hermesNpmIntegrity: "sha512-drift",
+        minOpenshellVersion: "0.0.71",
+        openclawDockerfileVersion: "2026.6.9",
+      });
+
+      expect(verifyDependencyPins(root)).toEqual([
+        "blueprint min_openshell_version: expected 0.0.72, found 0.0.71",
+        "Dockerfile OPENCLAW_VERSION: expected 2026.6.10, found 2026.6.9",
+        `Hermes Dockerfile.base HERMES_NPM_INTEGRITY: expected ${HERMES_INTEGRITY}, found sha512-drift`,
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
