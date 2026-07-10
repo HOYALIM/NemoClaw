@@ -64,10 +64,9 @@ export interface OnboardingOptions {
   timeoutMs?: number;
 }
 
-export interface OnboardingExpectedFailure {
-  phase: "onboarding" | "preflight";
-  errorClass: "docker-missing" | "policy-presets-required";
-}
+export type OnboardingExpectedFailure =
+  | { phase: "onboarding"; errorClass: "policy-presets-required" }
+  | { phase: "preflight"; errorClass: "docker-missing" };
 
 export interface NemoClawInstance {
   onboarding: string;
