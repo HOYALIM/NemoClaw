@@ -267,16 +267,15 @@ function issue2603AttemptOutcome(
   repro: LiveIssue2603Trace,
   index: number,
 ): Issue2603AttemptOutcome & { attempt: number; eventCount: number; chatEventCount: number } {
-  if (repro.error) {
-    return {
-      attempt: index + 1,
-      captureFailure: false,
-      productRegression: false,
-      error: repro.error,
-      eventCount: repro.events?.length ?? 0,
-      chatEventCount: 0,
-    };
-  }
+  const failedAttempt = {
+    attempt: index + 1,
+    captureFailure: false,
+    productRegression: false,
+    error: repro.error,
+    eventCount: repro.events?.length ?? 0,
+    chatEventCount: 0,
+  };
+  if (repro.error) return failedAttempt;
 
   const analysis = analyzeIssue2603Trace(repro);
   const expectedReplyOrder = repro.sentRuns.map((entry) => entry.replyMarker);
@@ -872,18 +871,21 @@ test(
       error: repro.error,
     });
 
-    if (repro.error) {
-      throw new Error(
-        `INFRASTRUCTURE SETUP FAILURE: live repro failed before assertions: ${repro.error}`,
-      );
-    }
-    if (classification === "infrastructure_capture_failure") {
-      throw new Error(
-        `INFRASTRUCTURE CAPTURE FAILURE: ${attempts.length} attempt(s) observed no chat events for their submitted runs. ${JSON.stringify(attemptDetails)}`,
-      );
-    }
-    if (classification === "recovered_infrastructure_capture") {
-      console.warn("ISSUE2603_CLASSIFICATION recovered infrastructure capture failure on retry");
+    switch (classification) {
+      case "infrastructure_setup_failure":
+        throw new Error(
+          `INFRASTRUCTURE SETUP FAILURE: live repro failed before assertions: ${repro.error}`,
+        );
+      case "infrastructure_capture_failure":
+        throw new Error(
+          `INFRASTRUCTURE CAPTURE FAILURE: ${attempts.length} attempt(s) observed no chat events for their submitted runs. ${JSON.stringify(attemptDetails)}`,
+        );
+      case "recovered_infrastructure_capture":
+        console.warn("ISSUE2603_CLASSIFICATION recovered infrastructure capture failure on retry");
+        break;
+      case "passed":
+      case "product_regression":
+        break;
     }
 
     const analysis = analyzeIssue2603Trace(repro);
