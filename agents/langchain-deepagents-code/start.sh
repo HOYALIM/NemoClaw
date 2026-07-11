@@ -118,8 +118,12 @@ managed_fetch_ca_bundle_metadata() {
 validate_managed_fetch_ca_bundle() {
   local file="$MANAGED_FETCH_CA_BUNDLE_FILE"
   local metadata owner mode size extra
+  if [ -L "$file" ]; then
+    printf '%s\n' 'Missing or unsafe managed fetch CA bundle file.' >&2
+    return 1
+  fi
   [ -e "$file" ] || return 0
-  if [ ! -f "$file" ] || [ -L "$file" ] || [ ! -r "$file" ]; then
+  if [ ! -f "$file" ] || [ ! -r "$file" ]; then
     printf '%s\n' 'Missing or unsafe managed fetch CA bundle file.' >&2
     return 1
   fi
@@ -240,8 +244,11 @@ prepare_runtime_env() {
     printf '_nemoclaw_dcode_ca_bundle=%q\n' "$MANAGED_FETCH_CA_BUNDLE_FILE"
     printf '_nemoclaw_dcode_ca_owner_uid=%q\n' "$MANAGED_PROXY_OWNER_UID"
     cat <<'NEMOCLAW_DCODE_CA_GUARD'
-if [ -e "$_nemoclaw_dcode_ca_bundle" ]; then
-  if [ ! -f "$_nemoclaw_dcode_ca_bundle" ] || [ -L "$_nemoclaw_dcode_ca_bundle" ] || [ ! -r "$_nemoclaw_dcode_ca_bundle" ]; then
+if [ -L "$_nemoclaw_dcode_ca_bundle" ]; then
+  printf "%s\n" "Missing or unsafe managed fetch CA bundle file." >&2
+  return 1 2>/dev/null || exit 1
+elif [ -e "$_nemoclaw_dcode_ca_bundle" ]; then
+  if [ ! -f "$_nemoclaw_dcode_ca_bundle" ] || [ ! -r "$_nemoclaw_dcode_ca_bundle" ]; then
     printf "%s\n" "Missing or unsafe managed fetch CA bundle file." >&2
     return 1 2>/dev/null || exit 1
   fi

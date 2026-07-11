@@ -497,7 +497,24 @@ describe("Deep Agents Code direct-exec proxy launcher", () => {
     );
   });
 
-  it("rejects writable managed fetch CA bundles in start, connect, and direct dcode paths (#6636)", () => {
+  it.each([
+    {
+      condition: "writable",
+      expected: "Unsafe ownership or mode on managed fetch CA bundle file",
+      mutate: (caFile: string) => fs.chmodSync(caFile, 0o666),
+    },
+    {
+      condition: "dangling symlink",
+      expected: "Missing or unsafe managed fetch CA bundle file",
+      mutate: (caFile: string) => {
+        fs.rmSync(caFile);
+        fs.symlinkSync(`${caFile}.missing`, caFile);
+      },
+    },
+  ])("rejects $condition managed fetch CA bundles in start, connect, and direct dcode paths (#6636)", ({
+    expected,
+    mutate,
+  }) => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-dcode-ca-bundle-"));
     const launcherPath = makeLauncherProxyProbeFixture(tempDir);
     const { envFile, scriptPath } = makeStartProxyProbeFixture(tempDir);
@@ -510,7 +527,7 @@ describe("Deep Agents Code direct-exec proxy launcher", () => {
     expect(safeStart.status, safeStart.stderr).toBe(0);
     expect(fs.existsSync(envFile)).toBe(true);
 
-    fs.chmodSync(caFile, 0o666);
+    mutate(caFile);
     const launcherResult = runLauncher(launcherPath, ["-n", "PONG"], {});
     const startResult = spawnSync("bash", [scriptPath, "true"], {
       env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
@@ -529,7 +546,7 @@ describe("Deep Agents Code direct-exec proxy launcher", () => {
     expect(startResult.status).not.toBe(0);
     expect(connectSourceResult.status).not.toBe(0);
     const combined = `${launcherResult.stderr}\n${startResult.stderr}\n${connectSourceResult.stderr}`;
-    expect(combined).toContain("Unsafe ownership or mode on managed fetch CA bundle file");
+    expect(combined).toContain(expected);
     expect(combined).not.toContain(caFile);
   });
 

@@ -111,8 +111,12 @@ managed_fetch_ca_bundle_metadata() {
 validate_managed_fetch_ca_bundle() {
   local file="$MANAGED_FETCH_CA_BUNDLE_FILE"
   local metadata owner mode size extra
+  if [ -L "$file" ]; then
+    printf '%s\n' 'Missing or unsafe managed fetch CA bundle file.' >&2
+    return 1
+  fi
   [ -e "$file" ] || return 0
-  if [ ! -f "$file" ] || [ -L "$file" ] || [ ! -r "$file" ]; then
+  if [ ! -f "$file" ] || [ ! -r "$file" ]; then
     printf '%s\n' 'Missing or unsafe managed fetch CA bundle file.' >&2
     return 1
   fi
