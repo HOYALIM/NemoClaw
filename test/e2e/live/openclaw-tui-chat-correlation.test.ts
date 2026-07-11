@@ -245,7 +245,7 @@ function analyzeIssue2603Trace({
 // The zero-chat-events failure is an observability race at the live
 // repro boundary: OpenClaw accepts the chat.send requests, but the
 // websocket client captures no chat stream events before assertions.
-// The source boundary is the pinned OpenClaw 2026.5.x gateway runtime,
+// The source boundary is the pinned OpenClaw gateway runtime declared above,
 // so this NemoClaw-side E2E retries once on a fresh session before
 // asserting. Remove when OpenClaw exposes a deterministic chat
 // subscription/readiness ack or the 10x sweep stops flagging this
