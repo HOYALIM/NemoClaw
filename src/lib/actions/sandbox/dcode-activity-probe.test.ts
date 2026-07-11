@@ -46,13 +46,18 @@ function runProbeScriptWithProcessSources({
   }
   fs.writeFileSync(psPath, `#!/bin/sh\ncat <<'EOF'\n${processes}\nEOF\nexit ${psExitCode}\n`);
   fs.chmodSync(psPath, 0o755);
-  const result = spawnSync("sh", ["-c", DCODE_BUSY_PROBE_SCRIPT], {
+  const testProbeScript = DCODE_BUSY_PROBE_SCRIPT.replace(
+    "proc_root=/proc",
+    'proc_root="$NEMOCLAW_TEST_DCODE_PROC_ROOT"',
+  );
+  const result = spawnSync("sh", ["-c", testProbeScript], {
     encoding: "utf-8",
     env: {
       ...process.env,
       HOME: homeDir,
       PATH: `${tempDir}:/usr/bin:/bin`,
-      NEMOCLAW_DCODE_PROC_ROOT: procRoot,
+      NEMOCLAW_DCODE_PROC_ROOT: path.join(tempDir, "sandbox-controlled-proc"),
+      NEMOCLAW_TEST_DCODE_PROC_ROOT: procRoot,
     },
   });
   fs.rmSync(tempDir, { recursive: true, force: true });
@@ -69,6 +74,11 @@ function expectProbeState(
 }
 
 describe("dcode activity probe", () => {
+  it("does not let sandbox environment redirect the production proc scan (#6180)", () => {
+    expect(DCODE_BUSY_PROBE_SCRIPT).toContain("proc_root=/proc");
+    expect(DCODE_BUSY_PROBE_SCRIPT).not.toContain("NEMOCLAW_DCODE_PROC_ROOT");
+  });
+
   it("falls back to proc cmdline scanning when ps cannot list processes (#6180)", () => {
     expectProbeState(
       runProbeScriptWithProcessSources({

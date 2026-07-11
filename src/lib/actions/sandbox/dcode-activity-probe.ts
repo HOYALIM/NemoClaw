@@ -38,8 +38,7 @@ detect_dcode_processes() {
 END { exit found ? 0 : 1 }
 '
 }
-proc_root="$NEMOCLAW_DCODE_PROC_ROOT"
-[ -n "$proc_root" ] || proc_root=/proc
+proc_root=/proc
 processes="$(ps -eo pid=,args= 2>/dev/null)" || {
   processes=""
   saw_proc_process=0
