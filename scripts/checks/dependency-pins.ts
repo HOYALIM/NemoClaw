@@ -223,10 +223,33 @@ function verifyOpenShellPins(
     blueprint: Record<string, unknown> | null;
     brevLaunchable: string;
     credentialBoundary: string;
+    installer: string;
     mcpBridgeValidation: string;
   },
   failures: string[],
 ): void {
+  compare(
+    extractSingle(
+      sources.installer,
+      /^MIN_VERSION="([^"]+)"\s*$/gm,
+      "OpenShell installer MIN_VERSION",
+      failures,
+    ),
+    pins.minVersion,
+    "OpenShell installer MIN_VERSION",
+    failures,
+  );
+  compare(
+    extractSingle(
+      sources.installer,
+      /^MAX_VERSION="([^"]+)"\s*$/gm,
+      "OpenShell installer MAX_VERSION",
+      failures,
+    ),
+    pins.maxVersion,
+    "OpenShell installer MAX_VERSION",
+    failures,
+  );
   compare(
     extractYamlString(
       sources.blueprint,
@@ -425,6 +448,7 @@ export function verifyDependencyPins(rootDir: string = REPO_ROOT): string[] {
 
   const blueprint = readText(rootDir, "nemoclaw-blueprint/blueprint.yaml", failures);
   const brevLaunchable = readText(rootDir, "scripts/brev-launchable-ci-cpu.sh", failures);
+  const installer = readText(rootDir, "scripts/install-openshell.sh", failures);
   const openclawManifest = readText(rootDir, "agents/openclaw/manifest.yaml", failures);
   const hermesManifest = readText(rootDir, "agents/hermes/manifest.yaml", failures);
   const dockerfile = readText(rootDir, "Dockerfile", failures);
@@ -455,7 +479,13 @@ export function verifyDependencyPins(rootDir: string = REPO_ROOT): string[] {
 
   verifyOpenShellPins(
     pins.openshell,
-    { blueprint: blueprintYaml, brevLaunchable, credentialBoundary, mcpBridgeValidation },
+    {
+      blueprint: blueprintYaml,
+      brevLaunchable,
+      credentialBoundary,
+      installer,
+      mcpBridgeValidation,
+    },
     failures,
   );
   verifyOpenClawPins(

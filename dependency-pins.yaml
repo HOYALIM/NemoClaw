@@ -19,7 +19,7 @@ openclaw:
   tarball: "https://registry.npmjs.org/openclaw/-/openclaw-2026.6.10.tgz"
 
 hermes:
-  tag: "v2026.6.19"
-  expectedVersion: "0.17.0"
-  tarballSha256: "69b805ec0a7a7be880068ba8a3b17479d7ba29f0cac0a2e9c6692c02f346ba91"
-  npmIntegrity: "sha512-PzSJiYqmwpTudmakYs2oCJ57OW3VwEJYf8buTuKvuRvcYEUf/KOTu2dD6pLf2XYgDKErpvcDaoSAJ1nGCyvzAA=="
+  tag: "v2026.7.1"
+  expectedVersion: "0.18.0"
+  tarballSha256: "ec8a380629cc2f3f2102dd92cad50c4ded706fe59c0e359a05681166a0ae2991"
+  npmIntegrity: "sha512-fS+8MsE69shNPmFnKDrE1a+KUDEEXgbyN/QM7J+2nh294gTjh2wCknk2tfMsD03GhSxl7YwyDmp6e5HLYzw8yA=="

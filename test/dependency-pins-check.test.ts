@@ -44,6 +44,11 @@ case "$NEMOCLAW_REF" in
     stable | auto) OPENSHELL_VERSION="v0.0.72" ;;
 esac
 `,
+    "scripts/install-openshell.sh": `
+MIN_VERSION="${overrides.installerMinVersion ?? "0.0.72"}"
+MAX_VERSION="0.0.72"
+PIN_VERSION="$MAX_VERSION"
+`,
     "src/lib/actions/sandbox/openshell-child-visible-credentials.v0.0.72.json": `
 {
   "openshellVersion"
@@ -101,11 +106,13 @@ describe("dependency pin drift check", () => {
     try {
       writeFixture(root, {
         hermesNpmIntegrity: "sha512-drift",
+        installerMinVersion: "0.0.71",
         minOpenshellVersion: "0.0.71",
         openclawDockerfileVersion: "2026.6.9",
       });
 
       expect(verifyDependencyPins(root)).toEqual([
+        "OpenShell installer MIN_VERSION: expected 0.0.72, found 0.0.71",
         "blueprint min_openshell_version: expected 0.0.72, found 0.0.71",
         "Dockerfile OPENCLAW_VERSION: expected 2026.6.10, found 2026.6.9",
         `Hermes Dockerfile.base HERMES_NPM_INTEGRITY: expected ${HERMES_INTEGRITY}, found sha512-drift`,
