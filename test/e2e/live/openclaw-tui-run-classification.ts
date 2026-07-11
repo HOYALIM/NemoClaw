@@ -14,6 +14,24 @@ export type Issue2603RunClassification =
   | "infrastructure_setup_failure"
   | "product_regression";
 
+export type Issue2603TraceEnvelope<SentRun, Event, HistoryMessage> = {
+  sentRuns: SentRun[];
+  events: Event[];
+  historyMessages: HistoryMessage[];
+  error?: string;
+};
+
+export function normalizeIssue2603Trace<SentRun, Event, HistoryMessage>(
+  value: Partial<Issue2603TraceEnvelope<SentRun, Event, HistoryMessage>>,
+): Issue2603TraceEnvelope<SentRun, Event, HistoryMessage> {
+  return {
+    sentRuns: Array.isArray(value.sentRuns) ? value.sentRuns : [],
+    events: Array.isArray(value.events) ? value.events : [],
+    historyMessages: Array.isArray(value.historyMessages) ? value.historyMessages : [],
+    ...(typeof value.error === "string" ? { error: value.error } : {}),
+  };
+}
+
 export function classifyIssue2603Run(
   attempts: readonly Issue2603AttemptOutcome[],
 ): Issue2603RunClassification {

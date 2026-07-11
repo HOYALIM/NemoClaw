@@ -3,7 +3,10 @@
 
 import { describe, expect, it } from "vitest";
 
-import { classifyIssue2603Run } from "../live/openclaw-tui-run-classification.ts";
+import {
+  classifyIssue2603Run,
+  normalizeIssue2603Trace,
+} from "../live/openclaw-tui-run-classification.ts";
 
 describe("OpenClaw TUI chat-event failure classification", () => {
   it.each([
@@ -44,5 +47,16 @@ describe("OpenClaw TUI chat-event failure classification", () => {
 
   it("rejects a run without attempts", () => {
     expect(() => classifyIssue2603Run([])).toThrow(/at least one attempt/u);
+  });
+
+  it("normalizes a setup-error trace before correlation analysis", () => {
+    const event = { event: "chat", payload: { state: "error" } };
+
+    expect(normalizeIssue2603Trace({ error: "gateway unavailable", events: [event] })).toEqual({
+      sentRuns: [],
+      events: [event],
+      historyMessages: [],
+      error: "gateway unavailable",
+    });
   });
 });

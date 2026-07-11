@@ -45,6 +45,7 @@ import { verifyNemoClawRefFidelity } from "./openclaw-tui-ref-fidelity.ts";
 import {
   classifyIssue2603Run,
   type Issue2603AttemptOutcome,
+  normalizeIssue2603Trace,
 } from "./openclaw-tui-run-classification.ts";
 
 // Reuses the standard ubuntu-repo-docker environment with the
@@ -376,6 +377,8 @@ ws.on("error", (error) => {
 });
 
 ws.on("open", async () => {
+  const sentRuns = [];
+  let historyMessages = [];
   try {
     await request("connect", {
       minProtocol: 4,
@@ -395,7 +398,6 @@ ws.on("open", async () => {
 
     await request("chat.history", { sessionKey, limit: 20 });
 
-    const sentRuns = [];
     const messages = [
       [
         "A2603",
@@ -434,12 +436,13 @@ ws.on("open", async () => {
     }
 
     const history = await request("chat.history", { sessionKey, limit: 50 });
+    historyMessages = history.messages ?? [];
     console.log(` +
-    "`ISSUE2603_RESULT ${JSON.stringify({ sessionKey, sentRuns, events, historyMessages: history.messages ?? [] })}`" +
+    "`ISSUE2603_RESULT ${JSON.stringify({ sessionKey, sentRuns, events, historyMessages })}`" +
     String.raw`);
   } catch (error) {
     console.log(` +
-    "`ISSUE2603_RESULT ${JSON.stringify({ error: String(error), events })}`" +
+    "`ISSUE2603_RESULT ${JSON.stringify({ error: String(error), sentRuns, events, historyMessages })}`" +
     String.raw`);
   } finally {
     ws.close();
@@ -519,7 +522,9 @@ async function runLiveIssue2603Repro(
         `live repro did not emit ISSUE2603_RESULT.\nstdout:\n${driver.stdout}\nstderr:\n${driver.stderr}`,
       );
     }
-    return JSON.parse(resultLine.slice("ISSUE2603_RESULT ".length)) as LiveIssue2603Trace;
+    return normalizeIssue2603Trace<SentRun, GatewayEvent, ChatMessage>(
+      JSON.parse(resultLine.slice("ISSUE2603_RESULT ".length)) as Partial<LiveIssue2603Trace>,
+    );
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -861,10 +866,30 @@ test(
     );
     const attemptDetails = attempts.map(issue2603AttemptOutcome);
     const classification = classifyIssue2603Run(attemptDetails);
+    const analysis = analyzeIssue2603Trace(repro);
+    const { chatEvents: observedChatEvents, ...correlationAnalysis } = analysis;
+    const failureSummary = secrets.redact(
+      JSON.stringify(
+        {
+          sentRuns: repro.sentRuns,
+          eventCount: repro.events.length,
+          observedChatEvents,
+          correlationAnalysis,
+          attemptDetails,
+          classification,
+          error: repro.error,
+        },
+        null,
+        2,
+      ),
+      [apiKey],
+    );
 
     await artifacts.writeJson("issue2603-trace.json", {
       sentRuns: repro.sentRuns,
       eventCount: repro.events?.length ?? 0,
+      observedChatEvents,
+      correlationAnalysis,
       attempts: attempts.length,
       attemptDetails,
       classification,
@@ -874,11 +899,11 @@ test(
     switch (classification) {
       case "infrastructure_setup_failure":
         throw new Error(
-          `INFRASTRUCTURE SETUP FAILURE: live repro failed before assertions: ${repro.error}`,
+          `INFRASTRUCTURE SETUP FAILURE: live repro failed before assertions. ${failureSummary}`,
         );
       case "infrastructure_capture_failure":
         throw new Error(
-          `INFRASTRUCTURE CAPTURE FAILURE: ${attempts.length} attempt(s) observed no chat events for their submitted runs. ${JSON.stringify(attemptDetails)}`,
+          `INFRASTRUCTURE CAPTURE FAILURE: ${attempts.length} attempt(s) observed no chat events for their submitted runs. ${failureSummary}`,
         );
       case "recovered_infrastructure_capture":
         console.warn("ISSUE2603_CLASSIFICATION recovered infrastructure capture failure on retry");
@@ -887,19 +912,6 @@ test(
       case "product_regression":
         break;
     }
-
-    const analysis = analyzeIssue2603Trace(repro);
-    const failureSummary = JSON.stringify(
-      {
-        sentRuns: repro.sentRuns,
-        eventCount: repro.events.length,
-        attemptDetails,
-        classification,
-        analysis,
-      },
-      null,
-      2,
-    );
 
     // #2603 protocol/history subset — every submitted run produces a
     // non-empty final, every reply correlates to the run that accepted
