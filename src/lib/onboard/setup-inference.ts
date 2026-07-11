@@ -228,6 +228,15 @@ export function createSetupInference(
     const gatewayName = options.gatewayName ?? deps.getGatewayName();
     const mutateGatewayRoute = (): Promise<SetupInferenceResult> =>
       deps.withGatewayRouteMutationLock(gatewayName, async () => {
+        if (
+          options.isRecordedProviderRecoveryAuthorized &&
+          !options.isRecordedProviderRecoveryAuthorized()
+        ) {
+          deps.error(
+            `  Error: recorded inference recovery for sandbox '${sandboxName}' lost reservation ownership before route setup.`,
+          );
+          return deps.exitProcess(1);
+        }
         const compatibility = deps.checkGatewayRouteCompatibility({
           gatewayName,
           sandboxName,
@@ -283,6 +292,7 @@ export function createSetupInference(
             credentialEnv,
             preferredInferenceApi: options.preferredInferenceApi ?? null,
             gatewayName,
+            reservationSessionId: options.reservationSessionId,
           });
           routeReserved = reserved;
           return reserved;
