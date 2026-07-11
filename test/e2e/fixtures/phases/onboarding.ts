@@ -49,6 +49,14 @@ const MISSING_SANDBOX_DELETE_PATTERNS = [
 ];
 const POLICY_PRESETS_REQUIRED_PATTERN =
   /NEMOCLAW_POLICY_PRESETS is required when NEMOCLAW_POLICY_MODE=custom/i;
+const JAVASCRIPT_STACK_TRACE_PATTERNS = [
+  /(^|\s)(TypeError|ReferenceError|SyntaxError):/m,
+  /^\s+at /m,
+];
+
+function hasJavaScriptStackTrace(text: string): boolean {
+  return JAVASCRIPT_STACK_TRACE_PATTERNS.some((pattern) => pattern.test(text));
+}
 
 export interface OnboardingSecrets {
   required(name: string): string;
@@ -345,9 +353,15 @@ export class OnboardingPhaseFixture {
     if (result.exitCode === 0) {
       throw new Error("cloud-openclaw-policy-custom-missing-presets unexpectedly succeeded.");
     }
-    if (!POLICY_PRESETS_REQUIRED_PATTERN.test(resultText(result))) {
+    const output = resultText(result);
+    if (!POLICY_PRESETS_REQUIRED_PATTERN.test(output)) {
       throw new Error(
-        `cloud-openclaw-policy-custom-missing-presets failed without the policy preset signature: ${resultText(result)}`,
+        `cloud-openclaw-policy-custom-missing-presets failed without the policy preset signature: ${output}`,
+      );
+    }
+    if (hasJavaScriptStackTrace(output)) {
+      throw new Error(
+        `cloud-openclaw-policy-custom-missing-presets failed with a JavaScript stack trace: ${output}`,
       );
     }
     return {

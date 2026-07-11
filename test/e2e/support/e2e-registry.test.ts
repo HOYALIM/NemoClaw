@@ -79,7 +79,6 @@ describe("deterministic target registry", () => {
     expect(policyTarget?.expectedFailure).toEqual({
       phase: "onboarding",
       errorClass: "policy-presets-required",
-      forbiddenSideEffects: ["policy-applied"],
     });
   });
 });

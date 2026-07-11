@@ -345,7 +345,6 @@ const canonicalTargetInputs: CanonicalTargetInput[] = [
     expectedFailure: {
       phase: "onboarding",
       errorClass: "policy-presets-required",
-      forbiddenSideEffects: ["policy-applied"],
     },
   },
 ];

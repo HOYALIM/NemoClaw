@@ -398,6 +398,24 @@ describe("onboarding phase fixture", () => {
     ).rejects.toThrow(/failed without the policy preset signature/);
   });
 
+  it("rejects the expected policy preset failure when it includes a stack trace", async () => {
+    const runner = new FakeRunner();
+    runner.enqueue(
+      shellResult(
+        1,
+        "NEMOCLAW_POLICY_PRESETS is required when NEMOCLAW_POLICY_MODE=custom.\nTypeError: unexpected\n    at Object.onboard (/app/onboard.js:1:1)",
+      ),
+    );
+    const onboard = new OnboardingPhaseFixture(
+      new HostCliClient(runner),
+      new FakeSecrets({ NVIDIA_INFERENCE_API_KEY: "secret" }),
+    );
+
+    await expect(
+      onboard.from(ready({ onboarding: "cloud-openclaw-policy-custom-missing-presets" })),
+    ).rejects.toThrow(/failed with a JavaScript stack trace/);
+  });
+
   it("publishes redacted legacy preflight evidence for the no-Docker negative path", async () => {
     const previousContextDir = process.env.E2E_CONTEXT_DIR;
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-typed-no-docker-"));
