@@ -37,6 +37,9 @@ type DependencyPins = Readonly<{
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const PIN_FILE = "dependency-pins.yaml";
 const OPENCLAW_VERSION_ARG_SUFFIX_RE = /[.-]/g;
+const NUMERIC_VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+$/;
+const HERMES_TAG_RE = /^v[0-9]+(?:\.[0-9]+)+$/;
+const SHA256_RE = /^[0-9a-f]{64}$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -52,6 +55,48 @@ function requireString(
   if (typeof value === "string" && value.length > 0) return value;
   failures.push(`${PIN_FILE}: ${label}.${key} must be a non-empty string`);
   return "";
+}
+
+function isCanonicalSha512Sri(value: string): boolean {
+  const match = /^sha512-([A-Za-z0-9+/]+={2})$/.exec(value);
+  if (!match?.[1]) return false;
+  const digest = Buffer.from(match[1], "base64");
+  return digest.length === 64 && digest.toString("base64") === match[1];
+}
+
+function validatePinFormats(pins: DependencyPins, failures: string[]): void {
+  for (const [label, value] of [
+    ["openshell.installVersion", pins.openshell.installVersion],
+    ["openshell.minVersion", pins.openshell.minVersion],
+    ["openshell.maxVersion", pins.openshell.maxVersion],
+    ["openclaw.version", pins.openclaw.version],
+    ["openclaw.minVersion", pins.openclaw.minVersion],
+    ["hermes.expectedVersion", pins.hermes.expectedVersion],
+  ] as const) {
+    if (value && !NUMERIC_VERSION_RE.test(value)) {
+      failures.push(`${PIN_FILE}: ${label} must match X.Y.Z`);
+    }
+  }
+  if (pins.hermes.tag && !HERMES_TAG_RE.test(pins.hermes.tag)) {
+    failures.push(`${PIN_FILE}: hermes.tag must be a v-prefixed numeric dotted version`);
+  }
+  for (const [label, value] of [
+    ["openclaw.npmIntegrity", pins.openclaw.npmIntegrity],
+    ["hermes.npmIntegrity", pins.hermes.npmIntegrity],
+  ] as const) {
+    if (value && !isCanonicalSha512Sri(value)) {
+      failures.push(`${PIN_FILE}: ${label} must be a canonical sha512 SRI digest`);
+    }
+  }
+  if (pins.hermes.tarballSha256 && !SHA256_RE.test(pins.hermes.tarballSha256)) {
+    failures.push(`${PIN_FILE}: hermes.tarballSha256 must be a lowercase 64-character SHA-256`);
+  }
+  if (NUMERIC_VERSION_RE.test(pins.openclaw.version)) {
+    const expectedTarball = `https://registry.npmjs.org/openclaw/-/openclaw-${pins.openclaw.version}.tgz`;
+    if (pins.openclaw.tarball && pins.openclaw.tarball !== expectedTarball) {
+      failures.push(`${PIN_FILE}: openclaw.tarball must equal ${expectedTarball}`);
+    }
+  }
 }
 
 export function readDependencyPins(rootDir: string = REPO_ROOT): {
@@ -105,6 +150,8 @@ export function readDependencyPins(rootDir: string = REPO_ROOT): {
       npmIntegrity: hermes ? requireString(hermes, "npmIntegrity", failures, "hermes") : "",
     },
   };
+
+  validatePinFormats(pins, failures);
 
   return { failures, pins: failures.length === 0 ? pins : null };
 }
@@ -271,6 +318,17 @@ function verifyOpenShellPins(
     ),
     pins.maxVersion,
     "OpenShell installer MAX_VERSION",
+    failures,
+  );
+  compare(
+    extractSingle(
+      sources.installer,
+      /^DEV_MIN_VERSION="([^"]+)"\s*$/gm,
+      "OpenShell installer DEV_MIN_VERSION",
+      failures,
+    ),
+    pins.minVersion,
+    "OpenShell installer DEV_MIN_VERSION",
     failures,
   );
   compare(
