@@ -419,6 +419,11 @@ describe("Deep Agents Code direct-exec proxy launcher", () => {
     expect(launcherResult.status, launcherResult.stderr).toBe(0);
     expect(startResult.status, startResult.stderr).toBe(0);
     const envFileText = fs.readFileSync(envFile, "utf8");
+    const posixSourceResult = spawnSync("sh", ["-c", '. "$1"', "sh", envFile], {
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      encoding: "utf8",
+    });
+    expect(posixSourceResult.status, posixSourceResult.stderr).toBe(0);
     const launcherNoProxy = launcherResult.stdout.match(/^LAUNCHER_NO_PROXY=(.*)$/m)?.[1];
     const startNoProxy = startResult.stdout.match(/^START_PROXY=[^|]*\|([^|]*)\|/m)?.[1];
     expect(fs.statSync(envFile).mode & 0o777).toBe(0o444);
@@ -522,14 +527,10 @@ describe("Deep Agents Code direct-exec proxy launcher", () => {
       env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
       encoding: "utf8",
     });
-    const connectSourceResult = spawnSync(
-      "bash",
-      ["--noprofile", "--norc", "-c", '. "$1"', "bash", envFile],
-      {
-        env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
-        encoding: "utf8",
-      },
-    );
+    const connectSourceResult = spawnSync("sh", ["-c", '. "$1"', "sh", envFile], {
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      encoding: "utf8",
+    });
 
     expect(launcherResult.status).not.toBe(0);
     expect(startResult.status).not.toBe(0);

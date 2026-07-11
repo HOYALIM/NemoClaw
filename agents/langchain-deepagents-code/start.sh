@@ -253,20 +253,33 @@ elif [ -e "$_nemoclaw_dcode_ca_bundle" ]; then
     return 1 2>/dev/null || exit 1
   fi
   _nemoclaw_dcode_ca_meta="$(stat -c "%u:%a:%s" "$_nemoclaw_dcode_ca_bundle" 2>/dev/null || stat -f "%u:%Lp:%z" "$_nemoclaw_dcode_ca_bundle" 2>/dev/null || true)"
-  IFS=: read -r _nemoclaw_dcode_ca_owner _nemoclaw_dcode_ca_mode _nemoclaw_dcode_ca_size _nemoclaw_dcode_ca_extra <<<"$_nemoclaw_dcode_ca_meta"
-  if [ -n "${_nemoclaw_dcode_ca_extra:-}" ] \
-    || [[ ! "$_nemoclaw_dcode_ca_owner" =~ ^[0-9]+$ ]] \
-    || [[ ! "$_nemoclaw_dcode_ca_owner_uid" =~ ^[0-9]+$ ]] \
-    || [[ ! "$_nemoclaw_dcode_ca_mode" =~ ^[0-7]{3,4}$ ]] \
-    || [[ ! "$_nemoclaw_dcode_ca_size" =~ ^[0-9]+$ ]] \
+  IFS=: read -r _nemoclaw_dcode_ca_owner _nemoclaw_dcode_ca_mode _nemoclaw_dcode_ca_size _nemoclaw_dcode_ca_extra <<NEMOCLAW_DCODE_CA_METADATA
+$_nemoclaw_dcode_ca_meta
+NEMOCLAW_DCODE_CA_METADATA
+  _nemoclaw_dcode_ca_valid=1
+  case "$_nemoclaw_dcode_ca_owner" in
+    '' | *[!0-9]*) _nemoclaw_dcode_ca_valid=0 ;;
+  esac
+  case "$_nemoclaw_dcode_ca_owner_uid" in
+    '' | *[!0-9]*) _nemoclaw_dcode_ca_valid=0 ;;
+  esac
+  case "$_nemoclaw_dcode_ca_mode" in
+    [0-7][0-7][0-7] | [0-7][0-7][0-7][0-7]) ;;
+    *) _nemoclaw_dcode_ca_valid=0 ;;
+  esac
+  case "$_nemoclaw_dcode_ca_size" in
+    '' | *[!0-9]*) _nemoclaw_dcode_ca_valid=0 ;;
+  esac
+  if [ "$_nemoclaw_dcode_ca_valid" -ne 1 ] \
+    || [ -n "${_nemoclaw_dcode_ca_extra:-}" ] \
     || [ "$_nemoclaw_dcode_ca_owner" != "$_nemoclaw_dcode_ca_owner_uid" ] \
     || [ "$_nemoclaw_dcode_ca_size" -le 0 ] \
-    || (((8#$_nemoclaw_dcode_ca_mode & 0022) != 0)); then
+    || [ "$((0$_nemoclaw_dcode_ca_mode & 022))" -ne 0 ]; then
     printf "%s\n" "Unsafe ownership or mode on managed fetch CA bundle file." >&2
     return 1 2>/dev/null || exit 1
   fi
 fi
-unset _nemoclaw_dcode_ca_bundle _nemoclaw_dcode_ca_owner_uid _nemoclaw_dcode_ca_meta _nemoclaw_dcode_ca_owner _nemoclaw_dcode_ca_mode _nemoclaw_dcode_ca_size _nemoclaw_dcode_ca_extra
+unset _nemoclaw_dcode_ca_bundle _nemoclaw_dcode_ca_owner_uid _nemoclaw_dcode_ca_meta _nemoclaw_dcode_ca_owner _nemoclaw_dcode_ca_mode _nemoclaw_dcode_ca_size _nemoclaw_dcode_ca_extra _nemoclaw_dcode_ca_valid
 NEMOCLAW_DCODE_CA_GUARD
     write_export_if_set SSL_CERT_FILE
     write_export_if_set REQUESTS_CA_BUNDLE
