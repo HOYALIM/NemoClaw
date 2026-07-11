@@ -580,14 +580,13 @@ describe("pull request and main workflow contracts", () => {
     }
   });
 
-  it("runs repository checks for every dependency-pin input", () => {
+  it("runs repository checks for every operational dependency-pin authority and consumer", () => {
     const hooks = prekConfig.repos.flatMap((repo) => repo.hooks ?? []);
     const repositoryChecks = hooks.find((candidate) => candidate.id === "repository-checks");
     const files = new RegExp(repositoryChecks?.files ?? "(?!)", "u");
 
     for (const path of [
       ".pre-commit-config.yaml",
-      "dependency-pins.yaml",
       "Dockerfile",
       "Dockerfile.base",
       "agents/openclaw/manifest.yaml",
@@ -596,7 +595,9 @@ describe("pull request and main workflow contracts", () => {
       "agents/hermes/manifest.yaml",
       "agents/hermes/mcp-config-transaction.py",
       "nemoclaw-blueprint/blueprint.yaml",
+      "nemoclaw/package.json",
       "scripts/brev-launchable-ci-cpu.sh",
+      "scripts/check-installer-hash.sh",
       "scripts/install-openshell.sh",
       "scripts/update-hermes-agent.sh",
       "src/lib/actions/sandbox/mcp-bridge-validation.ts",
@@ -604,6 +605,7 @@ describe("pull request and main workflow contracts", () => {
     ]) {
       expect(files.test(path), path).toBe(true);
     }
+    expect(files.test("dependency-pins.yaml")).toBe(false);
     expect(files.test("docs/reference/commands.mdx")).toBe(false);
   });
 

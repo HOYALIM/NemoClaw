@@ -7,90 +7,126 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { readDependencyPins, verifyDependencyPins } from "../scripts/checks/dependency-pins";
+import { verifyDependencyPins } from "../scripts/checks/dependency-pins";
 
+const OPENSHELL_MIN = "1.2.3";
+const OPENSHELL_MAX = "1.2.4";
+const OPENCLAW_VERSION = "2030.4.5";
 const OPENCLAW_INTEGRITY =
   "sha512-LcooND2tBQw8A+kc1Ujltu3lg30bJ0w7XaeRy7eYzobb8BBdcW6DOGbwJL4vpj1vl9+gjRceOtlh5nh9OARcug==";
-const OPENCLAW_TARBALL = "https://registry.npmjs.org/openclaw/-/openclaw-2026.6.10.tgz";
-const HERMES_INTEGRITY =
+const ALTERNATE_INTEGRITY =
   "sha512-PzSJiYqmwpTudmakYs2oCJ57OW3VwEJYf8buTuKvuRvcYEUf/KOTu2dD6pLf2XYgDKErpvcDaoSAJ1nGCyvzAA==";
+const HERMES_SEMVER = "7.8.9";
+const MAP_SHA256 = "b".repeat(64);
 
-function writeFixture(root: string, overrides: Partial<Record<string, string>> = {}): void {
-  const files = {
-    "dependency-pins.yaml": `
-schemaVersion: 1
-openshell:
-  installVersion: "${overrides.openshellInstallVersion ?? "0.0.72"}"
-  minVersion: "${overrides.openshellPinMinVersion ?? "0.0.72"}"
-  maxVersion: "${overrides.openshellPinMaxVersion ?? "0.0.72"}"
-openclaw:
-  version: "${overrides.openclawPinVersion ?? "2026.6.10"}"
-  minVersion: "${overrides.openclawPinMinVersion ?? "2026.3.11"}"
-  npmIntegrity: "${overrides.openclawPinNpmIntegrity ?? OPENCLAW_INTEGRITY}"
-  tarball: "${overrides.openclawPinTarball ?? OPENCLAW_TARBALL}"
-hermes:
-  tag: "${overrides.hermesPinTag ?? "v2026.6.19"}"
-  expectedVersion: "${overrides.hermesPinExpectedVersion ?? "0.17.0"}"
-  tarballSha256: "${overrides.hermesPinTarballSha256 ?? "69b805ec0a7a7be880068ba8a3b17479d7ba29f0cac0a2e9c6692c02f346ba91"}"
-  npmIntegrity: "${overrides.hermesPinNpmIntegrity ?? HERMES_INTEGRITY}"
-`,
+type FixtureOverrides = Partial<Record<string, string>>;
+
+function openclawSelector(version: string, argVersion: string = version): string {
+  const arg = `OPENCLAW_${argVersion.replace(/[.-]/g, "_")}`;
+  return (
+    `if [ "$OPENCLAW_VERSION" = "${version}" ]; then ` +
+    `EXPECTED_INTEGRITY="$${arg}_INTEGRITY"; ` +
+    `EXPECTED_TARBALL="$${arg}_TARBALL"; fi;`
+  );
+}
+
+function writeFixture(root: string, overrides: FixtureOverrides = {}): void {
+  const openshellMin = overrides.openshellMin ?? OPENSHELL_MIN;
+  const openshellMax = overrides.openshellMax ?? OPENSHELL_MAX;
+  const openclawVersion = overrides.openclawVersion ?? OPENCLAW_VERSION;
+  const openclawIntegrity = overrides.openclawIntegrity ?? OPENCLAW_INTEGRITY;
+  const openclawTarball =
+    overrides.openclawTarball ??
+    `https://registry.npmjs.org/openclaw/-/openclaw-${openclawVersion}.tgz`;
+  const openclawArg = `OPENCLAW_${openclawVersion.replace(/[.-]/g, "_")}`;
+  const hermesSemver = overrides.hermesSemver ?? HERMES_SEMVER;
+
+  const files: Record<string, string> = {
     "nemoclaw-blueprint/blueprint.yaml": `
-min_openshell_version: '${overrides.minOpenshellVersion ?? "0.0.72"}' # parser handles comments
-max_openshell_version: '0.0.72'
-min_openclaw_version: '2026.3.11'
+min_openshell_version: "${openshellMin}"
+max_openshell_version: "${openshellMax}"
+`,
+    "scripts/install-openshell.sh": `
+MIN_VERSION="${overrides.installerMin ?? openshellMin}"
+MAX_VERSION="${overrides.installerMax ?? openshellMax}"
+PIN_VERSION="${overrides.installerPinExpression ?? "$MAX_VERSION"}"
+`,
+    "scripts/check-installer-hash.sh": `
+OPENSHELL_RELEASE_VERSION="${overrides.installerHashVersion ?? openshellMax}"
 `,
     "scripts/brev-launchable-ci-cpu.sh": `
 case "$NEMOCLAW_REF" in
-    stable | auto) OPENSHELL_VERSION="v0.0.72" ;;
+  stable | auto) OPENSHELL_VERSION="v${overrides.brevVersion ?? openshellMax}" ;;
 esac
 `,
-    "scripts/install-openshell.sh": `
-MIN_VERSION="${overrides.installerMinVersion ?? "0.0.72"}"
-MAX_VERSION="0.0.72"
-PIN_VERSION="$MAX_VERSION"
-DEV_MIN_VERSION="${overrides.installerDevMinVersion ?? "0.0.72"}"
-`,
-    "src/lib/actions/sandbox/openshell-child-visible-credentials.v0.0.72.json": `
-{
-  "openshellVersion"
-    : "0.0.72"
-}
-`,
+    [`src/lib/actions/sandbox/openshell-child-visible-credentials.v${openshellMax}.json`]:
+      JSON.stringify({
+        openshellVersion: overrides.credentialVersion ?? openshellMax,
+      }),
     "src/lib/actions/sandbox/mcp-bridge-validation.ts": `
-import childVisibleCredentialManifest from "./openshell-child-visible-credentials.v0.0.72.json";
+import boundary from "./openshell-child-visible-credentials.v${overrides.mcpImportVersion ?? openshellMax}.json";
+`,
+    "src/lib/onboard/openshell-version.ts": `
+export const SUPPORTED_OPENSHELL_FALLBACK_VERSION = "${overrides.fallbackVersion ?? openshellMax}";
+`,
+    "src/lib/onboard/openshell-install.ts": `
+const minVersion = deps.getBlueprintMinOpenshellVersion() ?? "${overrides.minFallbackVersion ?? openshellMin}";
+`,
+    "src/lib/onboard/docker-driver-gateway-runtime.ts": `
+const DIGESTS = {
+  "${overrides.supervisorMapVersion ?? openshellMax}": "sha256:${MAP_SHA256}",
+};
+`,
+    "src/lib/onboard/openshell-feature-gate.ts": `
+const BUILDS = new Map([
+  ["${MAP_SHA256}", "${overrides.sandboxMapVersion ?? openshellMax}"],
+]);
 `,
     "agents/hermes/Dockerfile": `
-COPY src/lib/actions/sandbox/openshell-child-visible-credentials.v0.0.72.json /usr/local/lib/nemoclaw/openshell-child-visible-credentials.v${overrides.hermesDockerfileBoundaryVersion ?? "0.0.72"}.json
+COPY src/lib/actions/sandbox/openshell-child-visible-credentials.v${openshellMax}.json /usr/local/lib/nemoclaw/openshell-child-visible-credentials.v${overrides.hermesDockerfileBoundaryVersion ?? openshellMax}.json
 `,
     "agents/hermes/mcp-config-transaction.py": `
-BOUNDARY_MANIFEST_NAME = "openshell-child-visible-credentials.v${overrides.hermesTransactionBoundaryVersion ?? "0.0.72"}.json"
-if manifest.get("openshellVersion") != "${overrides.hermesTransactionExpectedVersion ?? "0.0.72"}":
+BOUNDARY_MANIFEST_NAME = "openshell-child-visible-credentials.v${overrides.hermesTransactionBoundaryVersion ?? openshellMax}.json"
+if manifest.get("openshellVersion") != "${overrides.hermesTransactionExpectedVersion ?? openshellMax}":
     raise RuntimeError("invalid")
 `,
     "scripts/update-hermes-agent.sh": `
-"openshell-child-visible-credentials.v${overrides.hermesUpdateBoundaryVersion ?? "0.0.72"}.json"
-`,
-    Dockerfile: `
-ARG OPENCLAW_VERSION=${overrides.openclawDockerfileVersion ?? "2026.6.10"}
-ARG OPENCLAW_2026_6_10_INTEGRITY=${OPENCLAW_INTEGRITY}
-ARG OPENCLAW_2026_6_10_TARBALL=${OPENCLAW_TARBALL}
+"openshell-child-visible-credentials.v${overrides.hermesUpdateBoundaryVersion ?? openshellMax}.json"
 `,
     "Dockerfile.base": `
-ARG OPENCLAW_VERSION=2026.6.10
-ARG OPENCLAW_2026_6_10_INTEGRITY=${OPENCLAW_INTEGRITY}
-ARG OPENCLAW_2026_6_10_TARBALL=${OPENCLAW_TARBALL}
+ARG OPENCLAW_VERSION=${openclawVersion}
+ARG ${openclawArg}_INTEGRITY=${openclawIntegrity}
+ARG ${openclawArg}_TARBALL=${openclawTarball}
+${openclawSelector(
+  overrides.openclawBaseSelectorVersion ?? openclawVersion,
+  overrides.openclawBaseSelectorArgVersion,
+)}
+${overrides.dockerfileBaseExtra ?? ""}
+`,
+    Dockerfile: `
+ARG OPENCLAW_VERSION=${overrides.openclawDockerfileVersion ?? openclawVersion}
+ARG ${openclawArg}_INTEGRITY=${overrides.openclawDockerfileIntegrity ?? openclawIntegrity}
+ARG ${openclawArg}_TARBALL=${overrides.openclawDockerfileTarball ?? openclawTarball}
+${openclawSelector(
+  overrides.openclawDockerfileSelectorVersion ?? openclawVersion,
+  overrides.openclawDockerfileSelectorArgVersion,
+)}
 `,
     "agents/openclaw/manifest.yaml": `
-expected_version: '2026.6.10' # parser handles comments
+expected_version: "${overrides.openclawManifestVersion ?? openclawVersion}"
 `,
+    "nemoclaw/package.json": JSON.stringify({
+      openclaw: {
+        build: {
+          openclawVersion: overrides.openclawPackageVersion ?? openclawVersion,
+        },
+      },
+    }),
     "agents/hermes/Dockerfile.base": `
-ARG HERMES_VERSION=v2026.6.19
-ARG HERMES_SEMVER=0.17.0
-ARG HERMES_TARBALL_SHA256=69b805ec0a7a7be880068ba8a3b17479d7ba29f0cac0a2e9c6692c02f346ba91
-ARG HERMES_NPM_INTEGRITY=${overrides.hermesNpmIntegrity ?? HERMES_INTEGRITY}
+ARG HERMES_SEMVER=${hermesSemver}
 `,
     "agents/hermes/manifest.yaml": `
-expected_version: '0.17.0' # parser handles comments
+expected_version: "${overrides.hermesManifestVersion ?? hermesSemver}"
 `,
   };
 
@@ -101,134 +137,128 @@ expected_version: '0.17.0' # parser handles comments
   }
 }
 
+function withFixture(
+  prefix: string,
+  overrides: FixtureOverrides,
+  assertion: (root: string) => void,
+): void {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  try {
+    writeFixture(root, overrides);
+    assertion(root);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 describe("dependency pin drift check", () => {
-  it("accepts matching OpenShell, OpenClaw, and Hermes pins (#5242)", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-dependency-pins-"));
-    try {
-      writeFixture(root);
-
+  it("accepts matching operational consumers without a committed mirror (#5242)", () => {
+    withFixture("nemoclaw-dependency-pins-match-", {}, (root) => {
       expect(verifyDependencyPins(root)).toEqual([]);
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
+    });
   });
 
-  it("reports governed file drift with the exact stale surface (#5242)", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-dependency-pins-drift-"));
-    try {
-      writeFixture(root, {
-        hermesNpmIntegrity: "sha512-drift",
-        hermesDockerfileBoundaryVersion: "0.0.71",
-        hermesTransactionBoundaryVersion: "0.0.71",
-        hermesTransactionExpectedVersion: "0.0.71",
-        hermesUpdateBoundaryVersion: "0.0.71",
-        installerMinVersion: "0.0.71",
-        minOpenshellVersion: "0.0.71",
-        openclawDockerfileVersion: "2026.6.9",
-      });
-
-      expect(verifyDependencyPins(root)).toEqual([
-        "OpenShell installer MIN_VERSION: expected 0.0.72, found 0.0.71",
-        "blueprint min_openshell_version: expected 0.0.72, found 0.0.71",
-        "Hermes Dockerfile credential-boundary manifest version: expected 0.0.72, found 0.0.71",
-        "Hermes MCP transaction credential-boundary manifest version: expected 0.0.72, found 0.0.71",
-        "Hermes MCP transaction expected OpenShell version: expected 0.0.72, found 0.0.71",
-        "Hermes update script credential-boundary manifest version: expected 0.0.72, found 0.0.71",
-        "Dockerfile OPENCLAW_VERSION: expected 2026.6.10, found 2026.6.9",
-        `Hermes Dockerfile.base HERMES_NPM_INTEGRITY: expected ${HERMES_INTEGRITY}, found sha512-drift`,
-      ]);
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
+  it("accepts a coordinated authority and consumer change (#5242)", () => {
+    withFixture(
+      "nemoclaw-dependency-pins-change-",
+      {
+        openshellMin: "2.3.4",
+        openshellMax: "2.4.0",
+        openclawVersion: "2031.2.3",
+        hermesSemver: "8.9.10",
+      },
+      (root) => expect(verifyDependencyPins(root)).toEqual([]),
+    );
   });
 
-  it("reports a stale OpenShell dev-channel minimum (#5242)", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-dependency-pins-dev-min-"));
-    try {
-      writeFixture(root, { installerDevMinVersion: "0.0.71" });
-
-      expect(verifyDependencyPins(root)).toEqual([
-        "OpenShell installer DEV_MIN_VERSION: expected 0.0.72, found 0.0.71",
-      ]);
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
+  it("reports exact operational consumer drift (#5242)", () => {
+    withFixture(
+      "nemoclaw-dependency-pins-drift-",
+      {
+        installerMin: "1.2.2",
+        installerMax: "1.2.3",
+        installerPinExpression: "1.2.4",
+        installerHashVersion: "1.2.3",
+        fallbackVersion: "1.2.3",
+        minFallbackVersion: "1.2.2",
+        supervisorMapVersion: "1.2.3",
+        sandboxMapVersion: "1.2.3",
+        brevVersion: "1.2.3",
+        credentialVersion: "1.2.3",
+        mcpImportVersion: "1.2.3",
+        hermesDockerfileBoundaryVersion: "1.2.3",
+        hermesTransactionBoundaryVersion: "1.2.3",
+        hermesTransactionExpectedVersion: "1.2.3",
+        hermesUpdateBoundaryVersion: "1.2.3",
+        openclawDockerfileSelectorVersion: "2030.4.4",
+        openclawDockerfileVersion: "2030.4.4",
+        openclawDockerfileIntegrity: ALTERNATE_INTEGRITY,
+        openclawDockerfileTarball: "https://registry.npmjs.org/openclaw/-/openclaw-2030.4.4.tgz",
+        openclawManifestVersion: "2030.4.4",
+        openclawPackageVersion: "2030.4.4",
+        hermesManifestVersion: "7.8.8",
+      },
+      (root) => {
+        expect(verifyDependencyPins(root)).toEqual([
+          "OpenShell installer MIN_VERSION: expected 1.2.3, found 1.2.2",
+          "OpenShell installer MAX_VERSION: expected 1.2.4, found 1.2.3",
+          "OpenShell installer PIN_VERSION: expected $MAX_VERSION, found 1.2.4",
+          "OpenShell installer hash release: expected 1.2.4, found 1.2.3",
+          "OpenShell supported fallback version: expected 1.2.4, found 1.2.3",
+          "OpenShell minimum fallback version: expected 1.2.3, found 1.2.2",
+          "OpenShell supervisor manifest digest map: expected a reference to 1.2.4",
+          "OpenShell sandbox build version map: expected a reference to 1.2.4",
+          "Brev launchable stable OpenShell default: expected 1.2.4, found 1.2.3",
+          "OpenShell credential-boundary manifest version: expected 1.2.4, found 1.2.3",
+          "OpenShell credential-boundary import: expected 1.2.4, found 1.2.3",
+          "Hermes Dockerfile credential-boundary manifest version: expected 1.2.4, found 1.2.3",
+          "Hermes MCP transaction credential-boundary manifest version: expected 1.2.4, found 1.2.3",
+          "Hermes MCP transaction expected OpenShell version: expected 1.2.4, found 1.2.3",
+          "Hermes update script credential-boundary manifest version: expected 1.2.4, found 1.2.3",
+          "Dockerfile reviewed OpenClaw selector must bind 2030.4.5 to OPENCLAW_2030_4_5_INTEGRITY and OPENCLAW_2030_4_5_TARBALL",
+          "Dockerfile OPENCLAW_VERSION: expected 2030.4.5, found 2030.4.4",
+          `Dockerfile OPENCLAW_2030_4_5_INTEGRITY: expected ${OPENCLAW_INTEGRITY}, found ${ALTERNATE_INTEGRITY}`,
+          "Dockerfile OPENCLAW_2030_4_5_TARBALL: expected https://registry.npmjs.org/openclaw/-/openclaw-2030.4.5.tgz, found https://registry.npmjs.org/openclaw/-/openclaw-2030.4.4.tgz",
+          "OpenClaw manifest expected_version: expected 2030.4.5, found 2030.4.4",
+          "nemoclaw package OpenClaw build version: expected 2030.4.5, found 2030.4.4",
+          "Hermes manifest expected_version: expected 7.8.9, found 7.8.8",
+        ]);
+      },
+    );
   });
 
   it.each([
     {
-      name: "path-like OpenShell install version",
-      overrides: { openshellInstallVersion: "../0.0.72" },
-      failure: "dependency-pins.yaml: openshell.installVersion must match X.Y.Z",
+      name: "an unsafe OpenShell maximum",
+      overrides: { openshellMax: "../1.2.4" },
+      failure: "nemoclaw-blueprint/blueprint.yaml max_openshell_version must match X.Y.Z",
     },
     {
-      name: "short OpenShell minimum version",
-      overrides: { openshellPinMinVersion: "0.0" },
-      failure: "dependency-pins.yaml: openshell.minVersion must match X.Y.Z",
+      name: "an unsafe OpenClaw version",
+      overrides: { openclawVersion: "2030/4/5" },
+      failure: "Dockerfile.base OPENCLAW_VERSION must match X.Y.Z",
     },
     {
-      name: "path-like OpenClaw version",
-      overrides: { openclawPinVersion: "2026/6/10" },
-      failure: "dependency-pins.yaml: openclaw.version must match X.Y.Z",
-    },
-    {
-      name: "short OpenClaw minimum version",
-      overrides: { openclawPinMinVersion: "2026.3" },
-      failure: "dependency-pins.yaml: openclaw.minVersion must match X.Y.Z",
-    },
-    {
-      name: "unprefixed Hermes tag",
-      overrides: { hermesPinTag: "2026.6.19" },
-      failure: "dependency-pins.yaml: hermes.tag must be a v-prefixed numeric dotted version",
-    },
-    {
-      name: "short Hermes package version",
-      overrides: { hermesPinExpectedVersion: "0.17" },
-      failure: "dependency-pins.yaml: hermes.expectedVersion must match X.Y.Z",
-    },
-    {
-      name: "malformed OpenClaw SRI",
-      overrides: { openclawPinNpmIntegrity: "sha512-not-canonical" },
-      failure: "dependency-pins.yaml: openclaw.npmIntegrity must be a canonical sha512 SRI digest",
-    },
-    {
-      name: "malformed Hermes SRI",
-      overrides: { hermesPinNpmIntegrity: "sha512-not-canonical" },
-      failure: "dependency-pins.yaml: hermes.npmIntegrity must be a canonical sha512 SRI digest",
-    },
-    {
-      name: "short Hermes SHA-256",
-      overrides: { hermesPinTarballSha256: "abc123" },
+      name: "a stale base-image OpenClaw selector",
+      overrides: { openclawBaseSelectorVersion: "2030.4.4" },
       failure:
-        "dependency-pins.yaml: hermes.tarballSha256 must be a lowercase 64-character SHA-256",
+        "Dockerfile.base reviewed OpenClaw selector must bind 2030.4.5 to OPENCLAW_2030_4_5_INTEGRITY and OPENCLAW_2030_4_5_TARBALL",
     },
-    {
-      name: "wrong OpenClaw tarball host",
-      overrides: { openclawPinTarball: "https://example.com/openclaw-2026.6.10.tgz" },
-      failure: `dependency-pins.yaml: openclaw.tarball must equal ${OPENCLAW_TARBALL}`,
-    },
-    {
-      name: "wrong OpenClaw tarball package",
-      overrides: {
-        openclawPinTarball: "https://registry.npmjs.org/not-openclaw/-/not-openclaw-2026.6.10.tgz",
-      },
-      failure: `dependency-pins.yaml: openclaw.tarball must equal ${OPENCLAW_TARBALL}`,
-    },
-    {
-      name: "wrong OpenClaw tarball version",
-      overrides: {
-        openclawPinTarball: "https://registry.npmjs.org/openclaw/-/openclaw-2026.6.9.tgz",
-      },
-      failure: `dependency-pins.yaml: openclaw.tarball must equal ${OPENCLAW_TARBALL}`,
-    },
-  ])("rejects $name before governed-file reads (#5242)", ({ overrides, failure }) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-dependency-pins-invalid-"));
-    try {
-      writeFixture(root, overrides);
+  ])("rejects $name before checking consumers (#5242)", ({ overrides, failure }) => {
+    withFixture("nemoclaw-dependency-pins-authority-", overrides, (root) => {
+      expect(verifyDependencyPins(root)).toEqual([failure]);
+    });
+  });
 
-      expect(readDependencyPins(root)).toEqual({ failures: [failure], pins: null });
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
+  it("rejects an ambiguous operational authority (#5242)", () => {
+    withFixture(
+      "nemoclaw-dependency-pins-ambiguous-",
+      { dockerfileBaseExtra: `ARG OPENCLAW_VERSION=${OPENCLAW_VERSION}` },
+      (root) => {
+        expect(verifyDependencyPins(root)).toEqual([
+          "Dockerfile.base OPENCLAW_VERSION: expected exactly one match",
+        ]);
+      },
+    );
   });
 });
