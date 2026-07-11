@@ -396,7 +396,7 @@ describe("live TUI post-idle coverage contract (#6194)", () => {
         'artifacts.writeJson("issue2603-trace.json"',
         websocketCommand,
       );
-      const websocketAssertion = liveSource.indexOf("if (repro.error)", websocketResult);
+      const websocketAssertion = liveSource.indexOf("switch (classification)", websocketResult);
 
       expect(tuiPrecreate).toBeGreaterThanOrEqual(0);
       expect(tuiCommand).toBeGreaterThan(tuiPrecreate);
