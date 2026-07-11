@@ -58,6 +58,17 @@ PIN_VERSION="$MAX_VERSION"
     "src/lib/actions/sandbox/mcp-bridge-validation.ts": `
 import childVisibleCredentialManifest from "./openshell-child-visible-credentials.v0.0.72.json";
 `,
+    "agents/hermes/Dockerfile": `
+COPY src/lib/actions/sandbox/openshell-child-visible-credentials.v0.0.72.json /usr/local/lib/nemoclaw/openshell-child-visible-credentials.v${overrides.hermesDockerfileBoundaryVersion ?? "0.0.72"}.json
+`,
+    "agents/hermes/mcp-config-transaction.py": `
+BOUNDARY_MANIFEST_NAME = "openshell-child-visible-credentials.v${overrides.hermesTransactionBoundaryVersion ?? "0.0.72"}.json"
+if manifest.get("openshellVersion") != "${overrides.hermesTransactionExpectedVersion ?? "0.0.72"}":
+    raise RuntimeError("invalid")
+`,
+    "scripts/update-hermes-agent.sh": `
+"openshell-child-visible-credentials.v${overrides.hermesUpdateBoundaryVersion ?? "0.0.72"}.json"
+`,
     Dockerfile: `
 ARG OPENCLAW_VERSION=${overrides.openclawDockerfileVersion ?? "2026.6.10"}
 ARG OPENCLAW_2026_6_10_INTEGRITY=${OPENCLAW_INTEGRITY}
@@ -106,6 +117,10 @@ describe("dependency pin drift check", () => {
     try {
       writeFixture(root, {
         hermesNpmIntegrity: "sha512-drift",
+        hermesDockerfileBoundaryVersion: "0.0.71",
+        hermesTransactionBoundaryVersion: "0.0.71",
+        hermesTransactionExpectedVersion: "0.0.71",
+        hermesUpdateBoundaryVersion: "0.0.71",
         installerMinVersion: "0.0.71",
         minOpenshellVersion: "0.0.71",
         openclawDockerfileVersion: "2026.6.9",
@@ -114,6 +129,10 @@ describe("dependency pin drift check", () => {
       expect(verifyDependencyPins(root)).toEqual([
         "OpenShell installer MIN_VERSION: expected 0.0.72, found 0.0.71",
         "blueprint min_openshell_version: expected 0.0.72, found 0.0.71",
+        "Hermes Dockerfile credential-boundary manifest version: expected 0.0.72, found 0.0.71",
+        "Hermes MCP transaction credential-boundary manifest version: expected 0.0.72, found 0.0.71",
+        "Hermes MCP transaction expected OpenShell version: expected 0.0.72, found 0.0.71",
+        "Hermes update script credential-boundary manifest version: expected 0.0.72, found 0.0.71",
         "Dockerfile OPENCLAW_VERSION: expected 2026.6.10, found 2026.6.9",
         `Hermes Dockerfile.base HERMES_NPM_INTEGRITY: expected ${HERMES_INTEGRITY}, found sha512-drift`,
       ]);

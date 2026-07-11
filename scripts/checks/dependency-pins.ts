@@ -212,6 +212,26 @@ function compare(actual: string, expected: string, label: string, failures: stri
   }
 }
 
+function compareCredentialBoundaryManifestReferences(
+  source: string,
+  label: string,
+  expectedVersion: string,
+  failures: string[],
+): void {
+  const versions = new Set(
+    [...source.matchAll(/openshell-child-visible-credentials\.v([0-9]+\.[0-9]+\.[0-9]+)\.json/g)]
+      .map((match) => match[1])
+      .filter((version): version is string => version !== undefined),
+  );
+  if (versions.size === 0) {
+    failures.push(`${label} credential-boundary manifest version: expected at least one match`);
+    return;
+  }
+  for (const version of [...versions].sort()) {
+    compare(version, expectedVersion, `${label} credential-boundary manifest version`, failures);
+  }
+}
+
 function openclawArgSuffix(version: string): string {
   return version.replace(OPENCLAW_VERSION_ARG_SUFFIX_RE, "_");
 }
@@ -223,8 +243,11 @@ function verifyOpenShellPins(
     blueprint: Record<string, unknown> | null;
     brevLaunchable: string;
     credentialBoundary: string;
+    hermesDockerfile: string;
+    hermesMcpConfigTransaction: string;
     installer: string;
     mcpBridgeValidation: string;
+    updateHermesAgent: string;
   },
   failures: string[],
 ): void {
@@ -303,6 +326,35 @@ function verifyOpenShellPins(
     ),
     pins.installVersion,
     "OpenShell credential-boundary import",
+    failures,
+  );
+  compareCredentialBoundaryManifestReferences(
+    sources.hermesDockerfile,
+    "Hermes Dockerfile",
+    pins.installVersion,
+    failures,
+  );
+  compareCredentialBoundaryManifestReferences(
+    sources.hermesMcpConfigTransaction,
+    "Hermes MCP transaction",
+    pins.installVersion,
+    failures,
+  );
+  compare(
+    extractSingle(
+      sources.hermesMcpConfigTransaction,
+      /manifest\.get\("openshellVersion"\)\s*!=\s*"([0-9]+\.[0-9]+\.[0-9]+)"/,
+      "Hermes MCP transaction expected OpenShell version",
+      failures,
+    ),
+    pins.installVersion,
+    "Hermes MCP transaction expected OpenShell version",
+    failures,
+  );
+  compareCredentialBoundaryManifestReferences(
+    sources.updateHermesAgent,
+    "Hermes update script",
+    pins.installVersion,
     failures,
   );
 }
@@ -454,6 +506,13 @@ export function verifyDependencyPins(rootDir: string = REPO_ROOT): string[] {
   const dockerfile = readText(rootDir, "Dockerfile", failures);
   const dockerfileBase = readText(rootDir, "Dockerfile.base", failures);
   const hermesDockerfileBase = readText(rootDir, "agents/hermes/Dockerfile.base", failures);
+  const hermesDockerfile = readText(rootDir, "agents/hermes/Dockerfile", failures);
+  const hermesMcpConfigTransaction = readText(
+    rootDir,
+    "agents/hermes/mcp-config-transaction.py",
+    failures,
+  );
+  const updateHermesAgent = readText(rootDir, "scripts/update-hermes-agent.sh", failures);
   const credentialBoundary = readText(
     rootDir,
     `src/lib/actions/sandbox/openshell-child-visible-credentials.v${pins.openshell.installVersion}.json`,
@@ -483,8 +542,11 @@ export function verifyDependencyPins(rootDir: string = REPO_ROOT): string[] {
       blueprint: blueprintYaml,
       brevLaunchable,
       credentialBoundary,
+      hermesDockerfile,
+      hermesMcpConfigTransaction,
       installer,
       mcpBridgeValidation,
+      updateHermesAgent,
     },
     failures,
   );
