@@ -4027,6 +4027,8 @@ jobs:
     needs: generate-matrix
     if: ${{ (github.event_name != 'workflow_dispatch' || (inputs.jobs == '' && inputs.targets == '')) || contains(format(',{0},', inputs.jobs), ',openclaw-tui-chat-correlation,') || contains(format(',{0},', inputs.targets), ',openclaw-tui-chat-correlation,') }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 75
     env:
       E2E_JOB: "1"

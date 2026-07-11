@@ -44,6 +44,7 @@ describe("release gate workflow resource contracts", () => {
 
     expect(inputs).toHaveProperty("checkout_sha");
     expect(inputs).not.toHaveProperty("target_ref");
+    expect(tuiJob.permissions).toEqual({ contents: "read" });
     expect(checkout?.with?.ref).toBe("${{ inputs.checkout_sha || github.sha }}");
     expect(tuiJob.env?.NEMOCLAW_TUI_EXPECTED_CHECKOUT_SHA).toBe(
       "${{ inputs.checkout_sha || github.sha }}",
