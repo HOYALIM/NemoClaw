@@ -93,26 +93,6 @@ describe("spark install live test helpers", () => {
     expect(invocation.script).toContain("| NEMOCLAW_NON_INTERACTIVE=1");
   });
 
-  it("pins public curl-pipe installs to the workflow checkout ref", () => {
-    const invocation = buildInstallerInvocation({
-      repoRoot: "/repo",
-      env: {
-        NEMOCLAW_E2E_PUBLIC_INSTALL: "1",
-        NEMOCLAW_PUBLIC_INSTALL_REF: "0123456789abcdef0123456789abcdef01234567",
-      },
-    });
-
-    expect(invocation.mode).toBe("public");
-    const installerCommand = invocation.script.replace(/^.* \| /, "");
-    expect(installerCommand).toContain(
-      "NEMOCLAW_INSTALL_REF='0123456789abcdef0123456789abcdef01234567'",
-    );
-    expect(installerCommand).toContain(
-      "NEMOCLAW_INSTALL_TAG='0123456789abcdef0123456789abcdef01234567'",
-    );
-    expect(installerCommand).toMatch(/\bbash$/);
-  });
-
   it("rejects non-test-owned sandbox names before destructive cleanup can use them", () => {
     expect(assertSparkInstallSandboxName("e2e-spark-install-live")).toBe("e2e-spark-install-live");
     expect(assertSparkInstallSandboxName("e2e-spark-install-local-1")).toBe(

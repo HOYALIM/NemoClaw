@@ -26,6 +26,7 @@ import {
   trustedSandboxShellScript,
 } from "../fixtures/clients/sandbox.ts";
 import { expect, test } from "../fixtures/e2e-test.ts";
+import { CLI_ENTRYPOINT, REPO_ROOT } from "../fixtures/paths.ts";
 import type { NemoClawInstance } from "../fixtures/phases/onboarding.ts";
 import { ubuntuRepoDocker } from "../registry/matrix.ts";
 import { stripTerminalControl } from "../support/issue-4434-tui-capture.ts";
@@ -40,6 +41,7 @@ import {
   precreateIssue6194Capture,
   readIssue6194Capture,
 } from "./issue-6194-tui-expect.ts";
+import { verifyNemoClawRefFidelity } from "./openclaw-tui-ref-fidelity.ts";
 
 // Reuses the standard ubuntu-repo-docker environment with the
 // `cloud-openclaw` onboarding profile (already in
@@ -520,6 +522,23 @@ test(
       historicalReproScope:
         "#6194 reported NemoClaw v0.0.72 as the known-bad release; this live target guards the current branch against the same post-idle TUI regression instead of reinstalling the old bad version.",
     });
+
+    const checkoutRef = await host.command("git", ["rev-parse", "HEAD"], {
+      artifactName: "nemoclaw-checkout-ref",
+      cwd: REPO_ROOT,
+      timeoutMs: 30_000,
+    });
+    expect(checkoutRef.exitCode, resultText(checkoutRef)).toBe(0);
+    const refEvidence = verifyNemoClawRefFidelity({
+      expectedRef: process.env.NEMOCLAW_TUI_EXPECTED_CHECKOUT_SHA,
+      actualRef: checkoutRef.stdout.trim(),
+      cliPath: host.commandPath,
+      expectedCliPath: CLI_ENTRYPOINT,
+    });
+    await artifacts.writeJson("nemoclaw-ref-fidelity.json", refEvidence);
+    console.info(
+      `NEMOCLAW_REF_FIDELITY expected=${refEvidence.expectedRef} actual=${refEvidence.actualRef} cli=${refEvidence.cliPath}`,
+    );
 
     // Setup ────────────────────────────────────────────────────────
     const ready = await environment.assertReady(ENVIRONMENT);
