@@ -42,6 +42,10 @@ import {
   readIssue6194Capture,
 } from "./issue-6194-tui-expect.ts";
 import { verifyNemoClawRefFidelity } from "./openclaw-tui-ref-fidelity.ts";
+import {
+  classifyIssue2603Run,
+  type Issue2603AttemptOutcome,
+} from "./openclaw-tui-run-classification.ts";
 
 // Reuses the standard ubuntu-repo-docker environment with the
 // `cloud-openclaw` onboarding profile (already in
@@ -257,6 +261,43 @@ function looksLikeEventCaptureFailure(repro: LiveIssue2603Trace): boolean {
     analysis.uncorrelatedReplies.length === 0 &&
     analysis.missingReplies.length === repro.sentRuns.length
   );
+}
+
+function issue2603AttemptOutcome(
+  repro: LiveIssue2603Trace,
+  index: number,
+): Issue2603AttemptOutcome & { attempt: number; eventCount: number; chatEventCount: number } {
+  if (repro.error) {
+    return {
+      attempt: index + 1,
+      captureFailure: false,
+      productRegression: false,
+      error: repro.error,
+      eventCount: repro.events?.length ?? 0,
+      chatEventCount: 0,
+    };
+  }
+
+  const analysis = analyzeIssue2603Trace(repro);
+  const expectedReplyOrder = repro.sentRuns.map((entry) => entry.replyMarker);
+  const expectedUserOrder = repro.sentRuns.map((entry) => entry.promptToken);
+  const productRegression =
+    analysis.emptyFinalsForSubmittedRuns.length > 0 ||
+    analysis.missingReplies.length > 0 ||
+    analysis.duplicateReplies.length > 0 ||
+    analysis.uncorrelatedReplies.length > 0 ||
+    analysis.missingUserTurns.length > 0 ||
+    analysis.duplicateUserTurns.length > 0 ||
+    analysis.finalReplyOrder.join("\0") !== expectedReplyOrder.join("\0") ||
+    analysis.userTurnOrder.join("\0") !== expectedUserOrder.join("\0");
+
+  return {
+    attempt: index + 1,
+    captureFailure: looksLikeEventCaptureFailure(repro),
+    productRegression,
+    eventCount: repro.events.length,
+    chatEventCount: analysis.chatEvents.length,
+  };
 }
 
 // ─── In-sandbox websocket repro driver ─────────────────────────────
@@ -819,16 +860,30 @@ test(
       sandbox,
       instance.sandboxName,
     );
+    const attemptDetails = attempts.map(issue2603AttemptOutcome);
+    const classification = classifyIssue2603Run(attemptDetails);
 
     await artifacts.writeJson("issue2603-trace.json", {
       sentRuns: repro.sentRuns,
       eventCount: repro.events?.length ?? 0,
       attempts: attempts.length,
+      attemptDetails,
+      classification,
       error: repro.error,
     });
 
     if (repro.error) {
-      throw new Error(`live repro failed before assertions: ${repro.error}`);
+      throw new Error(
+        `INFRASTRUCTURE SETUP FAILURE: live repro failed before assertions: ${repro.error}`,
+      );
+    }
+    if (classification === "infrastructure_capture_failure") {
+      throw new Error(
+        `INFRASTRUCTURE CAPTURE FAILURE: ${attempts.length} attempt(s) observed no chat events for their submitted runs. ${JSON.stringify(attemptDetails)}`,
+      );
+    }
+    if (classification === "recovered_infrastructure_capture") {
+      console.warn("ISSUE2603_CLASSIFICATION recovered infrastructure capture failure on retry");
     }
 
     const analysis = analyzeIssue2603Trace(repro);
@@ -836,6 +891,8 @@ test(
       {
         sentRuns: repro.sentRuns,
         eventCount: repro.events.length,
+        attemptDetails,
+        classification,
         analysis,
       },
       null,

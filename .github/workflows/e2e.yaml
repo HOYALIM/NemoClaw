@@ -4034,6 +4034,7 @@ jobs:
       E2E_ARTIFACT_DIR: ${{ github.workspace }}/e2e-artifacts/live/openclaw-tui-chat-correlation
       NEMOCLAW_CLI_BIN: ${{ github.workspace }}/bin/nemoclaw.js
       # This target runs the CLI built from this checkout; it does not use the public installer.
+      # Legacy target_ref dispatches were replaced by branch github.sha and validated checkout_sha runs.
       NEMOCLAW_TUI_EXPECTED_CHECKOUT_SHA: "${{ inputs.checkout_sha || github.sha }}"
       NEMOCLAW_RUN_LIVE_E2E: "1"
       NEMOCLAW_E2E_USE_HOSTED_INFERENCE: "1"

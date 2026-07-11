@@ -16,7 +16,10 @@
     },
     {
       "live": "test/e2e/live/openclaw-tui-chat-correlation.test.ts",
-      "fast": ["test/e2e/support/openclaw-tui-ref-fidelity.test.ts"]
+      "fast": [
+        "test/e2e/support/openclaw-tui-ref-fidelity.test.ts",
+        "test/e2e/support/openclaw-tui-run-classification.test.ts"
+      ]
     },
     {
       "live": "test/e2e/live/onboard-repair.test.ts",
