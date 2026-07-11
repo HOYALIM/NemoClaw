@@ -504,6 +504,37 @@ describe("Deep Agents Code direct-exec proxy launcher", () => {
       mutate: (caFile: string) => fs.chmodSync(caFile, 0o666),
     },
     {
+      condition: "unreadable",
+      expected: "Missing or unsafe managed fetch CA bundle file",
+      mutate: (caFile: string) => fs.chmodSync(caFile, 0o000),
+    },
+    {
+      condition: "empty",
+      expected: "Unsafe ownership or mode on managed fetch CA bundle file",
+      mutate: (caFile: string) => {
+        fs.chmodSync(caFile, 0o600);
+        fs.truncateSync(caFile, 0);
+        fs.chmodSync(caFile, 0o444);
+      },
+    },
+    {
+      condition: "non-regular",
+      expected: "Missing or unsafe managed fetch CA bundle file",
+      mutate: (caFile: string) => {
+        fs.rmSync(caFile);
+        fs.mkdirSync(caFile);
+      },
+    },
+    {
+      condition: "regular-file symlink",
+      expected: "Missing or unsafe managed fetch CA bundle file",
+      mutate: (caFile: string) => {
+        const target = `${caFile}.target`;
+        fs.renameSync(caFile, target);
+        fs.symlinkSync(target, caFile);
+      },
+    },
+    {
       condition: "dangling symlink",
       expected: "Missing or unsafe managed fetch CA bundle file",
       mutate: (caFile: string) => {
