@@ -497,16 +497,55 @@ describe("Deep Agents Code direct-exec proxy launcher", () => {
     );
   });
 
+  const expectManagedCaBundleRejection = ({
+    expected,
+    mutate,
+  }: {
+    expected: string;
+    mutate: (caFile: string) => void;
+  }): void => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-dcode-ca-bundle-"));
+    const launcherPath = makeLauncherProxyProbeFixture(tempDir);
+    const { envFile, scriptPath } = makeStartProxyProbeFixture(tempDir);
+    const caFile = path.join(tempDir, "trusted-ca-bundle.pem");
+
+    const safeStart = spawnSync("bash", [scriptPath, "true"], {
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      encoding: "utf8",
+    });
+    expect(safeStart.status, safeStart.stderr).toBe(0);
+    expect(fs.existsSync(envFile)).toBe(true);
+
+    mutate(caFile);
+    const launcherResult = runLauncher(launcherPath, ["-n", "PONG"], {});
+    const startResult = spawnSync("bash", [scriptPath, "true"], {
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      encoding: "utf8",
+    });
+    const connectSourceResult = spawnSync(
+      "bash",
+      ["--noprofile", "--norc", "-c", '. "$1"', "bash", envFile],
+      {
+        env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+        encoding: "utf8",
+      },
+    );
+
+    expect(launcherResult.status).not.toBe(0);
+    expect(startResult.status).not.toBe(0);
+    expect(connectSourceResult.status).not.toBe(0);
+    expect(launcherResult.stderr).toContain(expected);
+    expect(startResult.stderr).toContain(expected);
+    expect(connectSourceResult.stderr).toContain(expected);
+    const combined = `${launcherResult.stderr}\n${startResult.stderr}\n${connectSourceResult.stderr}`;
+    expect(combined).not.toContain(caFile);
+  };
+
   it.each([
     {
       condition: "writable",
       expected: "Unsafe ownership or mode on managed fetch CA bundle file",
       mutate: (caFile: string) => fs.chmodSync(caFile, 0o666),
-    },
-    {
-      condition: "unreadable",
-      expected: "Missing or unsafe managed fetch CA bundle file",
-      mutate: (caFile: string) => fs.chmodSync(caFile, 0o000),
     },
     {
       condition: "empty",
@@ -546,40 +585,18 @@ describe("Deep Agents Code direct-exec proxy launcher", () => {
     expected,
     mutate,
   }) => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-dcode-ca-bundle-"));
-    const launcherPath = makeLauncherProxyProbeFixture(tempDir);
-    const { envFile, scriptPath } = makeStartProxyProbeFixture(tempDir);
-    const caFile = path.join(tempDir, "trusted-ca-bundle.pem");
-
-    const safeStart = spawnSync("bash", [scriptPath, "true"], {
-      env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
-      encoding: "utf8",
-    });
-    expect(safeStart.status, safeStart.stderr).toBe(0);
-    expect(fs.existsSync(envFile)).toBe(true);
-
-    mutate(caFile);
-    const launcherResult = runLauncher(launcherPath, ["-n", "PONG"], {});
-    const startResult = spawnSync("bash", [scriptPath, "true"], {
-      env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
-      encoding: "utf8",
-    });
-    const connectSourceResult = spawnSync(
-      "bash",
-      ["--noprofile", "--norc", "-c", '. "$1"', "bash", envFile],
-      {
-        env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
-        encoding: "utf8",
-      },
-    );
-
-    expect(launcherResult.status).not.toBe(0);
-    expect(startResult.status).not.toBe(0);
-    expect(connectSourceResult.status).not.toBe(0);
-    const combined = `${launcherResult.stderr}\n${startResult.stderr}\n${connectSourceResult.stderr}`;
-    expect(combined).toContain(expected);
-    expect(combined).not.toContain(caFile);
+    expectManagedCaBundleRejection({ expected, mutate });
   });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "rejects an unreadable managed fetch CA bundle in start, connect, and direct dcode paths (#6636)",
+    () => {
+      expectManagedCaBundleRejection({
+        expected: "Missing or unsafe managed fetch CA bundle file",
+        mutate: (caFile: string) => fs.chmodSync(caFile, 0o000),
+      });
+    },
+  );
 
   it("keeps dcode shell proxy validators aligned with onboard validation (#6191)", () => {
     const start = readAgentFile("start.sh");
