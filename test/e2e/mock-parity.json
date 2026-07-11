@@ -45,6 +45,10 @@
       ]
     },
     {
+      "live": "test/e2e/live/sandbox-operations.test.ts",
+      "fast": ["test/e2e/support/e2e-cleanup-resources.test.ts"]
+    },
+    {
       "live": "test/e2e/live/sandbox-rlimits-connect.test.ts",
       "fast": [
         "test/cli/dispatch-basics.test.ts",
