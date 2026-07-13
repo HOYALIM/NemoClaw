@@ -48,18 +48,8 @@ function extractConditionalsNodeScript(): string {
 function extractWorkflowCounterScript(): string {
   const script = extractConditionalsNodeScript();
   const counterStart = script.indexOf("function stripTriviaAndLiterals(text)");
-  const counterEnd = script.indexOf("async function countAt", counterStart);
+  const counterEnd = script.indexOf("function countText", counterStart);
   return script.slice(counterStart, counterEnd);
-}
-
-function encodeContent(text: string): string {
-  return Buffer.from(text, "utf8").toString("base64");
-}
-
-function contentsUrl(content: MockContent): string {
-  const repo = content.repo ?? ENV.REPO;
-  const encodedPath = content.file.split("/").map(encodeURIComponent).join("/");
-  return `https://api.github.com/repos/${repo}/contents/${encodedPath}?ref=${encodeURIComponent(content.ref)}`;
 }
 
 function pullFilesUrl(): string {
@@ -83,31 +73,45 @@ function workflowIfCount(sourceText: string): number {
 function runWorkflowConditionalsGuard(input: {
   readonly files: readonly MockFile[];
   readonly contents: readonly MockContent[];
+  readonly transientGraphqlFailures?: number;
 }): ReturnType<typeof spawnSync> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-growth-conditionals-"));
   const scriptPath = path.join(tmpDir, "guardrail.cjs");
-  const responses = new Map<string, unknown>([
-    [pullFilesUrl(), input.files],
-    ...input.contents.map(
+  const responses = new Map<string, unknown>([[pullFilesUrl(), input.files]]);
+  const blobs = new Map(
+    input.contents.map(
       (content) =>
-        [
-          contentsUrl(content),
-          {
-            content: encodeContent(content.text),
-            encoding: "base64",
-            type: "file",
-          },
-        ] as const,
+        [`${content.repo ?? ENV.REPO}@${content.ref}:${content.file}`, content.text] as const,
     ),
-  ]);
+  );
   const wrapper = [
     `const responses = new Map(${JSON.stringify([...responses])});`,
-    "global.fetch = async (url) => {",
+    `const blobs = new Map(${JSON.stringify([...blobs])});`,
+    `let graphqlFailuresRemaining = ${input.transientGraphqlFailures ?? 0};`,
+    "let graphqlRequests = 0;",
+    "process.on('exit', () => console.log(`MOCK_GRAPHQL_REQUESTS=${graphqlRequests}`));",
+    "global.fetch = async (url, init = {}) => {",
+    "  const isGraphql = String(url) === 'https://api.github.com/graphql';",
+    "  graphqlRequests += Number(isGraphql);",
+    "  const shouldFail = isGraphql && graphqlFailuresRemaining > 0;",
+    "  graphqlFailuresRemaining -= Number(shouldFail);",
+    "  const request = isGraphql && !shouldFail ? JSON.parse(String(init.body)) : {};",
+    "  const variables = request.variables ?? {};",
+    "  const repo = `${variables.owner}/${variables.name}`;",
+    "  const aliases = Object.entries(variables)",
+    "    .filter(([key]) => /^e\\d+$/.test(key))",
+    "    .map(([key, expression]) => {",
+    "      const index = Number(key.slice(1));",
+    "      const text = blobs.get(`${repo}@${expression}`);",
+    "      return [`f${index}`, text === undefined ? null : { __typename: 'Blob', text, isBinary: false, isTruncated: false, byteSize: Buffer.byteLength(text) }];",
+    "    });",
+    "  const graphqlBody = { data: { repository: Object.fromEntries(aliases) } };",
     "  const body = responses.get(String(url));",
+    "  const responseBody = isGraphql ? graphqlBody : body;",
     "  return {",
-    "    ok: body !== undefined,",
-    "    status: body === undefined ? 404 : 200,",
-    "    json: async () => body ?? {},",
+    "    ok: shouldFail ? false : responseBody !== undefined,",
+    "    status: shouldFail ? 502 : responseBody === undefined ? 404 : 200,",
+    "    json: async () => responseBody ?? {},",
     "  };",
     "};",
     extractConditionalsNodeScript(),
@@ -182,6 +186,51 @@ describe("codebase growth guardrail test conditionals step", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("test/add.test.ts");
+  });
+
+  it("batches base and head blobs into one GraphQL request each", () => {
+    const result = runWorkflowConditionalsGuard({
+      files: [{ filename: "test/first.test.ts" }, { filename: "test/second.test.ts" }],
+      contents: [
+        { file: "test/first.test.ts", ref: ENV.BASE_SHA, text: "expect(true).toBe(true);" },
+        { file: "test/second.test.ts", ref: ENV.BASE_SHA, text: "expect(true).toBe(true);" },
+        {
+          file: "test/first.test.ts",
+          repo: ENV.HEAD_REPO,
+          ref: ENV.HEAD_SHA,
+          text: "expect(true).toBe(true);",
+        },
+        {
+          file: "test/second.test.ts",
+          repo: ENV.HEAD_REPO,
+          ref: ENV.HEAD_SHA,
+          text: "expect(true).toBe(true);",
+        },
+      ],
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("MOCK_GRAPHQL_REQUESTS=2");
+  });
+
+  it("retries a transient GraphQL failure", () => {
+    const result = runWorkflowConditionalsGuard({
+      files: [{ filename: "test/retry.test.ts" }],
+      contents: [
+        { file: "test/retry.test.ts", ref: ENV.BASE_SHA, text: "expect(true).toBe(true);" },
+        {
+          file: "test/retry.test.ts",
+          repo: ENV.HEAD_REPO,
+          ref: ENV.HEAD_SHA,
+          text: "expect(true).toBe(true);",
+        },
+      ],
+      transientGraphqlFailures: 1,
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("retry: graphql NVIDIA/NemoClaw@base-sha attempt 1 failed");
+    expect(result.stdout).toContain("MOCK_GRAPHQL_REQUESTS=3");
   });
 
   it("does not count non-statement if property tokens", () => {
