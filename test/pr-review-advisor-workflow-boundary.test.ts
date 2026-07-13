@@ -640,10 +640,11 @@ process.exitCode = valid ? 0 : 1;`,
     );
   });
 
-  it("keeps mutable review history disabled and the find dependency pinned", () => {
+  it("keeps mutable review history disabled and runtime dependencies pinned", () => {
     const errors = validateMutation((source) =>
       source
         .replace('      FD_FIND_VERSION: "9.0.0-1"', '      FD_FIND_VERSION: "latest"')
+        .replace('      YAML_VERSION: "2.8.3"', '      YAML_VERSION: "latest"')
         .replace(
           '      PR_REVIEW_ADVISOR_LOAD_PREVIOUS_REVIEW: "false"',
           "      PR_REVIEW_ADVISOR_LOAD_PREVIOUS_REVIEW: ${{ matrix.advisor.publish_comment }}",
@@ -653,6 +654,7 @@ process.exitCode = valid ? 0 : 1;`,
     expect(errors).toEqual(
       expect.arrayContaining([
         "review job env.FD_FIND_VERSION must be 9.0.0-1",
+        "review job env.YAML_VERSION must be 2.8.3",
         "review job env.PR_REVIEW_ADVISOR_LOAD_PREVIOUS_REVIEW must be false",
       ]),
     );

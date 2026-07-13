@@ -85,7 +85,7 @@ jobs:
       # The review ledger imports TypeBox directly. Pi 0.80.6 shrinkwraps its
       # own copy, so the advisor runtime must install this direct dependency.
       TYPEBOX_VERSION: "1.1.38"
-      # Consolidated E2E recommendations import the workflow-boundary parser.
+      # Workflow-boundary modules parse YAML before the advisor session starts.
       YAML_VERSION: "2.8.3"
       # Credential-free E2E discovery invokes the repository's Vitest file lister.
       VITEST_VERSION: "4.1.9"
