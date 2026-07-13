@@ -34,6 +34,8 @@ type MockContent = {
   readonly ref: string;
   readonly file: string;
   readonly text: string;
+  readonly graphqlText?: string | null;
+  readonly graphqlTruncated?: boolean;
 };
 
 function extractConditionalsNodeScript(): string {
@@ -54,6 +56,16 @@ function extractWorkflowCounterScript(): string {
 
 function pullFilesUrl(): string {
   return `https://api.github.com/repos/${ENV.REPO}/pulls/${ENV.PR_NUMBER}/files?per_page=100&page=1`;
+}
+
+function contentsUrl(content: MockContent): string {
+  const repo = content.repo ?? ENV.REPO;
+  const encodedPath = content.file.split("/").map(encodeURIComponent).join("/");
+  return `https://api.github.com/repos/${repo}/contents/${encodedPath}?ref=${encodeURIComponent(content.ref)}`;
+}
+
+function encodeContent(text: string): { type: "file"; encoding: "base64"; content: string } {
+  return { type: "file", encoding: "base64", content: Buffer.from(text).toString("base64") };
 }
 
 function astIfCount(sourceText: string): number {
@@ -77,11 +89,24 @@ function runWorkflowConditionalsGuard(input: {
 }): ReturnType<typeof spawnSync> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-growth-conditionals-"));
   const scriptPath = path.join(tmpDir, "guardrail.cjs");
-  const responses = new Map<string, unknown>([[pullFilesUrl(), input.files]]);
+  const responses = new Map<string, unknown>([
+    [pullFilesUrl(), input.files],
+    ...input.contents.map(
+      (content) => [contentsUrl(content), encodeContent(content.text)] as const,
+    ),
+  ]);
   const blobs = new Map(
     input.contents.map(
       (content) =>
-        [`${content.repo ?? ENV.REPO}@${content.ref}:${content.file}`, content.text] as const,
+        [
+          `${content.repo ?? ENV.REPO}@${content.ref}:${content.file}`,
+          {
+            text: Object.prototype.hasOwnProperty.call(content, "graphqlText")
+              ? content.graphqlText
+              : content.text,
+            isTruncated: content.graphqlTruncated ?? false,
+          },
+        ] as const,
     ),
   );
   const wrapper = [
@@ -102,8 +127,8 @@ function runWorkflowConditionalsGuard(input: {
     "    .filter(([key]) => /^e\\d+$/.test(key))",
     "    .map(([key, expression]) => {",
     "      const index = Number(key.slice(1));",
-    "      const text = blobs.get(`${repo}@${expression}`);",
-    "      return [`f${index}`, text === undefined ? null : { __typename: 'Blob', text, isBinary: false, isTruncated: false, byteSize: Buffer.byteLength(text) }];",
+    "      const blob = blobs.get(`${repo}@${expression}`);",
+    "      return [`f${index}`, blob === undefined ? null : { __typename: 'Blob', text: blob.text, isBinary: false, isTruncated: blob.isTruncated, byteSize: Buffer.byteLength(blob.text ?? '') }];",
     "    });",
     "  const graphqlBody = { data: { repository: Object.fromEntries(aliases) } };",
     "  const body = responses.get(String(url));",
@@ -231,6 +256,26 @@ describe("codebase growth guardrail test conditionals step", () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toMatch(/retry: graphql \S+ attempt 1 failed/);
     expect(result.stdout).toContain("MOCK_GRAPHQL_REQUESTS=3");
+  });
+
+  it("uses REST contents when GraphQL returns a truncated blob", () => {
+    const result = runWorkflowConditionalsGuard({
+      files: [{ filename: "test/truncated.test.ts" }],
+      contents: [
+        { file: "test/truncated.test.ts", ref: ENV.BASE_SHA, text: "" },
+        {
+          file: "test/truncated.test.ts",
+          repo: ENV.HEAD_REPO,
+          ref: ENV.HEAD_SHA,
+          text: "if (flag) expect(flag).toBe(true);",
+          graphqlText: "",
+          graphqlTruncated: true,
+        },
+      ],
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("test/truncated.test.ts");
   });
 
   it("does not count non-statement if property tokens", () => {
