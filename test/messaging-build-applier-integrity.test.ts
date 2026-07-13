@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   applyMessagingBuildPhase,
@@ -29,6 +30,7 @@ const OPENCLAW_SLACK_2026_6_10_INTEGRITY =
   "sha512-OOsMLjPcbWhQRM5XDwfdrACjJmKqavFtpuIlhHAXWrLrd/p7SyIVE9AoKS0yxOx6bqGDIMJ9+knzdViHMLgBdA==";
 const OPENCLAW_SLACK_2026_6_10_TARBALL =
   "https://registry.npmjs.org/@openclaw/slack/-/slack-2026.6.10.tgz";
+const REPO_ROOT = path.join(import.meta.dirname, "..");
 
 function channelsB64(channels: string[]): string {
   return Buffer.from(JSON.stringify(channels)).toString("base64");
@@ -63,6 +65,52 @@ function thrownMessage(run: () => void): string {
 }
 
 describe("messaging-build-applier.mts: plugin archive integrity", () => {
+  it("loads the real build applier from the Hermes image module boundary", () => {
+    const dockerfile = fs.readFileSync(
+      path.join(REPO_ROOT, "agents", "hermes", "Dockerfile"),
+      "utf8",
+    );
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-hermes-applier-boundary-"));
+    const messagingRoot = path.join(root, "src", "lib", "messaging");
+    try {
+      for (const line of dockerfile.split(/\r?\n/)) {
+        const copy = line.match(
+          /^COPY (src\/lib\/messaging\/|scripts\/lib\/reviewed-npm-archive\.mts) (\/\S+)$/,
+        );
+        if (!copy) continue;
+        const [, source, destination] = copy;
+        if (!source || !destination) continue;
+        const sourcePath = path.join(REPO_ROOT, source);
+        const destinationPath = path.join(root, destination.replace(/^\//, ""));
+        if (fs.statSync(sourcePath).isDirectory()) {
+          fs.cpSync(sourcePath, destinationPath, { recursive: true });
+        } else {
+          fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
+          fs.copyFileSync(sourcePath, destinationPath);
+        }
+      }
+      const stagedApplier = path.join(
+        messagingRoot,
+        "applier",
+        "build",
+        "messaging-build-applier.mts",
+      );
+      const result = spawnSync(
+        process.execPath,
+        [
+          "--experimental-strip-types",
+          "--input-type=module",
+          "--eval",
+          `await import(${JSON.stringify(pathToFileURL(stagedApplier).href)})`,
+        ],
+        { encoding: "utf8", timeout: 10_000 },
+      );
+      expect(result.status, result.stderr).toBe(0);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it(
     "accepts the reviewed messaging plugin registry tarball URL before install",
     async () => {

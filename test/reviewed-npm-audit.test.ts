@@ -6,6 +6,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   exceedsAuditThreshold,
+  parseAuditReport,
   vulnerabilityCounts,
 } from "../scripts/audit-reviewed-npm-graph.mts";
 
@@ -26,5 +27,40 @@ describe("reviewed npm audit gate", () => {
     const counts = vulnerabilityCounts(report);
     expect(exceedsAuditThreshold(counts, CONFIG.severityThreshold)).toBe(9);
     expect(exceedsAuditThreshold(counts, "critical")).toBe(5);
+  });
+
+  it("accepts npm's nonzero audit status when a complete finding report explains it", () => {
+    const report = {
+      metadata: {
+        vulnerabilities: { info: 0, low: 1, moderate: 0, high: 0, critical: 0 },
+      },
+    };
+    expect(parseAuditReport({ status: 1, stderr: "", stdout: JSON.stringify(report) })).toEqual(
+      report,
+    );
+  });
+
+  it("rejects a parseable npm transport failure instead of treating it as clean", () => {
+    expect(() =>
+      parseAuditReport({
+        status: 1,
+        stderr: "npm registry unavailable",
+        stdout: JSON.stringify({
+          error: { code: "ECONNREFUSED", summary: "request to registry failed" },
+        }),
+      }),
+    ).toThrow(/ECONNREFUSED/);
+  });
+
+  it.each([
+    ["missing metadata", {}],
+    [
+      "invalid severity count",
+      { metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: "0", critical: 0 } } },
+    ],
+  ])("rejects %s", (_label, report) => {
+    expect(() =>
+      parseAuditReport({ status: 0, stderr: "", stdout: JSON.stringify(report) }),
+    ).toThrow(/vulnerability report|vulnerability count/);
   });
 });

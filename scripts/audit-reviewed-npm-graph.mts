@@ -7,10 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import {
-  packReviewedNpmArchive,
-  verifyReviewedNpmMetadata,
-} from "./lib/reviewed-npm-archive.mts";
+import { packReviewedNpmArchive, verifyReviewedNpmMetadata } from "./lib/reviewed-npm-archive.mts";
 
 type Severity = "info" | "low" | "moderate" | "high" | "critical";
 type ReviewedPackage = Readonly<{
@@ -63,23 +60,62 @@ function readConfig(): AuditConfig {
 
 function auditGraph(directory: string, reportPath: string): Record<string, unknown> {
   const result = run("npm", ["audit", "--omit=dev", "--json"], directory, true);
+  fs.writeFileSync(reportPath, result.stdout);
+  return parseAuditReport(result);
+}
+
+export function parseAuditReport(result: {
+  status: number | null;
+  stderr: string;
+  stdout: string;
+}): Record<string, unknown> {
   if (!result.stdout.trim()) {
     throw new Error(`npm audit did not produce JSON: ${result.stderr}`);
   }
-  fs.writeFileSync(reportPath, result.stdout);
+  let report: Record<string, unknown>;
   try {
-    return JSON.parse(result.stdout) as Record<string, unknown>;
+    report = JSON.parse(result.stdout) as Record<string, unknown>;
   } catch (error) {
     throw new Error(`npm audit returned invalid JSON: ${String(error)}`);
   }
+  let counts: Record<Severity, number>;
+  try {
+    counts = vulnerabilityCounts(report);
+  } catch (error) {
+    const detail = report.error === undefined ? result.stderr : JSON.stringify(report.error);
+    throw new Error(
+      `npm audit failed without a complete vulnerability report: ${error instanceof Error ? error.message : String(error)}${detail ? `; ${detail}` : ""}`,
+    );
+  }
+  const findingCount = SEVERITIES.reduce((total, severity) => total + counts[severity], 0);
+  if (
+    report.error !== undefined ||
+    result.status === null ||
+    result.status > 1 ||
+    (result.status !== 0 && findingCount === 0)
+  ) {
+    const detail = report.error === undefined ? result.stderr : JSON.stringify(report.error);
+    throw new Error(
+      `npm audit failed without vulnerability findings${detail ? `: ${detail}` : ""}`,
+    );
+  }
+  return report;
 }
 
 export function vulnerabilityCounts(report: Record<string, unknown>): Record<Severity, number> {
   const metadata = report.metadata as Record<string, unknown> | undefined;
   const vulnerabilities = metadata?.vulnerabilities as Record<string, unknown> | undefined;
-  return Object.fromEntries(
-    SEVERITIES.map((severity) => [severity, Number(vulnerabilities?.[severity] ?? 0)]),
-  ) as Record<Severity, number>;
+  if (!vulnerabilities || Array.isArray(vulnerabilities)) {
+    throw new Error("npm audit report is missing metadata.vulnerabilities");
+  }
+  const entries = SEVERITIES.map((severity) => {
+    const value = vulnerabilities[severity];
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`npm audit report has invalid ${severity} vulnerability count`);
+    }
+    return [severity, value] as const;
+  });
+  return Object.fromEntries(entries) as Record<Severity, number>;
 }
 
 export function exceedsAuditThreshold(
@@ -92,10 +128,7 @@ export function exceedsAuditThreshold(
   );
 }
 
-function materializeArchiveGraph(
-  packages: readonly ReviewedPackage[],
-  tempRoot: string,
-): string {
+function materializeArchiveGraph(packages: readonly ReviewedPackage[], tempRoot: string): string {
   const graphDirectory = path.join(tempRoot, "reviewed-archive-graph");
   fs.mkdirSync(graphDirectory);
   fs.writeFileSync(
@@ -176,16 +209,20 @@ function main(): void {
       const summary = SEVERITIES.map((severity) => `${severity}=${counts[severity]}`).join(" ");
       console.log(`${label}: ${summary}`);
       const blocked = exceedsAuditThreshold(counts, config.severityThreshold);
-      if (blocked > 0) failures.push(`${label}: ${blocked} at or above ${config.severityThreshold}`);
+      if (blocked > 0)
+        failures.push(`${label}: ${blocked} at or above ${config.severityThreshold}`);
     }
-    if (failures.length > 0) throw new Error(`reviewed npm audit threshold failed\n${failures.join("\n")}`);
+    if (failures.length > 0)
+      throw new Error(`reviewed npm audit threshold failed\n${failures.join("\n")}`);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 }
 
 function isMainModule(): boolean {
-  return process.argv[1] ? import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href : false;
+  return process.argv[1]
+    ? import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
+    : false;
 }
 
 if (isMainModule()) {
