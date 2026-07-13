@@ -17,12 +17,13 @@ const BRAVE_TARBALL =
 it("pins Brave web-search and preserves its placeholder during build-time doctor", () => {
   const dockerfile = fs.readFileSync(path.join(ROOT, "Dockerfile"), "utf-8");
   const start = dockerfile.indexOf("# Install non-messaging OpenClaw plugins");
-  const end = dockerfile.indexOf(
-    'RUN OPENCLAW_VERSION="${OPENCLAW_VERSION}" node --experimental-strip-types /src/lib/messaging/applier/build/messaging-build-applier.mts --agent openclaw --phase agent-install',
-    start,
-  );
+  const commandStart = dockerfile.indexOf("\nRUN ", start) + 1;
+  const end = dockerfile.indexOf("\nRUN ", commandStart + 4);
+  if (start < 0 || commandStart <= start || end <= commandStart) {
+    throw new Error("unable to isolate the reviewed optional-plugin Dockerfile transaction");
+  }
   const command = dockerfile
-    .slice(dockerfile.indexOf("RUN ", start) + 4, end)
+    .slice(commandStart + 4, end)
     .split("\n")
     .filter((line) => !line.trimStart().startsWith("#"))
     .join("\n")

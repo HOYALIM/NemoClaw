@@ -114,7 +114,7 @@ printf 'verify|%s|%s|openclaw=%s|offline=%s|cache=%s\n' "$3" "$4" "$5" "$NPM_CON
         `npm|view|@tencent-weixin/openclaw-weixin@2.4.3|cache=${fs.realpathSync(installCache)}|offline=true`,
       );
       expect(calls).toContain(
-        `npm|pack|@tencent-weixin/openclaw-weixin@2.4.3|cache=${fs.realpathSync(installCache)}|offline=true`,
+        `npm|pack|${WECHAT_TARBALL}|cache=${fs.realpathSync(installCache)}|offline=true`,
       );
       expect(calls).toContain(`offline=true|peer=true|cache=${fs.realpathSync(installCache)}`);
       expect(calls).toContain(
