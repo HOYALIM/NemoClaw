@@ -228,6 +228,8 @@ jobs:
       # One-time bootstrap for this PR only. The action is pinned to a signed,
       # immutable commit that contains only the reviewed audit implementation.
       # Every later PR must resolve the action from its base SHA above.
+      # Removal condition: delete this checkout and its paired audit step in the
+      # first follow-up after PR #6739 merges, before the next release tag.
       - name: Checkout pinned bootstrap WeChat runtime audit
         if: ${{ steps.trusted-wechat-audit.outputs.available != 'true' && github.event.pull_request.number == 6739 && github.event.pull_request.head.repo.full_name == 'HOYALIM/NemoClaw' }}
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
