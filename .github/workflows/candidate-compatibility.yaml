@@ -1,0 +1,343 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Dependencies / Candidate Compatibility
+run-name: "Candidate ${{ inputs.component }} ${{ inputs.candidate }} at ${{ inputs.nemoclaw_ref }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      nemoclaw_ref:
+        description: Exact NemoClaw branch, tag, or commit to resolve once.
+        required: true
+        type: string
+      component:
+        description: Official dependency candidate to exercise.
+        required: true
+        type: choice
+        options:
+          - openshell
+          - openclaw
+          - hermes
+          - dcode
+      candidate:
+        description: Exact official version, or vX.Y.Z release tag for Hermes.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-compatibility-${{ inputs.nemoclaw_ref }}-${{ inputs.component }}-${{ inputs.candidate }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      nemoclaw_sha: ${{ steps.identity.outputs.nemoclaw_sha }}
+      resolution_id: ${{ steps.identity.outputs.resolution_id }}
+    steps:
+      - name: Check out trusted compatibility controller
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          path: controller
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve and check out requested NemoClaw ref
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.nemoclaw_ref }}
+          path: candidate-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.0.0
+        with:
+          node-version: "22"
+
+      - id: identity
+        name: Resolve official candidate provenance
+        env:
+          CANDIDATE: ${{ inputs.candidate }}
+          COMPONENT: ${{ inputs.component }}
+          GITHUB_TOKEN: ${{ github.token }}
+          WORKFLOW_REF: ${{ github.ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$WORKFLOW_REF" == refs/heads/main ]] || { echo "::error::candidate compatibility must be dispatched from main"; exit 1; }
+          nemoclaw_sha="$(git -C candidate-source rev-parse --verify HEAD^{commit})"
+          [[ "$nemoclaw_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "::error::NemoClaw ref did not resolve to a full commit SHA"; exit 1; }
+          [[ -z "$(git -C candidate-source status --short --untracked-files=no)" ]] || { echo "::error::checkout is not clean before candidate resolution"; exit 1; }
+          node --experimental-strip-types controller/tools/candidate-compat.mts resolve \
+            --nemoclaw-sha "$nemoclaw_sha" \
+            --component "$COMPONENT" \
+            --candidate "$CANDIDATE" \
+            --output candidate-receipt.json
+          resolution_id="$(node -e 'const r=require("./candidate-receipt.json"); process.stdout.write(r.resolutionId)')"
+          [[ "$resolution_id" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::resolver emitted an invalid identity"; exit 1; }
+          printf 'nemoclaw_sha=%s\nresolution_id=%s\n' "$nemoclaw_sha" "$resolution_id" >> "$GITHUB_OUTPUT"
+
+      - id: plan
+        name: Plan deterministic and live compatibility lanes
+        env:
+          COMPONENT: ${{ inputs.component }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --experimental-strip-types controller/tools/candidate-compat.mts plan \
+            --component "$COMPONENT" \
+            --e2e-workflow candidate-source/.github/workflows/e2e.yaml \
+            --e2e-registry candidate-source/test/e2e/registry/definitions/baseline.ts \
+            --output candidate-plan.json
+          matrix="$(node -e 'const p=require("./candidate-plan.json"); process.stdout.write(JSON.stringify({lane:p.deterministic.filter(x=>x.status==="selected").map(x=>x.id)}))')"
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+
+      - name: Upload immutable resolution and plan
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-resolution-${{ steps.identity.outputs.resolution_id }}
+          path: |
+            candidate-receipt.json
+            candidate-plan.json
+          if-no-files-found: error
+          retention-days: 30
+
+  deterministic:
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    steps:
+      - name: Check out trusted compatibility controller
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          path: controller
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out resolved NemoClaw commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.resolve.outputs.nemoclaw_sha }}
+          path: candidate-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify checkout identity
+        env:
+          EXPECTED_SHA: ${{ needs.resolve.outputs.nemoclaw_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git -C candidate-source rev-parse --verify HEAD)" == "$EXPECTED_SHA" ]] || { echo "::error::lane checkout differs from resolved NemoClaw SHA"; exit 1; }
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: candidate-source/package-lock.json
+
+      - name: Install repository dependencies
+        working-directory: candidate-source
+        run: npm ci --ignore-scripts
+
+      - name: Download immutable resolution and plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: candidate-resolution-${{ needs.resolve.outputs.resolution_id }}
+          path: candidate-input
+
+      - id: candidate
+        name: Materialize and verify candidate runtime
+        continue-on-error: true
+        env:
+          LANE: ${{ matrix.lane }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --experimental-strip-types controller/tools/candidate-compat.mts materialize \
+            --receipt candidate-input/candidate-receipt.json \
+            --resolution-id "${{ needs.resolve.outputs.resolution_id }}" \
+            --directory "${RUNNER_TEMP}/candidate-runtime" \
+            --output "candidate-observed-${LANE}.json" \
+            --github-env "$GITHUB_ENV" 2>&1 | tee "candidate-materialize-${LANE}.log"
+
+      - id: lane
+        name: Run ${{ matrix.lane }} lane
+        if: ${{ steps.candidate.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          LANE: ${{ matrix.lane }}
+        shell: bash
+        working-directory: candidate-source
+        run: |
+          set -euo pipefail
+          exec > >(tee "candidate-lane-${LANE}.log") 2>&1
+          case "$LANE" in
+            source-unit)
+              npx vitest run --project cli
+              ;;
+            integration)
+              npm run clean:cli
+              npm run build:cli
+              npx vitest run --project integration
+              ;;
+            installer)
+              npx vitest run --project installer-integration
+              ;;
+            package-contract)
+              npm ci --prefix nemoclaw --ignore-scripts
+              npm run clean:cli
+              npm --prefix nemoclaw run clean
+              npm run build:cli
+              npm --prefix nemoclaw run build
+              npx vitest run --project package-contract
+              ;;
+            plugin)
+              npm ci --prefix nemoclaw --ignore-scripts
+              npx vitest run --project plugin
+              ;;
+            e2e-support)
+              npx vitest run --project e2e-support
+              ;;
+            *)
+              echo "::error::untrusted lane id: $LANE"
+              exit 1
+              ;;
+          esac
+
+      - name: Record lane result
+        if: ${{ always() }}
+        env:
+          CANDIDATE_OUTCOME: ${{ steps.candidate.outcome }}
+          LANE: ${{ matrix.lane }}
+          LANE_OUTCOME: ${{ steps.lane.outcome }}
+          RESOLUTION_ID: ${{ needs.resolve.outputs.resolution_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          conclusion=failure
+          if [[ "$CANDIDATE_OUTCOME" == success && "$LANE_OUTCOME" == success ]]; then
+            conclusion=success
+          fi
+          mkdir -p candidate-results
+          CONCLUSION="$conclusion" node -e '
+            const fs = require("node:fs");
+            const observedPath = `candidate-observed-${process.env.LANE}.json`;
+            const observed = fs.existsSync(observedPath) ? JSON.parse(fs.readFileSync(observedPath, "utf8")) : {};
+            const result = {
+              conclusion: process.env.CONCLUSION,
+              lane: process.env.LANE,
+              observedOutput: observed.observedOutput,
+              observedVersion: observed.observedVersion,
+              resolutionId: process.env.RESOLUTION_ID,
+            };
+            fs.writeFileSync(`candidate-results/${process.env.LANE}.json`, JSON.stringify(result) + "\n", {mode: 0o600});
+          '
+
+      - name: Upload lane evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-result-${{ needs.resolve.outputs.resolution_id }}-${{ matrix.lane }}
+          path: |
+            candidate-results/${{ matrix.lane }}.json
+            candidate-observed-${{ matrix.lane }}.json
+            candidate-materialize-${{ matrix.lane }}.log
+            candidate-source/candidate-lane-${{ matrix.lane }}.log
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce lane result
+        if: ${{ always() && (steps.candidate.outcome != 'success' || steps.lane.outcome != 'success') }}
+        run: exit 1
+
+  evidence:
+    if: ${{ always() && needs.resolve.result == 'success' }}
+    needs:
+      - resolve
+      - deterministic
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out trusted compatibility controller
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          path: controller
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download immutable resolution and plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: candidate-resolution-${{ needs.resolve.outputs.resolution_id }}
+          path: candidate-input
+
+      - name: Download deterministic lane evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: candidate-result-${{ needs.resolve.outputs.resolution_id }}-*
+          path: candidate-results
+          merge-multiple: true
+
+      - name: Finalize auditable evidence
+        env:
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --experimental-strip-types controller/tools/candidate-compat.mts finalize \
+            --receipt candidate-input/candidate-receipt.json \
+            --plan candidate-input/candidate-plan.json \
+            --results candidate-results \
+            --run-id "$RUN_ID" \
+            --attempt "$RUN_ATTEMPT" \
+            --output candidate-compatibility-evidence.json
+          node <<'NODE' >> "$GITHUB_STEP_SUMMARY"
+          const evidence = require("./candidate-compatibility-evidence.json");
+          console.log("## Candidate compatibility evidence\n");
+          console.log(`- NemoClaw SHA: \`${evidence.receipt.nemoclawSha}\``);
+          console.log(`- Candidate: \`${evidence.receipt.component} ${evidence.receipt.requestedCandidate}\``);
+          console.log(`- Resolution: \`${evidence.receipt.resolutionId}\``);
+          console.log(`- Overall deterministic result: **${evidence.overall}**\n`);
+          console.log("| Lane | Selection | Result / reason |");
+          console.log("| --- | --- | --- |");
+          const results = new Map(evidence.results.map((result) => [result.lane, result.conclusion]));
+          for (const lane of evidence.plan.deterministic) {
+            console.log(`| \`${lane.id}\` | ${lane.status} | ${results.get(lane.id) ?? lane.reason} |`);
+          }
+          for (const lane of evidence.plan.live) {
+            console.log(`| \`e2e:${lane.id}\` | ${lane.status} | ${lane.reason} |`);
+          }
+          NODE
+
+      - name: Upload compatibility evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-compatibility-${{ needs.resolve.outputs.resolution_id }}-run-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            candidate-compatibility-evidence.json
+            candidate-input/candidate-receipt.json
+            candidate-input/candidate-plan.json
+            candidate-results/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce aggregate result
+        env:
+          DETERMINISTIC_RESULT: ${{ needs.deterministic.result }}
+        run: test "$DETERMINISTIC_RESULT" = success
