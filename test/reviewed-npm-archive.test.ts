@@ -56,27 +56,36 @@ function cachedArchiveRunner(
 ) {
   return (args: readonly string[], reviewed: ReviewedNpmArchiveRequest): string => {
     calls.push({ args: [...args], request: reviewed });
-    if (args[0] === "view") {
-      return args[2] === "dist.integrity" ? reviewed.expectedIntegrity : reviewed.tarballUrl;
-    }
-    const destination = args[3] as string;
-    const filename =
-      mutation?.packageSpec === reviewed.packageSpec && mutation.filename
-        ? mutation.filename
-        : `${reviewed.packageSpec.replaceAll(/[^0-9A-Za-z.-]/g, "-")}.tgz`;
-    if (!filename.includes("/") && !filename.includes("\\")) {
-      fs.writeFileSync(path.join(destination, filename), "reviewed cache bytes");
-    }
-    return JSON.stringify([
-      {
-        filename,
-        integrity:
-          mutation?.packageSpec === reviewed.packageSpec && mutation.integrity
-            ? mutation.integrity
-            : reviewed.expectedIntegrity,
-      },
-    ]);
+    return args[0] === "view"
+      ? args[2] === "dist.integrity"
+        ? reviewed.expectedIntegrity
+        : reviewed.tarballUrl
+      : cachedArchivePackResponse(args, reviewed, mutation);
   };
+}
+
+function cachedArchivePackResponse(
+  args: readonly string[],
+  reviewed: ReviewedNpmArchiveRequest,
+  mutation?: Readonly<{ filename?: string; integrity?: string; packageSpec: string }>,
+): string {
+  const destination = args[3] as string;
+  const filename =
+    mutation?.packageSpec === reviewed.packageSpec && mutation.filename
+      ? mutation.filename
+      : `${reviewed.packageSpec.replaceAll(/[^0-9A-Za-z.-]/g, "-")}.tgz`;
+  !filename.includes("/") && !filename.includes("\\")
+    ? fs.writeFileSync(path.join(destination, filename), "reviewed cache bytes")
+    : undefined;
+  return JSON.stringify([
+    {
+      filename,
+      integrity:
+        mutation?.packageSpec === reviewed.packageSpec && mutation.integrity
+          ? mutation.integrity
+          : reviewed.expectedIntegrity,
+    },
+  ]);
 }
 
 afterEach(() => {
