@@ -197,7 +197,6 @@ printf 'verify|%s|%s|openclaw=%s|offline=%s|cache=%s\n' "$3" "$4" "$5" "$NPM_CON
     expected,
   }) => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-wechat-invalid-cache-"));
-    const trustedCache = path.join(tmp, "trusted-cache");
     const trace = path.join(tmp, "trace");
     executable(path.join(tmp, "npm"), '#!/bin/sh\nprintf "npm\\n" >> "$TRACE"\n');
     executable(path.join(tmp, "openclaw"), '#!/bin/sh\nprintf "openclaw\\n" >> "$TRACE"\n');
