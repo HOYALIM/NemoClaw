@@ -414,7 +414,7 @@ function assertOpenClawEvidence(runner: DockerRunner, image: string): void {
     ],
     `inspect the OpenClaw Teams plugin in ${image}`,
   );
-  const inspect = parseJson(inspectText, "OpenClaw Teams plugin inspection");
+  const inspect = parseJsonAfterLogPreamble(inspectText, "OpenClaw Teams plugin inspection");
   const plugin = isObject(inspect) && isObject(inspect.plugin) ? inspect.plugin : {};
   const hasTeamsChannel =
     isObject(inspect) &&
@@ -648,6 +648,11 @@ function parseJson(text: string, label: string): unknown {
   } catch (error) {
     throw new Error(`${label} is not valid JSON: ${formatError(error)}`);
   }
+}
+
+function parseJsonAfterLogPreamble(text: string, label: string): unknown {
+  const jsonStart = text.search(/^\s*\{/mu);
+  return parseJson(jsonStart < 0 ? text : text.slice(jsonStart), label);
 }
 
 function assertAgent(agent: unknown): asserts agent is MessagingBoundaryAgent {

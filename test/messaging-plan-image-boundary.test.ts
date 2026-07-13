@@ -129,7 +129,7 @@ function successfulDockerRunner(agent: Agent, openClawInspect = openClawInspectR
             ],
             result: {
               status: 0,
-              stdout: JSON.stringify(openClawInspect),
+              stdout: `[proxy] routing through the managed sandbox proxy\n${JSON.stringify(openClawInspect)}`,
             },
           },
           {
