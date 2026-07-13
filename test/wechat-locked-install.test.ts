@@ -11,6 +11,7 @@ import { wechatManifest } from "../src/lib/messaging/channels/wechat/manifest.ts
 import {
   applyMessagingBuildPhase,
   readMessagingBuildPlanFromEnv,
+  requireWritableRuntimeInstallCache,
 } from "../src/lib/messaging/applier/build/messaging-build-applier.mts";
 
 const WECHAT_INTEGRITY =
@@ -21,6 +22,58 @@ const WECHAT_TARBALL =
 function executable(file: string, contents: string): void {
   fs.writeFileSync(file, contents, { mode: 0o755 });
 }
+
+const INVALID_INSTALL_CACHE_CASES = [
+  {
+    name: "relative paths",
+    prepare: () => "relative-cache",
+    expected: "NEMOCLAW_WECHAT_NPM_INSTALL_CACHE must be an absolute path",
+  },
+  {
+    name: "symbolic links",
+    prepare: (tmp: string) => {
+      const target = path.join(tmp, "symlink-target");
+      const link = path.join(tmp, "symlink-cache");
+      fs.mkdirSync(target);
+      fs.symlinkSync(target, link);
+      return link;
+    },
+    expected: "symbolic links are not allowed",
+  },
+  {
+    name: "non-directory paths",
+    prepare: (tmp: string) => {
+      const file = path.join(tmp, "cache-file");
+      fs.writeFileSync(file, "not a directory");
+      return file;
+    },
+    expected: "path is not a directory",
+  },
+  {
+    name: "non-writable directories",
+    prepare: (tmp: string) => {
+      const directory = path.join(tmp, "read-only-cache");
+      fs.mkdirSync(directory, { mode: 0o500 });
+      return directory;
+    },
+    expected: "must be a writable, searchable directory",
+  },
+] as const;
+
+const TRUSTED_INSTALL_CACHE_CASES = [
+  {
+    name: "the trusted cache itself",
+    prepare: (trustedCache: string) => trustedCache,
+  },
+  {
+    name: "trusted-cache descendants",
+    prepare: (trustedCache: string) => {
+      const descendant = path.join(trustedCache, "child");
+      fs.mkdirSync(descendant);
+      return descendant;
+    },
+  },
+] as const;
 
 describe("locked WeChat plugin installation (#5896)", () => {
   it("routes archive retrieval and install through the disposable offline cache", () => {
@@ -134,6 +187,73 @@ printf 'verify|%s|%s|openclaw=%s|offline=%s|cache=%s\n' "$3" "$4" "$5" "$NPM_CON
           "utf8",
         ),
       ).toBe("writable\n");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it.each(INVALID_INSTALL_CACHE_CASES)("rejects $name before package tooling runs", ({
+    prepare,
+    expected,
+  }) => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-wechat-invalid-cache-"));
+    const trustedCache = path.join(tmp, "trusted-cache");
+    const trace = path.join(tmp, "trace");
+    executable(path.join(tmp, "npm"), '#!/bin/sh\nprintf "npm\\n" >> "$TRACE"\n');
+    executable(path.join(tmp, "openclaw"), '#!/bin/sh\nprintf "openclaw\\n" >> "$TRACE"\n');
+    executable(path.join(tmp, "node"), '#!/bin/sh\nprintf "node\\n" >> "$TRACE"\n');
+
+    const plan = {
+      schemaVersion: 1,
+      sandboxName: "wechat-invalid-cache",
+      agent: "openclaw",
+      channels: [{ channelId: "wechat", active: true }],
+      credentialBindings: [],
+      agentRender: [],
+      buildSteps: [
+        {
+          channelId: "wechat",
+          kind: "package-install",
+          outputId: "openclawPluginPackage",
+          required: true,
+          value: {
+            manager: "openclaw-plugin",
+            spec: "npm:@tencent-weixin/openclaw-weixin@2.4.3",
+          },
+        },
+      ],
+    };
+    const env = {
+      PATH: `${tmp}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+      TRACE: trace,
+      NEMOCLAW_WECHAT_NPM_INSTALL_CACHE: prepare(tmp),
+      NEMOCLAW_MESSAGING_PLAN_B64: Buffer.from(JSON.stringify(plan)).toString("base64"),
+    };
+
+    try {
+      const serialized = readMessagingBuildPlanFromEnv(env, "openclaw");
+      expect(() => applyMessagingBuildPhase(serialized, "agent-install", env)).toThrow(expected);
+      expect(fs.existsSync(trace)).toBe(false);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it.each(TRUSTED_INSTALL_CACHE_CASES)("rejects $name", ({ prepare }) => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-wechat-trusted-cache-"));
+    const trustedCache = path.join(tmp, "trusted-cache");
+    fs.mkdirSync(trustedCache);
+    const runtimeLock = {
+      ...wechatManifest.agentPackages[0].runtimeLock!,
+      cachePath: trustedCache,
+    };
+
+    try {
+      expect(() =>
+        requireWritableRuntimeInstallCache(runtimeLock, {
+          NEMOCLAW_WECHAT_NPM_INSTALL_CACHE: prepare(trustedCache),
+        }),
+      ).toThrow("NEMOCLAW_WECHAT_NPM_INSTALL_CACHE must not make the trusted npm cache writable");
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

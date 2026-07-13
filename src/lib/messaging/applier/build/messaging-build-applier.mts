@@ -742,7 +742,7 @@ export function installOpenClawMessagingPlugins(plan: MessagingBuildPlan | null,
   }
 }
 
-function requireWritableRuntimeInstallCache(
+export function requireWritableRuntimeInstallCache(
   runtimeLock: ChannelAgentPackageRuntimeLockSpec,
   env: Env,
 ): string {
@@ -774,7 +774,11 @@ function requireWritableRuntimeInstallCache(
     );
   }
 
-  const trustedCache = resolve(runtimeLock.cachePath);
+  // Canonicalize an existing trusted root too: on macOS, for example, /var
+  // resolves through /private/var and must still compare equal to installCache.
+  const trustedCache = existsSync(runtimeLock.cachePath)
+    ? realpathSync(runtimeLock.cachePath)
+    : resolve(runtimeLock.cachePath);
   if (installCache === trustedCache || installCache.startsWith(`${trustedCache}${sep}`)) {
     throw new MessagingBuildApplierError(
       `${runtimeLock.installCacheEnvKey} must not make the trusted npm cache writable`,
