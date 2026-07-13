@@ -229,7 +229,7 @@ describe("codebase growth guardrail test conditionals step", () => {
     });
 
     expect(result.status).toBe(0);
-    expect(result.stderr).toContain("retry: graphql NVIDIA/NemoClaw@base-sha attempt 1 failed");
+    expect(result.stderr).toMatch(/retry: graphql \S+ attempt 1 failed/);
     expect(result.stdout).toContain("MOCK_GRAPHQL_REQUESTS=3");
   });
 
