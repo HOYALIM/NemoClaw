@@ -214,6 +214,10 @@ describe("WeChat runtime audit and install-cache gates (#5896)", () => {
     const dockerfile = fs.readFileSync(path.join(repoRoot, "Dockerfile"), "utf8");
     for (const fragment of [
       "chown -R root:root /usr/local/lib/nemoclaw/wechat-runtime",
+      "node --experimental-strip-types /scripts/lib/reviewed-npm-archive.mts",
+      "--lockfile /usr/local/lib/nemoclaw/wechat-runtime/package-lock.json",
+      "--cache /usr/local/share/nemoclaw/wechat-npm-cache",
+      "--registry-origin https://registry.npmjs.org/",
       "trusted_cache=/usr/local/share/nemoclaw/wechat-npm-cache",
       'install_cache="$(mktemp -d /tmp/nemoclaw-wechat-npm-cache.XXXXXX)"',
       'cp -R "$trusted_cache"/. "$install_cache"/',
@@ -223,5 +227,14 @@ describe("WeChat runtime audit and install-cache gates (#5896)", () => {
     ]) {
       expect(dockerfile).toContain(fragment);
     }
+    const cacheVerification = dockerfile.indexOf(
+      "--lockfile /usr/local/lib/nemoclaw/wechat-runtime/package-lock.json",
+    );
+    const cacheLockdown = dockerfile.indexOf(
+      "chown -R root:root /usr/local/lib/nemoclaw/wechat-runtime",
+      cacheVerification,
+    );
+    expect(cacheVerification).toBeGreaterThan(-1);
+    expect(cacheLockdown).toBeGreaterThan(cacheVerification);
   });
 });

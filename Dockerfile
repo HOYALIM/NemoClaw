@@ -148,15 +148,28 @@ RUN test -f /usr/local/bin/node \
     && test -z "$node_unsafe" \
     && json5_unsafe="$(find -L /opt/nemoclaw/node_modules/json5 \( ! -user root -o -perm /022 \) -print -quit)" \
     && test -z "$json5_unsafe"
+# Reviewed-archive invariants (#5896): after npm materializes the exact lock and
+# seeds resolver metadata, the shared helper re-packs every locked archive
+# offline from the final cache and verifies its registry origin, committed SRI,
+# and contained filename before the cache becomes immutable.
 RUN npm ci --prefix /usr/local/lib/nemoclaw/wechat-runtime \
         --ignore-scripts --omit=dev --legacy-peer-deps \
+        --userconfig /dev/null --registry https://registry.npmjs.org/ \
         --cache /usr/local/share/nemoclaw/wechat-npm-cache \
     && npm cache add @tencent-weixin/openclaw-weixin@2.4.3 \
+        --userconfig /dev/null --registry https://registry.npmjs.org/ \
         --cache /usr/local/share/nemoclaw/wechat-npm-cache \
     && npm cache add qrcode-terminal@0.12.0 \
+        --userconfig /dev/null --registry https://registry.npmjs.org/ \
         --cache /usr/local/share/nemoclaw/wechat-npm-cache \
     && npm cache add zod@4.4.3 \
+        --userconfig /dev/null --registry https://registry.npmjs.org/ \
         --cache /usr/local/share/nemoclaw/wechat-npm-cache \
+    && NPM_CONFIG_OFFLINE=true \
+        node --experimental-strip-types /scripts/lib/reviewed-npm-archive.mts \
+        --lockfile /usr/local/lib/nemoclaw/wechat-runtime/package-lock.json \
+        --cache /usr/local/share/nemoclaw/wechat-npm-cache \
+        --registry-origin https://registry.npmjs.org/ \
     && rm -rf /usr/local/lib/nemoclaw/wechat-runtime/node_modules \
     && chown -R root:root /usr/local/lib/nemoclaw/wechat-runtime \
         /usr/local/share/nemoclaw/wechat-npm-cache \

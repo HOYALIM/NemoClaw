@@ -316,7 +316,7 @@ messaging_build_applier=${JSON.stringify(MESSAGING_BUILD_APPLIER)}
 reviewed_archive_helper=scripts/lib/reviewed-npm-archive.mts
 
 boundary_marker_count="$(grep -hF 'Reviewed-archive invariants (#5896):' Dockerfile Dockerfile.base "$messaging_build_applier" | wc -l | tr -d ' ')"
-test "$boundary_marker_count" -eq 4
+test "$boundary_marker_count" -eq 5
 
 check_contains() {
   haystack="$1"
@@ -378,6 +378,13 @@ check_contains "$(cat Dockerfile.base)" 'chmod 0444 "$OPENCLAW_PROVENANCE_TMP"' 
 check_contains "$(cat Dockerfile)" "stat -c '%u:%g:%a'" "runtime provenance metadata format"
 check_contains "$(cat Dockerfile)" '0:0:444' "runtime provenance exact metadata"
 check_contains "$(cat Dockerfile)" 'rm -rf "$OPENCLAW_PROVENANCE_PATH"' "runtime provenance consumption"
+
+wechat_cache_block="$(sed -n '/# Reviewed-archive invariants (#5896): after npm materializes the exact lock/,/# Pre-install the codex-acp package/p' Dockerfile)"
+check_contains "$wechat_cache_block" '/scripts/lib/reviewed-npm-archive.mts' "WeChat cache shared helper"
+check_contains "$wechat_cache_block" '--lockfile /usr/local/lib/nemoclaw/wechat-runtime/package-lock.json' "WeChat cache reviewed lock"
+check_contains "$wechat_cache_block" '--cache /usr/local/share/nemoclaw/wechat-npm-cache' "WeChat cache boundary"
+check_contains "$wechat_cache_block" '--registry-origin https://registry.npmjs.org/' "WeChat reviewed registry"
+check_contains "$wechat_cache_block" 'NPM_CONFIG_OFFLINE=true' "WeChat cache offline verification"
 
 optional_plugin_block="$(sed -n '/# Install non-messaging OpenClaw plugins that need to match the runtime./,/^RUN OPENCLAW_VERSION=/p' Dockerfile)"
 check_contains "$optional_plugin_block" '/scripts/lib/reviewed-npm-archive.mts' "optional plugin shared helper"
