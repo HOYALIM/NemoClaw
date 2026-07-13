@@ -483,6 +483,7 @@ printf 'sudo %s\\n' "$*" >> "$CALL_LOG"
             RIPGREP_VERSION: "14.1.0-1",
             RUNNER_TEMP: path.join(tmp, "runner"),
             TYPEBOX_VERSION: "test-typebox-version",
+            YAML_VERSION: "test-yaml-version",
           },
         },
       );
@@ -496,6 +497,7 @@ printf 'sudo %s\\n' "$*" >> "$CALL_LOG"
       expect(fs.readFileSync(callLog, "utf8")).toContain("rg --version");
       expect(fs.readFileSync(callLog, "utf8")).toContain("--ignore-scripts");
       expect(fs.readFileSync(callLog, "utf8")).toContain("typebox@test-typebox-version");
+      expect(fs.readFileSync(callLog, "utf8")).toContain("yaml@test-yaml-version");
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
