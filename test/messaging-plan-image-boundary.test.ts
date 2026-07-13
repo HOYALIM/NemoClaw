@@ -23,6 +23,8 @@ type DockerResult = { status: number; stdout?: string; stderr?: string };
 const IMAGE = "nemoclaw-messaging-boundary:test";
 const RUNTIME_PLAN_PATH = "/usr/local/share/nemoclaw/messaging-runtime-plan.json";
 const PRELOAD_PATH = "/usr/local/lib/nemoclaw/preloads/msteams-message-hints.js";
+const OPENCLAW_TEAMS_ROOT =
+  "/sandbox/.openclaw/npm/projects/openclaw-msteams-d29647a7c0/node_modules/@openclaw/msteams";
 
 function decodePlan(agent: Agent): any {
   return JSON.parse(Buffer.from(encodeMessagingBoundaryPlan(agent), "base64").toString("utf8"));
@@ -56,7 +58,21 @@ function reducedArtifact(agent: Agent): string {
   });
 }
 
-function successfulDockerRunner(agent: Agent) {
+function openClawInspectReport(): any {
+  return {
+    plugin: {
+      id: "msteams",
+      name: "Microsoft Teams",
+      packageName: "@openclaw/msteams",
+      version: OPENCLAW_TEAMS_PACKAGE_VERSION,
+      status: "loaded",
+      rootDir: OPENCLAW_TEAMS_ROOT,
+    },
+    capabilities: [{ kind: "channel", ids: ["msteams"] }],
+  };
+}
+
+function successfulDockerRunner(agent: Agent, openClawInspect = openClawInspectReport()) {
   const expected: Array<{ args: string[]; result: DockerResult }> = [
     {
       args: ["image", "inspect", IMAGE],
@@ -93,13 +109,27 @@ function successfulDockerRunner(agent: Agent) {
             },
           },
           {
-            args: imageFileArgs("/sandbox/.openclaw/extensions/msteams/package.json"),
+            args: [
+              "run",
+              "--rm",
+              "--network",
+              "none",
+              "--user",
+              "sandbox",
+              "--env",
+              "HOME=/sandbox",
+              "--entrypoint",
+              "openclaw",
+              IMAGE,
+              "plugins",
+              "inspect",
+              "msteams",
+              "--runtime",
+              "--json",
+            ],
             result: {
               status: 0,
-              stdout: JSON.stringify({
-                name: "@openclaw/msteams",
-                version: OPENCLAW_TEAMS_PACKAGE_VERSION,
-              }),
+              stdout: JSON.stringify(openClawInspect),
             },
           },
           {
@@ -247,6 +277,23 @@ describe("messaging plan image boundary helper", () => {
       runtimePlanPath: RUNTIME_PLAN_PATH,
     });
     mock.assertComplete();
+  });
+
+  it.each([
+    [
+      "legacy extension layout",
+      (report: any) => (report.plugin.rootDir = "/sandbox/.openclaw/extensions/msteams"),
+    ],
+    ["wrong package version", (report: any) => (report.plugin.version = "2026.6.9")],
+    ["missing runtime channel", (report: any) => (report.capabilities = [])],
+  ])("rejects OpenClaw Teams plugin evidence with %s", (_label, mutate) => {
+    const report = openClawInspectReport();
+    mutate(report);
+    const mock = successfulDockerRunner("openclaw", report);
+
+    expect(() => verifyMessagingPlanImageBoundary(IMAGE, "openclaw", mock.runner)).toThrow(
+      "OpenClaw Teams plugin evidence must be loaded from the managed npm project",
+    );
   });
 
   it("fails before container execution when Config.Env retains the full plan", () => {

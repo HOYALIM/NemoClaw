@@ -33,7 +33,8 @@ export const HERMES_AIOHTTP_PACKAGE_SPEC = "aiohttp==3.14.1";
 const PLAN_ENV_KEY = "NEMOCLAW_MESSAGING_PLAN_B64";
 const RUNTIME_PLAN_PATH = "/usr/local/share/nemoclaw/messaging-runtime-plan.json";
 const OPENCLAW_CONFIG_PATH = "/sandbox/.openclaw/openclaw.json";
-const OPENCLAW_TEAMS_PACKAGE_PATH = "/sandbox/.openclaw/extensions/msteams/package.json";
+const OPENCLAW_TEAMS_MANAGED_ROOT =
+  /^\/sandbox\/\.openclaw\/npm\/projects\/openclaw-msteams-[a-f0-9]{10}\/node_modules\/@openclaw\/msteams$/;
 const OPENCLAW_TEAMS_PRELOAD_PATH = "/usr/local/lib/nemoclaw/preloads/msteams-message-hints.js";
 const HERMES_ENV_PATH = "/sandbox/.hermes/.env";
 const HERMES_CONFIG_PATH = "/sandbox/.hermes/config.yaml";
@@ -391,15 +392,51 @@ function assertOpenClawEvidence(runner: DockerRunner, image: string): void {
     throw new Error("OpenClaw image is missing the expected Teams render output");
   }
 
-  const packageText = readImageFile(runner, image, OPENCLAW_TEAMS_PACKAGE_PATH);
-  const packageJson = parseJson(packageText, "OpenClaw Teams package metadata");
+  const inspectText = runDocker(
+    runner,
+    [
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--user",
+      "sandbox",
+      "--env",
+      "HOME=/sandbox",
+      "--entrypoint",
+      "openclaw",
+      image,
+      "plugins",
+      "inspect",
+      "msteams",
+      "--runtime",
+      "--json",
+    ],
+    `inspect the OpenClaw Teams plugin in ${image}`,
+  );
+  const inspect = parseJson(inspectText, "OpenClaw Teams plugin inspection");
+  const plugin = isObject(inspect) && isObject(inspect.plugin) ? inspect.plugin : {};
+  const hasTeamsChannel =
+    isObject(inspect) &&
+    Array.isArray(inspect.capabilities) &&
+    inspect.capabilities.some(
+      (capability) =>
+        isObject(capability) &&
+        capability.kind === "channel" &&
+        Array.isArray(capability.ids) &&
+        capability.ids.includes("msteams"),
+    );
   if (
-    !isObject(packageJson) ||
-    packageJson.name !== "@openclaw/msteams" ||
-    packageJson.version !== OPENCLAW_TEAMS_PACKAGE_VERSION
+    plugin.id !== "msteams" ||
+    plugin.packageName !== "@openclaw/msteams" ||
+    plugin.version !== OPENCLAW_TEAMS_PACKAGE_VERSION ||
+    plugin.status !== "loaded" ||
+    typeof plugin.rootDir !== "string" ||
+    !OPENCLAW_TEAMS_MANAGED_ROOT.test(plugin.rootDir) ||
+    !hasTeamsChannel
   ) {
     throw new Error(
-      `OpenClaw Teams package evidence must be @openclaw/msteams@${OPENCLAW_TEAMS_PACKAGE_VERSION}`,
+      `OpenClaw Teams plugin evidence must be loaded from the managed npm project as @openclaw/msteams@${OPENCLAW_TEAMS_PACKAGE_VERSION} with the msteams channel registered`,
     );
   }
 

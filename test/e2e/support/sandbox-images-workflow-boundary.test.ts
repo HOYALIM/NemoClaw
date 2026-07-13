@@ -124,6 +124,7 @@ describe("sandbox image workflow boundary", () => {
     const probe = imageWorkflow.jobs["messaging-plan-image-boundary"];
     probe["timeout-minutes"] = 60;
     probe.needs = "build-sandbox-images";
+    probe.steps!.find((step) => step.name === "Set up Node")!.with!["node-version"] = "22";
     probe.steps!.push({ ...probe.steps!.find((step) => step.name === "Set up Node")! });
     probe.steps!.push({
       name: "Publish probe image",
@@ -151,6 +152,7 @@ describe("sandbox image workflow boundary", () => {
         "messaging plan image boundary must retain its 30-minute budget",
         "messaging plan image boundary must remain isolated from canonical image jobs",
         "messaging plan image boundary must set up Node exactly once",
+        "messaging plan image boundary must use Node 22.19.0",
         'openclaw messaging plan image boundary must include scripts/check-production-build-args.sh "${build_args[@]}"',
         "hermes messaging plan image boundary must include node --experimental-strip-types scripts/check-messaging-plan-image-boundary.mts verify nemoclaw-hermes-plan-boundary hermes",
         "messaging plan image boundary must not publish probe image artifacts",
