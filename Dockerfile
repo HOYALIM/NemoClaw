@@ -65,6 +65,8 @@ ARG CODEX_ACP_0_11_1_INTEGRITY=sha512-My2VSlBtvJipJhImHjFDej2ut/p00QqOISRnZgLgLr
 ARG MCPORTER_VERSION=0.7.3
 ARG MCPORTER_0_7_3_INTEGRITY=sha512-egoPVYqTnWb3NjRIxo+xc8OrAI0dlPrJm9pAiZx0pImuNIV5rKhGtTnIfH/Y1ldGPVu74ibj3KR5c9U/QSdQFA==
 ARG MCPORTER_0_7_3_TARBALL=https://registry.npmjs.org/mcporter/-/mcporter-0.7.3.tgz
+COPY agents/openclaw/openclaw-runtime/package.json /usr/local/lib/nemoclaw/openclaw-runtime/package.json
+COPY agents/openclaw/openclaw-runtime/package-lock.json /usr/local/lib/nemoclaw/openclaw-runtime/package-lock.json
 COPY agents/openclaw/mcporter-runtime/package.json /usr/local/lib/nemoclaw/mcporter-runtime/package.json
 COPY agents/openclaw/mcporter-runtime/package-lock.json /usr/local/lib/nemoclaw/mcporter-runtime/package-lock.json
 COPY agents/openclaw/wechat-runtime/package.json /usr/local/lib/nemoclaw/wechat-runtime/package.json
@@ -234,8 +236,9 @@ RUN chmod 755 /usr/local/lib/nemoclaw/patch-openclaw-tool-catalog.mts \
 # Pack the already-reviewed tarball URL after verifying current registry
 # metadata. Re-resolving package@version here would introduce another mutable
 # registry selection between the reviewed identity check and installation.
-# Reviewed-archive invariants (#5896): registry SRI, packed-byte SRI, contained
-# basename in a fresh directory, local-archive-only install, and cleanup.
+# Current production OpenClaw consumes the committed transitive lock. Legacy E2E
+# fixture pins retain the reviewed local-archive path until their separate
+# compatibility retirement.
 #
 # hadolint ignore=DL3059,DL4006,DL3016
 RUN set -eu; \
@@ -263,8 +266,9 @@ RUN set -eu; \
 #
 # OPENCLAW_VERSION is the NemoClaw runtime build target. It must be at least the
 # blueprint minimum, which also supports the legacy direct-blueprint image path.
-# Reviewed-archive invariants (#5896): registry SRI, packed-byte SRI, contained
-# basename in a fresh directory, local-archive-only install, and cleanup.
+# Reviewed-archive invariants (#5896): legacy fixture installs retain registry
+# SRI, packed-byte SRI, contained basename, local-archive install, and cleanup.
+# The current production pin instead consumes the committed lock closure.
 # hadolint ignore=DL3059,DL4006,DL3016
 RUN set -eu; \
     echo "$OPENCLAW_VERSION" | grep -qxE '[0-9]+(\.[0-9]+)*' \
@@ -296,6 +300,15 @@ RUN set -eu; \
     MCPORTER_LOCK_SHA256="$(sha256sum /usr/local/lib/nemoclaw/mcporter-runtime/package-lock.json | awk '{print $1}')"; \
     [ -n "$MCPORTER_LOCK_SHA256" ] \
         || { echo "ERROR: Could not hash the committed mcporter lockfile" >&2; exit 1; }; \
+    OPENCLAW_LOCK_SHA256=none-legacy-fixture; \
+    OPENCLAW_INSTALL_RECIPE=ignore-scripts+reviewed-lifecycle-v1; \
+    if [ "$OPENCLAW_VERSION" = "2026.6.10" ]; then \
+        OPENCLAW_LOCK_SHA256=a0f91c7e0b769e73c3f6119b2a6ee2dfd9bcb32b3dc69655b22696c654694d2d; \
+        ACTUAL_OPENCLAW_LOCK_SHA256="$(sha256sum /usr/local/lib/nemoclaw/openclaw-runtime/package-lock.json | awk '{print $1}')"; \
+        [ "$ACTUAL_OPENCLAW_LOCK_SHA256" = "$OPENCLAW_LOCK_SHA256" ] \
+            || { echo "ERROR: OpenClaw lock SHA-256 mismatch (expected $OPENCLAW_LOCK_SHA256, found $ACTUAL_OPENCLAW_LOCK_SHA256)" >&2; exit 1; }; \
+        OPENCLAW_INSTALL_RECIPE=locked-ci+reviewed-lifecycle-v2; \
+    fi; \
     CUR_VER=$(openclaw --version 2>/dev/null | awk '{print $2}' || true); \
     CUR_VER="${CUR_VER:-0.0.0}"; \
     CUR_MCPORTER_VER=$(mcporter --version 2>/dev/null || true); \
@@ -303,11 +316,12 @@ RUN set -eu; \
     OPENCLAW_PROVENANCE_PATH=/usr/local/share/nemoclaw/openclaw-base-provenance-v1; \
     OPENCLAW_EXPECTED_PROVENANCE="$(mktemp)"; \
     printf '%s\n' \
-        'schema=2' \
+        'schema=3' \
         "package=openclaw@${OPENCLAW_VERSION}" \
         "integrity=${EXPECTED_INTEGRITY}" \
         "tarball=${EXPECTED_TARBALL}" \
-        'recipe=ignore-scripts+reviewed-lifecycle-v1' \
+        "lock-sha256=${OPENCLAW_LOCK_SHA256}" \
+        "recipe=${OPENCLAW_INSTALL_RECIPE}" \
         "mcporter-package=mcporter@${MCPORTER_VERSION}" \
         "mcporter-integrity=${MCPORTER_EXPECTED_INTEGRITY}" \
         "mcporter-tarball=${MCPORTER_EXPECTED_TARBALL}" \
@@ -337,21 +351,44 @@ RUN set -eu; \
         echo "ERROR: Base image has OpenClaw $CUR_VER, which is newer than reviewed target $OPENCLAW_VERSION" >&2; exit 1; \
     else \
         echo "INFO: Base image OpenClaw $CUR_VER lacks exact reviewed provenance; installing $OPENCLAW_VERSION"; \
-        OPENCLAW_PACK_PATH="$(node --experimental-strip-types /scripts/lib/reviewed-npm-archive.mts \
-            --package-spec "openclaw@${OPENCLAW_VERSION}" --integrity "$EXPECTED_INTEGRITY" \
-            --tarball-url "$EXPECTED_TARBALL" --label "OpenClaw ${OPENCLAW_VERSION}")"; \
-        OPENCLAW_PACK_DIR="$(dirname "$OPENCLAW_PACK_PATH")"; \
         # npm 10's atomic-move install can hit EROFS on overlayfs when the prior
         # install spans image layers. Removing it first also prevents unreviewed
         # files from surviving a same-version reinstall.
         rm -rf /usr/local/lib/node_modules/openclaw /usr/local/bin/openclaw; \
-        npm install -g --no-audit --no-fund --no-progress --ignore-scripts "$OPENCLAW_PACK_PATH"; \
+        if [ "$OPENCLAW_VERSION" = "2026.6.10" ]; then \
+            node --experimental-strip-types /scripts/lib/reviewed-npm-archive.mts --verify-lock \
+                --lock-sha256 "$OPENCLAW_LOCK_SHA256" \
+                --lockfile /usr/local/lib/nemoclaw/openclaw-runtime/package-lock.json \
+                --registry-origin https://registry.npmjs.org/ \
+                --package-spec "openclaw@${OPENCLAW_VERSION}" --integrity "$EXPECTED_INTEGRITY" \
+                --tarball-url "$EXPECTED_TARBALL" --label "OpenClaw ${OPENCLAW_VERSION}"; \
+            npm --prefix /usr/local/lib/nemoclaw/openclaw-runtime ci \
+                --ignore-scripts --omit=dev --no-audit --no-fund --no-progress \
+                --userconfig /dev/null --registry https://registry.npmjs.org/; \
+            node --experimental-strip-types /scripts/lib/reviewed-npm-archive.mts \
+                --verify-installed-lock --lock-sha256 "$OPENCLAW_LOCK_SHA256" \
+                --lockfile /usr/local/lib/nemoclaw/openclaw-runtime/package-lock.json \
+                --install-root /usr/local/lib/nemoclaw/openclaw-runtime \
+                --label "OpenClaw ${OPENCLAW_VERSION}"; \
+        else \
+            OPENCLAW_PACK_PATH="$(node --experimental-strip-types /scripts/lib/reviewed-npm-archive.mts \
+                --package-spec "openclaw@${OPENCLAW_VERSION}" --integrity "$EXPECTED_INTEGRITY" \
+                --tarball-url "$EXPECTED_TARBALL" --label "OpenClaw ${OPENCLAW_VERSION}")"; \
+            OPENCLAW_PACK_DIR="$(dirname "$OPENCLAW_PACK_PATH")"; \
+            npm install -g --no-audit --no-fund --no-progress --ignore-scripts "$OPENCLAW_PACK_PATH"; \
+            rm -rf "$OPENCLAW_PACK_DIR"; \
+        fi; \
         case "$OPENCLAW_VERSION" in \
-            2026.4.24|2026.6.10) node /usr/local/lib/node_modules/openclaw/scripts/postinstall-bundled-plugins.mjs ;; \
+            2026.6.10) node /usr/local/lib/nemoclaw/openclaw-runtime/node_modules/openclaw/scripts/postinstall-bundled-plugins.mjs ;; \
+            2026.4.24) node /usr/local/lib/node_modules/openclaw/scripts/postinstall-bundled-plugins.mjs ;; \
             2026.3.11) ;; \
             *) echo "ERROR: OpenClaw ${OPENCLAW_VERSION} has no reviewed lifecycle policy" >&2; exit 1 ;; \
         esac; \
-        rm -rf "$OPENCLAW_PACK_DIR"; \
+        if [ "$OPENCLAW_VERSION" = "2026.6.10" ]; then \
+            mkdir -p /usr/local/lib/node_modules; \
+            ln -s /usr/local/lib/nemoclaw/openclaw-runtime/node_modules/openclaw /usr/local/lib/node_modules/openclaw; \
+            ln -s /usr/local/lib/nemoclaw/openclaw-runtime/node_modules/.bin/openclaw /usr/local/bin/openclaw; \
+        fi; \
     fi; \
     if [ "$USE_REVIEWED_BASE_RUNTIME" = "1" ]; then \
         echo "INFO: Reusing reviewed base mcporter $CUR_MCPORTER_VER with exact lock provenance"; \

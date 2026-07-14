@@ -286,6 +286,9 @@ jobs:
 
       - name: Audit reviewed production npm graphs
         uses: ./.github/actions/ci-reviewed-npm-audit
+        with:
+          target-root: ${{ github.workspace }}
+          report-dir: artifacts/reviewed-npm-audit
 
   cli-test-shards:
     needs: changes

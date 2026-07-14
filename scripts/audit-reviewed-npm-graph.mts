@@ -7,7 +7,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { packReviewedNpmArchive, verifyReviewedNpmMetadata } from "./lib/reviewed-npm-archive.mts";
+import {
+  packReviewedNpmArchive,
+  verifyInstalledNpmLock,
+  verifyReviewedNpmLock,
+} from "./lib/reviewed-npm-archive.mts";
 
 type Severity = "info" | "low" | "moderate" | "high" | "critical";
 type ReviewedPackage = Readonly<{
@@ -16,19 +20,34 @@ type ReviewedPackage = Readonly<{
   packageSpec: string;
   tarballUrl: string;
 }>;
-type LockedGraph = ReviewedPackage & Readonly<{ directory: string }>;
+type LockedGraph = ReviewedPackage & Readonly<{ directory: string; lockSha256: string }>;
 type AuditConfig = Readonly<{
   archivePackages: readonly ReviewedPackage[];
   artifactDirectory: string;
   lockedGraphs: readonly LockedGraph[];
   nodeVersion: string;
-  schemaVersion: 1;
+  registryOrigin: string;
+  schemaVersion: 2;
   severityThreshold: Severity;
 }>;
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const TRUSTED_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const REPO_ROOT = path.resolve(
+  process.env.NEMOCLAW_REVIEWED_NPM_AUDIT_TARGET_ROOT ?? TRUSTED_REPO_ROOT,
+);
 const CONFIG_PATH = path.join(REPO_ROOT, "ci", "reviewed-npm-audit.json");
 const SEVERITIES: readonly Severity[] = ["info", "low", "moderate", "high", "critical"];
+
+function resolveTargetPath(relativePath: string, label: string): string {
+  if (!relativePath || path.isAbsolute(relativePath)) {
+    throw new Error(`${label} must be a nonempty target-relative path`);
+  }
+  const resolved = path.resolve(REPO_ROOT, relativePath);
+  if (!resolved.startsWith(`${REPO_ROOT}${path.sep}`)) {
+    throw new Error(`${label} escapes the target root: ${relativePath}`);
+  }
+  return resolved;
+}
 
 function run(command: string, args: readonly string[], cwd: string, allowAuditFindings = false) {
   const result = spawnSync(command, args, {
@@ -48,7 +67,8 @@ function run(command: string, args: readonly string[], cwd: string, allowAuditFi
 function readConfig(): AuditConfig {
   const parsed = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8")) as AuditConfig;
   if (
-    parsed.schemaVersion !== 1 ||
+    parsed.schemaVersion !== 2 ||
+    typeof parsed.registryOrigin !== "string" ||
     !SEVERITIES.includes(parsed.severityThreshold) ||
     !Array.isArray(parsed.archivePackages) ||
     !Array.isArray(parsed.lockedGraphs)
@@ -159,20 +179,33 @@ function materializeArchiveGraph(packages: readonly ReviewedPackage[], tempRoot:
   return graphDirectory;
 }
 
-function materializeLockedGraph(graph: LockedGraph, tempRoot: string): string {
-  verifyReviewedNpmMetadata({
+function materializeLockedGraph(
+  graph: LockedGraph,
+  tempRoot: string,
+  registryOrigin: string,
+): string {
+  const source = resolveTargetPath(graph.directory, `${graph.label} directory`);
+  verifyReviewedNpmLock({
     expectedIntegrity: graph.integrity,
+    expectedLockSha256: graph.lockSha256,
     label: graph.label,
+    lockfilePath: path.join(source, "package-lock.json"),
     packageSpec: graph.packageSpec,
+    registryOrigin,
     tarballUrl: graph.tarballUrl,
   });
-  const source = path.join(REPO_ROOT, graph.directory);
   const destination = path.join(tempRoot, `locked-${path.basename(graph.directory)}`);
   fs.mkdirSync(destination);
   for (const filename of ["package.json", "package-lock.json"]) {
     fs.copyFileSync(path.join(source, filename), path.join(destination, filename));
   }
   run("npm", ["ci", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund"], destination);
+  verifyInstalledNpmLock({
+    expectedLockSha256: graph.lockSha256,
+    installRoot: destination,
+    label: graph.label,
+    lockfilePath: path.join(destination, "package-lock.json"),
+  });
   return destination;
 }
 
@@ -182,7 +215,10 @@ function main(): void {
   if (process.version !== expectedNode) {
     throw new Error(`reviewed npm audit requires Node ${expectedNode}; running ${process.version}`);
   }
-  const artifactDirectory = path.join(REPO_ROOT, config.artifactDirectory);
+  const artifactDirectory = resolveTargetPath(
+    process.env.NEMOCLAW_REVIEWED_NPM_AUDIT_REPORT_DIR ?? config.artifactDirectory,
+    "reviewed npm audit report directory",
+  );
   fs.rmSync(artifactDirectory, { recursive: true, force: true });
   fs.mkdirSync(artifactDirectory, { recursive: true });
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-reviewed-npm-audit-"));
@@ -198,7 +234,7 @@ function main(): void {
       ...config.lockedGraphs.map((graph, index) => ({
         label: graph.label,
         report: auditGraph(
-          materializeLockedGraph(graph, tempRoot),
+          materializeLockedGraph(graph, tempRoot, config.registryOrigin),
           path.join(artifactDirectory, `locked-graph-${index + 1}.json`),
         ),
       })),

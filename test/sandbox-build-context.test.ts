@@ -35,7 +35,7 @@ describe("sandbox build context staging", () => {
 
     writeFixture("Dockerfile");
     writeFixture("tsconfig.runtime-preloads.json", "{}\n");
-    for (const runtimeName of ["mcporter-runtime", "wechat-runtime"]) {
+    for (const runtimeName of ["mcporter-runtime", "openclaw-runtime", "wechat-runtime"]) {
       for (const fileName of ["package.json", "package-lock.json"]) {
         writeFixture(
           path.join("agents", "openclaw", runtimeName, fileName),
@@ -165,7 +165,7 @@ describe("sandbox build context staging", () => {
   }
 
   function expectStagedOpenClawRuntimeGraphs(buildCtx: string, sourceRoot: string) {
-    for (const runtimeName of ["mcporter-runtime", "wechat-runtime"]) {
+    for (const runtimeName of ["mcporter-runtime", "openclaw-runtime", "wechat-runtime"]) {
       const runtimeDir = path.join(buildCtx, "agents", "openclaw", runtimeName);
       expect(fs.readdirSync(runtimeDir).sort()).toEqual(["package-lock.json", "package.json"]);
       for (const fileName of ["package.json", "package-lock.json"]) {

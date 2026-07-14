@@ -140,7 +140,9 @@ describe("OpenClaw 2026.6.10 dependency review contract", () => {
     expect(review).toContain("install the verified archive path");
     expect(review).toContain("contained regular-file basename in a fresh directory");
     expect(review).toContain("unsafe reported archive filenames");
-    expect(review).toContain("no installer code consumes raw `npm pack --json` filenames");
+    expect(review).toContain(
+      "keep archive verification until every remaining archive consumer moves",
+    );
     expect(review).toContain("The #4434 compatibility-shim disposition is explicitly accepted");
     expect(review).toContain(
       "The assembled-image and rebuilt-sandbox proof residual is explicitly accepted",
@@ -239,7 +241,7 @@ describe("OpenClaw 2026.6.10 dependency review contract", () => {
     expect(review).toContain("configured threshold in `ci/reviewed-npm-audit.json` is `high`");
     expect(review).toContain("Transitive Dependency Graph Rationale");
     expect(review).toContain(
-      "The OpenClaw 2026.6.10 bump does not newly introduce an unfrozen OpenClaw transitive graph",
+      "Both production Dockerfiles install with `npm ci` from that exact closure",
     );
     expect(review).toContain(
       "The reviewed `openclaw@2026.6.10` artifact ships `npm-shrinkwrap.json`",
@@ -318,7 +320,7 @@ messaging_build_applier=${JSON.stringify(MESSAGING_BUILD_APPLIER)}
 reviewed_archive_helper=scripts/lib/reviewed-npm-archive.mts
 
 boundary_marker_count="$(grep -hF 'Reviewed-archive invariants (#5896):' Dockerfile Dockerfile.base "$messaging_build_applier" | wc -l | tr -d ' ')"
-test "$boundary_marker_count" -eq 5
+test "$boundary_marker_count" -eq 4
 
 check_contains() {
   haystack="$1"
@@ -369,7 +371,10 @@ for dockerfile in Dockerfile Dockerfile.base; do
   check_not_contains "$openclaw_block" 'REGISTRY_INTEGRITY=$(npm view' "$dockerfile inline integrity lookup"
   check_not_contains "$openclaw_block" 'pack_reviewed_npm_tarball' "$dockerfile inline pack helper"
   check_contains "$openclaw_block" 'openclaw-base-provenance-v1' "$dockerfile base provenance path"
-  check_contains "$openclaw_block" 'recipe=ignore-scripts+reviewed-lifecycle-v1' "$dockerfile base provenance recipe"
+  check_contains "$openclaw_block" 'OPENCLAW_INSTALL_RECIPE=ignore-scripts+reviewed-lifecycle-v1' "$dockerfile legacy provenance recipe"
+  check_contains "$openclaw_block" 'OPENCLAW_INSTALL_RECIPE=locked-ci+reviewed-lifecycle-v2' "$dockerfile locked provenance recipe"
+  check_contains "$openclaw_block" 'lock-sha256=' "$dockerfile OpenClaw provenance lock hash"
+  check_contains "$openclaw_block" 'recipe=\${OPENCLAW_INSTALL_RECIPE}' "$dockerfile selected provenance recipe"
   check_contains "$openclaw_block" 'mcporter-package=mcporter@' "$dockerfile mcporter provenance package"
   check_contains "$openclaw_block" 'mcporter-integrity=' "$dockerfile mcporter provenance integrity"
   check_contains "$openclaw_block" 'mcporter-lock-sha256=' "$dockerfile mcporter provenance lock hash"

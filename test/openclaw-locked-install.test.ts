@@ -1,0 +1,322 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  type ReviewedNpmArchiveRequest,
+  verifyInstalledNpmLock,
+  verifyReviewedNpmLock,
+} from "../scripts/lib/reviewed-npm-archive.mts";
+
+const REPO_ROOT = path.join(import.meta.dirname, "..");
+const RUNTIME_DIRECTORY = path.join(REPO_ROOT, "agents", "openclaw", "openclaw-runtime");
+const LOCKFILE = path.join(RUNTIME_DIRECTORY, "package-lock.json");
+const PACKAGE_SPEC = "openclaw@2026.6.10";
+const INTEGRITY =
+  "sha512-LcooND2tBQw8A+kc1Ujltu3lg30bJ0w7XaeRy7eYzobb8BBdcW6DOGbwJL4vpj1vl9+gjRceOtlh5nh9OARcug==";
+const TARBALL = "https://registry.npmjs.org/openclaw/-/openclaw-2026.6.10.tgz";
+const LOCK_SHA256 = "a0f91c7e0b769e73c3f6119b2a6ee2dfd9bcb32b3dc69655b22696c654694d2d";
+const roots: string[] = [];
+
+function sha256(file: string): string {
+  return createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+function lockRequest(lockfilePath = LOCKFILE, expectedLockSha256 = LOCK_SHA256) {
+  return {
+    expectedIntegrity: INTEGRITY,
+    expectedLockSha256,
+    label: "OpenClaw 2026.6.10 locked runtime graph",
+    lockfilePath,
+    packageSpec: PACKAGE_SPEC,
+    registryOrigin: "https://registry.npmjs.org/",
+    tarballUrl: TARBALL,
+  };
+}
+
+function reviewedMetadata(args: readonly string[], request: ReviewedNpmArchiveRequest): string {
+  return args[2] === "dist.integrity" ? request.expectedIntegrity : request.tarballUrl;
+}
+
+function mutatedLock(mutate: (lock: any) => void): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-openclaw-lock-test-"));
+  roots.push(root);
+  const target = path.join(root, "package-lock.json");
+  const lock = JSON.parse(fs.readFileSync(LOCKFILE, "utf-8"));
+  mutate(lock);
+  fs.writeFileSync(target, `${JSON.stringify(lock, null, 2)}\n`);
+  return target;
+}
+
+function installedFixture({
+  actualName = "chalk",
+  actualVersion = "5.6.2",
+  lockedName,
+  danglingSymlink = false,
+  manifestSymlink = false,
+  omit = false,
+  optional = false,
+  symlink = false,
+}: {
+  actualName?: string;
+  actualVersion?: string;
+  lockedName?: string;
+  danglingSymlink?: boolean;
+  manifestSymlink?: boolean;
+  omit?: boolean;
+  optional?: boolean;
+  symlink?: boolean;
+} = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-installed-lock-test-"));
+  roots.push(root);
+  const installRoot = path.join(root, "runtime");
+  const lockfilePath = path.join(root, "package-lock.json");
+  const packageDirectory = path.join(installRoot, "node_modules", "chalk");
+  const lock = {
+    lockfileVersion: 3,
+    packages: {
+      "": { dependencies: { chalk: "5.6.2" } },
+      "node_modules/chalk": {
+        integrity: `sha512-${"D".repeat(88)}`,
+        ...(lockedName ? { name: lockedName } : {}),
+        optional,
+        resolved: "https://registry.npmjs.org/chalk/-/chalk-5.6.2.tgz",
+        version: "5.6.2",
+      },
+    },
+  };
+  fs.writeFileSync(lockfilePath, `${JSON.stringify(lock, null, 2)}\n`);
+  if (!omit) {
+    if (symlink) {
+      const target = path.join(root, "substituted-package");
+      if (!danglingSymlink) {
+        fs.mkdirSync(target, { recursive: true });
+        fs.writeFileSync(
+          path.join(target, "package.json"),
+          JSON.stringify({ name: actualName, version: actualVersion }),
+        );
+      }
+      fs.mkdirSync(path.dirname(packageDirectory), { recursive: true });
+      fs.symlinkSync(target, packageDirectory);
+    } else {
+      fs.mkdirSync(packageDirectory, { recursive: true });
+      const manifest = JSON.stringify({ name: actualName, version: actualVersion });
+      const manifestPath = path.join(packageDirectory, "package.json");
+      if (manifestSymlink) {
+        const target = path.join(root, "substituted-package.json");
+        fs.writeFileSync(target, manifest);
+        fs.symlinkSync(target, manifestPath);
+      } else {
+        fs.writeFileSync(manifestPath, manifest);
+      }
+    }
+  }
+  return {
+    expectedLockSha256: sha256(lockfilePath),
+    installRoot,
+    label: "test locked graph",
+    lockfilePath,
+  };
+}
+
+afterEach(() => {
+  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+});
+
+describe("locked OpenClaw production installation (#5896)", () => {
+  it("binds the reviewed root artifact to the complete committed closure", () => {
+    const verified = verifyReviewedNpmLock(lockRequest(), reviewedMetadata);
+    expect(verified).toHaveLength(305);
+    expect(verified).toContain(PACKAGE_SPEC);
+    expect(sha256(LOCKFILE)).toBe(LOCK_SHA256);
+    expect(JSON.parse(fs.readFileSync(LOCKFILE, "utf-8"))).toMatchObject({
+      packages: { "": { dependencies: { openclaw: "2026.6.10" } } },
+    });
+  });
+
+  it("rejects any lock byte tamper before registry metadata is consulted", () => {
+    const lockfilePath = mutatedLock((lock) => {
+      lock.packages["node_modules/openclaw/node_modules/chalk"].integrity =
+        `sha512-${"A".repeat(88)}`;
+    });
+    let npmCalled = false;
+    expect(() =>
+      verifyReviewedNpmLock(lockRequest(lockfilePath), () => {
+        npmCalled = true;
+        return "";
+      }),
+    ).toThrow("lock SHA-256 mismatch");
+    expect(npmCalled).toBe(false);
+  });
+
+  it.each([
+    {
+      expected: "root must depend only on openclaw@2026.6.10",
+      mutate: (lock: any) => {
+        lock.packages[""].dependencies.openclaw = "2026.6.11";
+      },
+      name: "root version drift",
+    },
+    {
+      expected: "lock integrity mismatch for openclaw@2026.6.10",
+      mutate: (lock: any) => {
+        lock.packages["node_modules/openclaw"].integrity = `sha512-${"B".repeat(88)}`;
+      },
+      name: "top-level integrity drift",
+    },
+    {
+      expected: "must use a committed sha512 npm integrity value",
+      mutate: (lock: any) => {
+        delete lock.packages["node_modules/openclaw/node_modules/chalk"].integrity;
+      },
+      name: "missing transitive integrity",
+    },
+    {
+      expected: "must use the reviewed registry",
+      mutate: (lock: any) => {
+        lock.packages["node_modules/openclaw/node_modules/chalk"].resolved =
+          "https://packages.invalid/chalk-5.6.2.tgz";
+      },
+      name: "malicious transitive registry substitution",
+    },
+    {
+      expected: "conflicting package identity: safe-buffer@5.1.2",
+      mutate: (lock: any) => {
+        lock.packages[
+          "node_modules/openclaw/node_modules/string_decoder/node_modules/safe-buffer"
+        ].integrity = `sha512-${"C".repeat(88)}`;
+      },
+      name: "conflicting duplicate package identity",
+    },
+  ])("rejects $name even with a test-only matching lock digest", ({ expected, mutate }) => {
+    const lockfilePath = mutatedLock(mutate);
+    expect(() =>
+      verifyReviewedNpmLock(lockRequest(lockfilePath, sha256(lockfilePath)), reviewedMetadata),
+    ).toThrow(expected);
+  });
+
+  it("binds installed package manifests to lock locations and versions", () => {
+    expect(verifyInstalledNpmLock(installedFixture())).toEqual(["chalk@5.6.2"]);
+  });
+
+  it("binds npm aliases to the canonical package name recorded in the lock", () => {
+    expect(
+      verifyInstalledNpmLock(
+        installedFixture({ actualName: "@scope/canonical", lockedName: "@scope/canonical" }),
+      ),
+    ).toEqual(["@scope/canonical@5.6.2"]);
+  });
+
+  it("rejects a same-registry tarball with a substituted package manifest", () => {
+    expect(() =>
+      verifyInstalledNpmLock(installedFixture({ actualName: "is-odd", actualVersion: "3.0.1" })),
+    ).toThrow("expected chalk@5.6.2, found is-odd@3.0.1");
+  });
+
+  it("fails closed on missing required packages and symlinked package roots", () => {
+    expect(() => verifyInstalledNpmLock(installedFixture({ omit: true }))).toThrow(
+      "missing installed package: chalk@5.6.2",
+    );
+    expect(() => verifyInstalledNpmLock(installedFixture({ symlink: true }))).toThrow(
+      "installed package must be a non-symlink directory",
+    );
+    expect(() =>
+      verifyInstalledNpmLock(
+        installedFixture({ danglingSymlink: true, optional: true, symlink: true }),
+      ),
+    ).toThrow("installed package must be a non-symlink directory");
+  });
+
+  it("rejects symlinked package manifests", () => {
+    expect(() => verifyInstalledNpmLock(installedFixture({ manifestSymlink: true }))).toThrow(
+      "manifest must be a non-symlink regular file",
+    );
+  });
+
+  it("allows npm to omit an incompatible optional package", () => {
+    expect(verifyInstalledNpmLock(installedFixture({ omit: true, optional: true }))).toEqual([]);
+  });
+
+  it.each([
+    "Dockerfile",
+    "Dockerfile.base",
+  ])("invokes the locked installer before exposing OpenClaw in %s", (dockerfileName) => {
+    const contents = fs.readFileSync(path.join(REPO_ROOT, dockerfileName), "utf-8");
+    const verifyIndex = contents.indexOf(
+      "node --experimental-strip-types /scripts/lib/reviewed-npm-archive.mts --verify-lock",
+    );
+    const installIndex = contents.indexOf(
+      "npm --prefix /usr/local/lib/nemoclaw/openclaw-runtime ci",
+      verifyIndex,
+    );
+    const installedIdentityIndex = contents.indexOf("--verify-installed-lock", installIndex);
+    const postinstallIndex = contents.indexOf(
+      "/usr/local/lib/nemoclaw/openclaw-runtime/node_modules/openclaw/scripts/postinstall-bundled-plugins.mjs",
+      installedIdentityIndex,
+    );
+    const linkIndex = contents.indexOf(
+      "ln -s /usr/local/lib/nemoclaw/openclaw-runtime/node_modules/openclaw",
+      postinstallIndex,
+    );
+    const binLinkIndex = contents.indexOf(
+      "ln -s /usr/local/lib/nemoclaw/openclaw-runtime/node_modules/.bin/openclaw",
+      linkIndex,
+    );
+    const branchEnd = contents.indexOf("else \\", installIndex);
+    const currentInstallBranch = contents.slice(verifyIndex, branchEnd);
+
+    expect(contents).toContain(
+      "COPY agents/openclaw/openclaw-runtime/package-lock.json /usr/local/lib/nemoclaw/openclaw-runtime/package-lock.json",
+    );
+    expect(verifyIndex).toBeGreaterThanOrEqual(0);
+    expect(installIndex).toBeGreaterThan(verifyIndex);
+    expect(installedIdentityIndex).toBeGreaterThan(installIndex);
+    expect(postinstallIndex).toBeGreaterThan(installedIdentityIndex);
+    expect(linkIndex).toBeGreaterThan(postinstallIndex);
+    expect(binLinkIndex).toBeGreaterThan(linkIndex);
+    expect(branchEnd).toBeGreaterThan(installIndex);
+    expect(currentInstallBranch).toContain(`--lock-sha256 \"$OPENCLAW_LOCK_SHA256\"`);
+    expect(currentInstallBranch).not.toContain("npm install -g");
+    expect(contents).toContain("'schema=3'");
+    expect(contents).toContain('"lock-sha256=${OPENCLAW_LOCK_SHA256}"');
+    expect(contents).toContain("locked-ci+reviewed-lifecycle-v2");
+  });
+
+  it("audits the same lock and rebuilds the base when its graph changes", () => {
+    const audit = JSON.parse(
+      fs.readFileSync(path.join(REPO_ROOT, "ci", "reviewed-npm-audit.json"), "utf-8"),
+    );
+    expect(audit.archivePackages).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ packageSpec: PACKAGE_SPEC })]),
+    );
+    expect(audit.lockedGraphs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          directory: "agents/openclaw/openclaw-runtime",
+          lockSha256: LOCK_SHA256,
+          packageSpec: PACKAGE_SPEC,
+        }),
+      ]),
+    );
+
+    const baseWorkflow = fs.readFileSync(
+      path.join(REPO_ROOT, ".github", "workflows", "base-image.yaml"),
+      "utf-8",
+    );
+    expect(baseWorkflow).toContain('"agents/openclaw/openclaw-runtime/package.json"');
+    expect(baseWorkflow).toContain('"agents/openclaw/openclaw-runtime/package-lock.json"');
+    expect(baseWorkflow).toContain('"scripts/lib/reviewed-npm-archive.mts"');
+
+    const baseResolver = fs.readFileSync(
+      path.join(REPO_ROOT, ".github", "actions", "resolve-sandbox-base-image", "action.yaml"),
+      "utf-8",
+    );
+    expect(baseResolver).toContain("agents/openclaw/openclaw-runtime/package.json");
+    expect(baseResolver).toContain("agents/openclaw/openclaw-runtime/package-lock.json");
+    expect(baseResolver).toContain("scripts/lib/reviewed-npm-archive.mts");
+  });
+});

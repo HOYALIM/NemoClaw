@@ -1,9 +1,26 @@
 <!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# OpenClaw MCP Runtime Dependency Review
+# OpenClaw Runtime Dependency Review
 
-This file records the reviewed `mcporter` baseline installed in the OpenClaw sandbox image.
+## OpenClaw production runtime graph
+
+- Package: `openclaw@2026.6.10`.
+- Registry source: `https://registry.npmjs.org/openclaw/-/openclaw-2026.6.10.tgz`.
+- npm integrity: `sha512-LcooND2tBQw8A+kc1Ujltu3lg30bJ0w7XaeRy7eYzobb8BBdcW6DOGbwJL4vpj1vl9+gjRceOtlh5nh9OARcug==`.
+- NemoClaw lock: `agents/openclaw/openclaw-runtime/package-lock.json` (npm lockfile version 3, 306 package entries).
+- Lock SHA-256: `a0f91c7e0b769e73c3f6119b2a6ee2dfd9bcb32b3dc69655b22696c654694d2d`.
+- Deterministic regeneration: `cd agents/openclaw/openclaw-runtime && npx --yes npm@10.9.4 install --package-lock-only --ignore-scripts --omit=dev --no-audit --no-fund --registry=https://registry.npmjs.org/ --userconfig=/dev/null`.
+- Installation boundary: both current production Docker paths validate the lock digest, exact root version/SRI/tarball, official registry origin, and sha512 metadata for every transitive entry before `npm ci --ignore-scripts --omit=dev` consumes that lock. They then bind every installed non-optional package location to the lock's exact manifest name and version, reject symlinked package roots or manifests, invoke the reviewed bundled-plugin postinstall, and only then expose the dedicated runtime through the canonical global package and binary symlinks.
+- Provenance: `openclaw-base-provenance-v1` schema 3 records the lock SHA-256 and `locked-ci+reviewed-lifecycle-v2` recipe. A final image reuses a base install only when the protected marker, installed OpenClaw version, installed mcporter version, and both lock identities match.
+- Default audit: `scripts/audit-reviewed-npm-graph.mts` validates and installs this same lock under Node `22.22.2`, verifies the installed manifest identities, runs `npm audit --omit=dev --json`, uploads the raw report, and fails at the threshold in `ci/reviewed-npm-audit.json`.
+- Regression: `test/openclaw-locked-install.test.ts` rejects lock-byte, root-version, integrity, missing-transitive-SRI, registry-origin, installed-manifest, and symlink drift and keeps both Docker install paths, CI audit ownership, base-image rebuild triggers, and provenance synchronized. The integrity-pin suite injects `npm ci` and reviewed lifecycle failures and proves neither runtime symlinks nor base provenance are published.
+
+The lock is a NemoClaw-owned review artifact materialized from the pinned official npm package. The package-internal shrinkwrap is upstream evidence, but production installation and CI audit consume the committed NemoClaw lock rather than independently resolving the transitive graph.
+
+## mcporter runtime graph
+
+This section records the reviewed `mcporter` baseline installed in the OpenClaw sandbox image.
 Update it and `agents/openclaw/mcporter-runtime/package*.json` together whenever `MCPORTER_VERSION` or its integrity value changes in `Dockerfile.base` or `Dockerfile`.
 
 - Package: `mcporter@0.7.3`
