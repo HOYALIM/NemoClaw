@@ -63,6 +63,7 @@ function makeDeps(overrides: Partial<Deps> = {}): Deps {
 describe("createSetupNimOllamaHandlers", () => {
   it("guards the selected route before systemd recovery and model preparation (#6315)", async () => {
     const events: string[] = [];
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
     const state = makeState();
     state.assertRouteCompatible = () => {
       events.push(`guard:${String(state.model)}`);
@@ -74,6 +75,7 @@ describe("createSetupNimOllamaHandlers", () => {
     };
     const { handleRunningOllamaSelection } = createSetupNimOllamaHandlers(
       makeDeps({
+        isNonInteractive: () => false,
         ensureOllamaLoopbackSystemdOverride: () => {
           events.push("systemd");
           return "unchanged";
@@ -95,6 +97,13 @@ describe("createSetupNimOllamaHandlers", () => {
       "prepare-model",
       "guard:required/model",
     ]);
+    expect(log.mock.calls.map(([message]) => message)).toContain(
+      "  Shared gateway route requires Ollama model 'required/model'.",
+    );
+    expect(log.mock.calls.map(([message]) => message)).toContain(
+      "  To use a different model for this agent, rerun with an unused NEMOCLAW_GATEWAY_PORT.",
+    );
+    log.mockRestore();
   });
 
   it("does not install Ollama when shared-gateway preflight rejects", async () => {

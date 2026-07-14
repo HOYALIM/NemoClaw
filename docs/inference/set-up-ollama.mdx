@@ -183,6 +183,12 @@ When `NEMOCLAW_MODEL` is unset, NemoClaw selects a starter model based on curren
 If a known bootstrap model does not fit, NemoClaw warns and falls back to the largest known model that does fit.
 Unknown or custom tags pass through to the Ollama runner for validation.
 
+OpenShell currently uses one inference route per gateway. If another sandbox on the same gateway already uses an Ollama model, onboarding names that required model instead of silently presenting it as a new choice. Use a separate gateway to select a different model for the new agent:
+
+```bash
+NEMOCLAW_GATEWAY_PORT=8990 NEMOCLAW_MODEL=qwen3.5:9b $$nemoclaw onboard
+```
+
 Interactive onboarding filters installed registry-known tags that do not fit current GPU memory.
 If no installed known tag fits, NemoClaw displays starter choices and warns when even the smallest tag might not fit.
 After a model fails validation, NemoClaw excludes it from the next installed-model menu.
