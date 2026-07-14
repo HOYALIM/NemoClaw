@@ -106,6 +106,35 @@ describe("createSetupNimOllamaHandlers", () => {
     log.mockRestore();
   });
 
+  it("keeps shared-route guidance silent in non-interactive mode (#6758)", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const selectModel = vi.fn(async () => ({
+      outcome: "selected" as const,
+      model: "required/model",
+      allowToolsIncompatible: false,
+    }));
+    const state = makeState();
+    state.assertRouteCompatible = () => ({
+      requiredModel: "required/model",
+      requiredEndpointUrl: null,
+      requiredInferenceApi: null,
+    });
+    const { handleRunningOllamaSelection } = createSetupNimOllamaHandlers(
+      makeDeps({ selectAndValidateOllamaModel: selectModel }),
+    );
+
+    await handleRunningOllamaSelection(null, "required/model", null, true, state);
+
+    expect(selectModel.mock.calls[0]?.[2].lockedModel).toBe("required/model");
+    expect(log).not.toHaveBeenCalledWith(
+      "  Shared gateway route requires Ollama model 'required/model'.",
+    );
+    expect(log).not.toHaveBeenCalledWith(
+      "  To use a different model for this agent, rerun with an unused NEMOCLAW_GATEWAY_PORT.",
+    );
+    log.mockRestore();
+  });
+
   it("does not install Ollama when shared-gateway preflight rejects", async () => {
     const state = makeState();
     state.assertRouteCompatible = () => {
