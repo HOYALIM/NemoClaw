@@ -197,10 +197,14 @@ function compileConfigSchema(
   repoRelative: string,
   ajv = new Ajv({ allErrors: true, strict: false, $data: true }),
 ) {
+  const schema = loadSchema(repoRelative) as { $id?: string };
+  if (schema.$id === NETWORK_POLICY_SCHEMA_ID) {
+    return ajv.getSchema(NETWORK_POLICY_SCHEMA_ID) ?? ajv.compile(schema);
+  }
   if (!ajv.getSchema(NETWORK_POLICY_SCHEMA_ID)) {
     ajv.addSchema(loadSchema(NETWORK_POLICY_SCHEMA));
   }
-  return ajv.compile(loadSchema(repoRelative));
+  return ajv.compile(schema);
 }
 
 type ValidationParams = { additionalProperty?: string; unevaluatedProperty?: string };

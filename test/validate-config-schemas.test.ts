@@ -256,6 +256,22 @@ describe("config validation target discovery", () => {
   });
 });
 
+describe("network-policy.schema.json", () => {
+  it("compiles as a direct validation target", () => {
+    const validate = compileSchema("schemas/network-policy.schema.json");
+
+    expect(
+      validate({
+        test_service: {
+          name: "Test Service",
+          binaries: [{ path: "/usr/bin/node" }],
+          endpoints: [{ host: "api.example.com", port: 443 }],
+        },
+      }),
+    ).toBe(true);
+  });
+});
+
 // ── Blueprint ────────────────────────────────────────────────────────────────
 
 describe("blueprint.schema.json", () => {
