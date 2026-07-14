@@ -101,6 +101,7 @@ describe("CLI onboard compatibility", () => {
     expect(r.out).toContain("--from <Dockerfile>");
     expect(r.out).toContain("--yes");
     expect(r.out).toContain("--sandbox-gpu-device=<value>");
+    expect(r.out).toContain("--events=jsonl");
     expect(r.out).toContain(
       "Agent runtime to onboard (openclaw, hermes, langchain-deepagents-code;",
     );
@@ -144,6 +145,19 @@ describe("CLI onboard compatibility", () => {
         yes: true,
       }),
     );
+  });
+
+  it("forwards the read-only JSONL event mode through canonical onboard", async () => {
+    await OnboardCliCommand.run(["--events=jsonl"], rootDir);
+
+    expect(runOnboardAction).toHaveBeenCalledWith(expect.objectContaining({ events: "jsonl" }));
+  });
+
+  it("does not expose the canonical event stream on deprecated setup aliases", async () => {
+    await expect(SetupCliCommand.run(["--events=jsonl"], rootDir)).rejects.toThrow(
+      "Nonexistent flag: --events",
+    );
+    expect(runOnboardAction).not.toHaveBeenCalled();
   });
 
   it("lets oclif reject conflicting sandbox GPU flags", async () => {
