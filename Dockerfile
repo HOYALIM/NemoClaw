@@ -215,12 +215,14 @@ COPY scripts/patch-openclaw-chat-send.mts /usr/local/lib/nemoclaw/patch-openclaw
 COPY scripts/patch-openclaw-mcp-npx.mts /usr/local/lib/nemoclaw/patch-openclaw-mcp-npx.mts
 COPY scripts/patch-openclaw-issue-4434-diagnostics.ts /usr/local/lib/nemoclaw/patch-openclaw-issue-4434-diagnostics.ts
 COPY scripts/patch-openclaw-device-self-approval.mts /usr/local/lib/nemoclaw/patch-openclaw-device-self-approval.mts
+COPY scripts/extract-semver.sh /usr/local/lib/nemoclaw/extract-semver
 COPY scripts/verify-wechat-runtime-lock.mts /usr/local/lib/nemoclaw/verify-wechat-runtime-lock.mts
 RUN chmod 755 /usr/local/lib/nemoclaw/patch-openclaw-tool-catalog.mts \
         /usr/local/lib/nemoclaw/patch-openclaw-chat-send.mts \
         /usr/local/lib/nemoclaw/patch-openclaw-mcp-npx.mts \
         /usr/local/lib/nemoclaw/patch-openclaw-issue-4434-diagnostics.ts \
         /usr/local/lib/nemoclaw/patch-openclaw-device-self-approval.mts \
+        /usr/local/lib/nemoclaw/extract-semver \
         /usr/local/lib/nemoclaw/verify-wechat-runtime-lock.mts
 
 # Pre-install the codex-acp package so the embedded ACPx runtime can
@@ -296,7 +298,7 @@ RUN set -eu; \
     MCPORTER_LOCK_SHA256="$(sha256sum /usr/local/lib/nemoclaw/mcporter-runtime/package-lock.json | awk '{print $1}')"; \
     [ -n "$MCPORTER_LOCK_SHA256" ] \
         || { echo "ERROR: Could not hash the committed mcporter lockfile" >&2; exit 1; }; \
-    CUR_VER=$(openclaw --version 2>/dev/null | awk '{print $2}' || true); \
+    CUR_VER=$(openclaw --version 2>/dev/null | /usr/local/lib/nemoclaw/extract-semver || true); \
     CUR_VER="${CUR_VER:-0.0.0}"; \
     CUR_MCPORTER_VER=$(mcporter --version 2>/dev/null || true); \
     CUR_MCPORTER_VER="${CUR_MCPORTER_VER:-0.0.0}"; \
@@ -461,7 +463,7 @@ RUN set -eu; \
 # hadolint ignore=SC2016,DL3059,DL4006
 RUN set -eu; \
     OC_DIST=/usr/local/lib/node_modules/openclaw/dist; \
-    OC_VERSION="$(openclaw --version 2>/dev/null | awk '{print $2}' || true)"; \
+    OC_VERSION="$(openclaw --version 2>/dev/null | /usr/local/lib/nemoclaw/extract-semver || true)"; \
     OC_VERSION="${OC_VERSION:-unknown}"; \
     patch_fail() { \
         echo "ERROR: OpenClaw ${OC_VERSION} fetch-guard patch cannot classify this dist shape: $*" >&2; \
