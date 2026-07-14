@@ -363,6 +363,37 @@ describe("local inference helpers", () => {
   });
 
   it.each([
+    {
+      provider: "ollama-local",
+      body: JSON.stringify({ models: [{ name: "available\u001b]52;c;payload\u0007\nmodel" }] }),
+    },
+    {
+      provider: "vllm-local",
+      body: JSON.stringify({ data: [{ id: `available\u001b[31m${"x".repeat(180)}` }] }),
+    },
+  ])("sanitizes $provider inventory names in unavailable-model diagnostics", ({
+    provider,
+    body,
+  }) => {
+    const result = probeLocalProviderHealth(provider, {
+      model: "missing\u001b[2J\nmodel",
+      runCurlProbeImpl: () => ({
+        ok: true,
+        httpStatus: 200,
+        curlStatus: 0,
+        body,
+        stderr: "",
+        message: "HTTP 200",
+      }),
+      loadOllamaProxyTokenImpl: () => null,
+    });
+
+    expect(result?.ok).toBe(false);
+    expect(result?.detail).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+    expect(result?.detail.length).toBeLessThan(400);
+  });
+
+  it.each([
     { body: '{"data":[{"id":"served-model"}]}', expected: true },
     { body: '{"data":[{"id":"different-model"}]}', expected: false },
   ])("matches the configured vLLM model against its model inventory", ({ body, expected }) => {

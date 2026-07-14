@@ -305,6 +305,11 @@ function inventoryContainsModel(provider: string, inventory: string[], model: st
   return inventory.some((candidate) => normalizeOllamaModel(candidate) === expected);
 }
 
+function sanitizeModelNameForDisplay(value: string): string {
+  const sanitized = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+  return sanitized.length > 120 ? `${sanitized.slice(0, 117)}...` : sanitized;
+}
+
 export function validateOllamaPortConfiguration(): ValidationResult {
   if (!isWsl() && OLLAMA_PORT === OLLAMA_PROXY_PORT) {
     return {
@@ -588,6 +593,7 @@ export function probeLocalProviderHealth(
     }
     const configuredModel = options.model?.trim();
     if (configuredModel) {
+      const configuredModelDisplay = sanitizeModelNameForDisplay(configuredModel) || "<invalid>";
       const inventory = modelInventory(provider, result.body);
       if (!inventory) {
         return {
@@ -597,13 +603,19 @@ export function probeLocalProviderHealth(
           failureLabel: "unhealthy",
           detail:
             `${providerLabel} responded on ${endpoint}, but its model inventory was invalid; ` +
-            `could not verify configured model '${configuredModel}'.`,
+            `could not verify configured model '${configuredModelDisplay}'.`,
           ...attachProbeLabel,
           ...attachSubprobes,
         };
       }
       if (!inventoryContainsModel(provider, inventory, configuredModel)) {
-        const available = inventory.length > 0 ? inventory.slice(0, 5).join(", ") : "none";
+        const available =
+          inventory.length > 0
+            ? inventory
+                .slice(0, 5)
+                .map((model) => sanitizeModelNameForDisplay(model) || "<invalid>")
+                .join(", ")
+            : "none";
         return {
           ok: false,
           providerLabel,
@@ -611,7 +623,7 @@ export function probeLocalProviderHealth(
           failureLabel: "unhealthy",
           detail:
             `${providerLabel} is reachable on ${endpoint}, but configured model ` +
-            `'${configuredModel}' is unavailable (reported models: ${available}).`,
+            `'${configuredModelDisplay}' is unavailable (reported models: ${available}).`,
           ...attachProbeLabel,
           ...attachSubprobes,
         };
