@@ -31,6 +31,7 @@ type OpenAiLikeProbe = (
 import {
   assertEndpointResolvesPublic,
   type EndpointDnsLookupFn,
+  parseTrustedPrivateInferenceHosts,
 } from "../inference/endpoint-ssrf-preflight";
 import { shouldForceCompletionsApi } from "../validation";
 import { getProbeRecovery } from "../validation-recovery";
@@ -55,6 +56,8 @@ export interface InferenceSelectionValidationDeps {
   probeOpenAiLikeEndpoint?: OpenAiLikeProbe;
   /** Injectable DNS resolver for the custom-endpoint SSRF preflight (tests). */
   resolveEndpointHost?: EndpointDnsLookupFn;
+  /** Exact private endpoint hosts trusted by the operator (tests may inject this). */
+  trustedPrivateEndpointHosts?: readonly string[];
   promptValidationRecovery(
     label: string,
     recovery: ReturnType<typeof getProbeRecovery>,
@@ -124,6 +127,9 @@ export function createInferenceSelectionValidationHelpers(
   const resolveCredential = deps.getCredential ?? getCredential;
   const runAnthropicProbe = deps.probeAnthropicEndpoint ?? probeAnthropicEndpoint;
   const runOpenAiLikeProbe = deps.probeOpenAiLikeEndpoint ?? probeOpenAiLikeEndpointOptimized;
+  const trustedPrivateEndpointHosts =
+    deps.trustedPrivateEndpointHosts ??
+    parseTrustedPrivateInferenceHosts(process.env.NEMOCLAW_TRUSTED_PRIVATE_INFERENCE_HOSTS);
 
   function exitNonInteractiveValidationFailure(): never {
     process.exitCode = 1;
@@ -153,15 +159,25 @@ export function createInferenceSelectionValidationHelpers(
     credentialEnv: string | null,
     helpUrl: string | null,
   ): Promise<{ blocked: EndpointValidationResult } | { pinnedAddresses?: string[] }> {
-    // Always run the SSRF preflight. It defaults to the real dns/promises
-    // resolver; tests inject deps.resolveEndpointHost. No env-gated bypass — an
-    // ambient VITEST flag must never disable SSRF enforcement (cv review, #6293).
-    const preflight = await assertEndpointResolvesPublic(endpointUrl, deps.resolveEndpointHost);
+    // Always run the SSRF preflight. An explicit exact-host allowlist may admit
+    // an operator-owned private endpoint, but it does not skip DNS resolution,
+    // pinning, or fail-closed resolver handling (#6861).
+    const preflight = await assertEndpointResolvesPublic(endpointUrl, deps.resolveEndpointHost, {
+      trustedPrivateHosts: trustedPrivateEndpointHosts,
+    });
     // On success, carry the validated address set forward so the probe pins its
     // connection (curl --resolve) to a checked address; a second DNS lookup at
     // the probe could otherwise rebind to a private/internal address after this
     // public preflight (TOCTOU — cv review, #6293).
-    if (preflight.ok) return { pinnedAddresses: preflight.addresses };
+    if (preflight.ok) {
+      if (preflight.trustedPrivateEndpoint) {
+        console.warn(
+          "  ⚠ Using an operator-trusted private inference endpoint; keep " +
+            "NEMOCLAW_TRUSTED_PRIVATE_INFERENCE_HOSTS restricted to infrastructure you control.",
+        );
+      }
+      return { pinnedAddresses: preflight.addresses };
+    }
     const reason = preflight.reason ?? "endpoint resolves to a private/internal address";
     // A preflight failure because the host does not resolve (an unreachable /
     // non-existent endpoint) is a transport failure, not an endpoint-policy

@@ -8,6 +8,7 @@ import {
   buildResolvePinArgs,
   type EndpointDnsLookupFn,
   isOpenShellManagedHost,
+  parseTrustedPrivateInferenceHosts,
 } from "./endpoint-ssrf-preflight";
 
 const resolverTo = (address: string): EndpointDnsLookupFn =>
@@ -45,6 +46,64 @@ describe("assertEndpointResolvesPublic (#6293)", () => {
     const result = await assertEndpointResolvesPublic("http://10.0.0.1/v1", lookup);
     expect(result.ok).toBe(false);
     expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it("admits only an exact operator-trusted private hostname and pins its address (#6861)", async () => {
+    const lookup = resolverTo("10.0.0.8");
+    const result = await assertEndpointResolvesPublic("https://LLM.CORP.EXAMPLE./v1", lookup, {
+      trustedPrivateHosts: ["llm.corp.example"],
+    });
+    expect(result).toEqual({
+      ok: true,
+      addresses: ["10.0.0.8"],
+      trustedPrivateEndpoint: true,
+    });
+    expect(lookup).toHaveBeenCalledWith("llm.corp.example", { all: true });
+  });
+
+  it("does not treat a trusted hostname as a suffix or wildcard allowlist (#6861)", async () => {
+    const result = await assertEndpointResolvesPublic(
+      "https://attacker.llm.corp.example/v1",
+      resolverTo("10.0.0.8"),
+      { trustedPrivateHosts: ["llm.corp.example"] },
+    );
+    expect(result.ok).toBe(false);
+  });
+
+  it("keeps private and metadata addresses blocked when the trust list is empty (#6861)", async () => {
+    for (const address of ["10.0.0.8", "169.254.169.254"]) {
+      const result = await assertEndpointResolvesPublic(
+        "https://llm.corp.example/v1",
+        resolverTo(address),
+        { trustedPrivateHosts: [] },
+      );
+      expect(result.ok).toBe(false);
+    }
+  });
+
+  it("keeps link-local metadata blocked even when its hostname is allowlisted (#6861)", async () => {
+    const result = await assertEndpointResolvesPublic(
+      "https://metadata.corp.example/v1",
+      resolverTo("169.254.169.254"),
+      { trustedPrivateHosts: ["metadata.corp.example"] },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("169.254.169.254");
+  });
+
+  it("admits an exactly allowlisted RFC1918 IP literal without DNS (#6861)", async () => {
+    const lookup = vi.fn<EndpointDnsLookupFn>();
+    const result = await assertEndpointResolvesPublic("http://10.0.0.8/v1", lookup, {
+      trustedPrivateHosts: ["10.0.0.8"],
+    });
+    expect(result).toEqual({ ok: true, addresses: [], trustedPrivateEndpoint: true });
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it("parses and canonicalizes the private inference host allowlist (#6861)", () => {
+    expect(
+      parseTrustedPrivateInferenceHosts(" LLM.CORP.EXAMPLE.,10.0.0.8,llm.corp.example "),
+    ).toEqual(["llm.corp.example", "10.0.0.8"]);
   });
 
   it.each([
