@@ -324,6 +324,63 @@ describe("local inference helpers", () => {
     });
   });
 
+  it("requires the configured Ollama model while accepting the implicit latest tag", () => {
+    const result = probeLocalProviderHealth("ollama-local", {
+      model: "nemotron-mini",
+      runCurlProbeImpl: () => ({
+        ok: true,
+        httpStatus: 200,
+        curlStatus: 0,
+        body: '{"models":[{"name":"nemotron-mini:latest"}]}',
+        stderr: "",
+        message: "HTTP 200",
+      }),
+      loadOllamaProxyTokenImpl: () => null,
+    });
+
+    expect(result?.ok).toBe(true);
+    expect(result?.detail).toContain("reachable");
+  });
+
+  it("reports an unavailable configured Ollama model instead of daemon health", () => {
+    const result = probeLocalProviderHealth("ollama-local", {
+      model: "missing-model:latest",
+      runCurlProbeImpl: () => ({
+        ok: true,
+        httpStatus: 200,
+        curlStatus: 0,
+        body: '{"models":[{"name":"available-model:latest"}]}',
+        stderr: "",
+        message: "HTTP 200",
+      }),
+      loadOllamaProxyTokenImpl: () => null,
+    });
+
+    expect(result?.ok).toBe(false);
+    expect(result?.failureLabel).toBe("unhealthy");
+    expect(result?.detail).toContain("missing-model:latest");
+    expect(result?.detail).toContain("available-model:latest");
+  });
+
+  it.each([
+    { body: '{"data":[{"id":"served-model"}]}', expected: true },
+    { body: '{"data":[{"id":"different-model"}]}', expected: false },
+  ])("matches the configured vLLM model against its model inventory", ({ body, expected }) => {
+    const result = probeLocalProviderHealth("vllm-local", {
+      model: "served-model",
+      runCurlProbeImpl: () => ({
+        ok: true,
+        httpStatus: 200,
+        curlStatus: 0,
+        body,
+        stderr: "",
+        message: "HTTP 200",
+      }),
+    });
+
+    expect(result?.ok).toBe(expected);
+  });
+
   it("reports a clear local provider outage when the host probe cannot connect", () => {
     const result = probeLocalProviderHealth("ollama-local", {
       runCurlProbeImpl: () => ({

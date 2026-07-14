@@ -228,6 +228,8 @@ export interface LocalProviderHealthStatus {
 }
 
 export interface LocalProviderHealthProbeOptions {
+  /** Configured runtime model that must be present in the provider inventory. */
+  model?: string | null;
   runCurlProbeImpl?: (argv: string[], opts?: CurlProbeOptions) => CurlProbeResult;
   /**
    * Lets callers that perform their own Ollama auth-proxy check avoid the
@@ -275,6 +277,32 @@ function isValidOllamaTagsResponseBody(body: string): boolean {
   } catch {
     return false;
   }
+}
+
+function modelInventory(provider: string, body: string): string[] | null {
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    const entries = provider === "ollama-local" ? parsed.models : parsed.data;
+    if (!Array.isArray(entries)) return null;
+    return entries.flatMap((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+      const record = entry as Record<string, unknown>;
+      const values = provider === "ollama-local" ? [record.name, record.model] : [record.id];
+      return values.filter((value): value is string => typeof value === "string" && value !== "");
+    });
+  } catch {
+    return null;
+  }
+}
+
+function normalizeOllamaModel(value: string): string {
+  return value.endsWith(":latest") ? value.slice(0, -":latest".length) : value;
+}
+
+function inventoryContainsModel(provider: string, inventory: string[], model: string): boolean {
+  if (provider !== "ollama-local") return inventory.includes(model);
+  const expected = normalizeOllamaModel(model);
+  return inventory.some((candidate) => normalizeOllamaModel(candidate) === expected);
 }
 
 export function validateOllamaPortConfiguration(): ValidationResult {
@@ -557,6 +585,37 @@ export function probeLocalProviderHealth(
         ...attachProbeLabel,
         ...attachSubprobes,
       };
+    }
+    const configuredModel = options.model?.trim();
+    if (configuredModel) {
+      const inventory = modelInventory(provider, result.body);
+      if (!inventory) {
+        return {
+          ok: false,
+          providerLabel,
+          endpoint,
+          failureLabel: "unhealthy",
+          detail:
+            `${providerLabel} responded on ${endpoint}, but its model inventory was invalid; ` +
+            `could not verify configured model '${configuredModel}'.`,
+          ...attachProbeLabel,
+          ...attachSubprobes,
+        };
+      }
+      if (!inventoryContainsModel(provider, inventory, configuredModel)) {
+        const available = inventory.length > 0 ? inventory.slice(0, 5).join(", ") : "none";
+        return {
+          ok: false,
+          providerLabel,
+          endpoint,
+          failureLabel: "unhealthy",
+          detail:
+            `${providerLabel} is reachable on ${endpoint}, but configured model ` +
+            `'${configuredModel}' is unavailable (reported models: ${available}).`,
+          ...attachProbeLabel,
+          ...attachSubprobes,
+        };
+      }
     }
     return {
       ok: true,
