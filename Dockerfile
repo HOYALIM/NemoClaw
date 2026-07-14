@@ -298,8 +298,10 @@ RUN set -eu; \
     MCPORTER_LOCK_SHA256="$(sha256sum /usr/local/lib/nemoclaw/mcporter-runtime/package-lock.json | awk '{print $1}')"; \
     [ -n "$MCPORTER_LOCK_SHA256" ] \
         || { echo "ERROR: Could not hash the committed mcporter lockfile" >&2; exit 1; }; \
-    CUR_VER=$(openclaw --version 2>/dev/null | /usr/local/lib/nemoclaw/extract-semver || true); \
-    CUR_VER="${CUR_VER:-0.0.0}"; \
+    CUR_VER_OUTPUT="$(openclaw --version 2>/dev/null)" \
+        || { echo "ERROR: Could not execute openclaw --version" >&2; exit 1; }; \
+    CUR_VER="$(printf '%s\n' "$CUR_VER_OUTPUT" | /usr/local/lib/nemoclaw/extract-semver openclaw)" \
+        || { echo "ERROR: Could not parse OpenClaw version output" >&2; exit 1; }; \
     CUR_MCPORTER_VER=$(mcporter --version 2>/dev/null || true); \
     CUR_MCPORTER_VER="${CUR_MCPORTER_VER:-0.0.0}"; \
     OPENCLAW_PROVENANCE_PATH=/usr/local/share/nemoclaw/openclaw-base-provenance-v1; \
@@ -463,8 +465,10 @@ RUN set -eu; \
 # hadolint ignore=SC2016,DL3059,DL4006
 RUN set -eu; \
     OC_DIST=/usr/local/lib/node_modules/openclaw/dist; \
-    OC_VERSION="$(openclaw --version 2>/dev/null | /usr/local/lib/nemoclaw/extract-semver || true)"; \
-    OC_VERSION="${OC_VERSION:-unknown}"; \
+    OC_VERSION_OUTPUT="$(openclaw --version 2>/dev/null)" \
+        || { echo "ERROR: Could not execute openclaw --version" >&2; exit 1; }; \
+    OC_VERSION="$(printf '%s\n' "$OC_VERSION_OUTPUT" | /usr/local/lib/nemoclaw/extract-semver openclaw)" \
+        || { echo "ERROR: Could not parse OpenClaw version output" >&2; exit 1; }; \
     patch_fail() { \
         echo "ERROR: OpenClaw ${OC_VERSION} fetch-guard patch cannot classify this dist shape: $*" >&2; \
         echo "       Inspect ${OC_DIST} and update the Dockerfile patch rules for this OpenClaw layout." >&2; \

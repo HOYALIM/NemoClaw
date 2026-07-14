@@ -207,10 +207,10 @@ async function verifyGatewayInSandbox(
  * Retrieve the gateway version from inside the sandbox.
  */
 function fetchGatewayVersion(sandboxName: string, deps: VerifyDeploymentDeps): string | null {
-  const script = "openclaw --version 2>/dev/null || true";
+  const script = "openclaw --version 2>/dev/null";
   const result = deps.executeSandboxCommand(sandboxName, script);
-  if (!result || !result.stdout.trim()) return null;
-  return parseVersionFromText(result.stdout);
+  if (!result || result.status !== 0 || !result.stdout.trim()) return null;
+  return parseVersionFromText(result.stdout, "openclaw --version");
 }
 
 type InferenceRouteStatus = "ok" | "unreachable" | "unhealthy";
