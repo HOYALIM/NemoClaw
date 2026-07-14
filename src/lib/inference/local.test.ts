@@ -394,6 +394,55 @@ describe("local inference helpers", () => {
   });
 
   it.each([
+    {
+      provider: "ollama-local",
+      body: "not-json",
+      expectedDetail: "not a valid /api/tags response",
+    },
+    {
+      provider: "ollama-local",
+      body: '{"data":[]}',
+      expectedDetail: "not a valid /api/tags response",
+    },
+    {
+      provider: "vllm-local",
+      body: "not-json",
+      expectedDetail: "could not verify configured model",
+    },
+    {
+      provider: "vllm-local",
+      body: "{}",
+      expectedDetail: "could not verify configured model",
+    },
+    {
+      provider: "vllm-local",
+      body: '{"models":[]}',
+      expectedDetail: "could not verify configured model",
+    },
+  ])("fails closed for an invalid $provider configured-model inventory", ({
+    provider,
+    body,
+    expectedDetail,
+  }) => {
+    const result = probeLocalProviderHealth(provider, {
+      model: "configured-model",
+      runCurlProbeImpl: () => ({
+        ok: true,
+        httpStatus: 200,
+        curlStatus: 0,
+        body,
+        stderr: "",
+        message: "HTTP 200",
+      }),
+      loadOllamaProxyTokenImpl: () => null,
+    });
+
+    expect(result?.ok).toBe(false);
+    expect(result?.failureLabel).toBe("unhealthy");
+    expect(result?.detail).toContain(expectedDetail);
+  });
+
+  it.each([
     { body: '{"data":[{"id":"served-model"}]}', expected: true },
     { body: '{"data":[{"id":"different-model"}]}', expected: false },
   ])("matches the configured vLLM model against its model inventory", ({ body, expected }) => {
