@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: Dependencies / Candidate Compatibility
-run-name: "Candidate ${{ inputs.component }} ${{ inputs.candidate }} at ${{ inputs.nemoclaw_ref }}"
+name: Dependencies / OpenShell Candidate Compatibility
+run-name: "OpenShell candidate ${{ inputs.candidate }} at ${{ inputs.nemoclaw_ref }}"
 
 on:
   workflow_dispatch:
@@ -17,11 +17,8 @@ on:
         type: choice
         options:
           - openshell
-          - openclaw
-          - hermes
-          - dcode
       candidate:
-        description: Exact official version, or vX.Y.Z release tag for Hermes.
+        description: Exact official OpenShell version or vX.Y.Z release tag.
         required: true
         type: string
 
@@ -164,12 +161,13 @@ jobs:
         continue-on-error: true
         env:
           LANE: ${{ matrix.lane }}
+          RESOLUTION_ID: ${{ needs.resolve.outputs.resolution_id }}
         shell: bash
         run: |
           set -euo pipefail
           node --experimental-strip-types controller/tools/candidate-compat.mts materialize \
             --receipt candidate-input/candidate-receipt.json \
-            --resolution-id "${{ needs.resolve.outputs.resolution_id }}" \
+            --resolution-id "$RESOLUTION_ID" \
             --directory "${RUNNER_TEMP}/candidate-runtime" \
             --output "candidate-observed-${LANE}.json" \
             --github-env "$GITHUB_ENV" 2>&1 | tee "candidate-materialize-${LANE}.log"
@@ -185,40 +183,13 @@ jobs:
         run: |
           set -euo pipefail
           exec > >(tee "candidate-lane-${LANE}.log") 2>&1
-          case "$LANE" in
-            source-unit)
-              npx vitest run --project cli
-              ;;
-            integration)
-              npm run clean:cli
-              npm run build:cli
-              npx vitest run --project integration
-              ;;
-            installer)
-              npx vitest run --project installer-integration
-              ;;
-            package-contract)
-              npm ci --prefix nemoclaw --ignore-scripts
-              npm run clean:cli
-              npm --prefix nemoclaw run clean
-              npm run build:cli
-              npm --prefix nemoclaw run build
-              npx vitest run --project package-contract
-              ;;
-            plugin)
-              npm ci --prefix nemoclaw --ignore-scripts
-              npx vitest run --project plugin
-              ;;
-            e2e-support)
-              npx vitest run --project e2e-support
-              ;;
-            *)
-              echo "::error::untrusted lane id: $LANE"
-              exit 1
-              ;;
-          esac
+          [[ "$LANE" == installer ]] || { echo "::error::untrusted lane id: $LANE"; exit 1; }
+          "$OPENSHELL_BIN" --version
+          "$OPENSHELL_GATEWAY_BIN" --version
+          "$NEMOCLAW_OPENSHELL_SANDBOX_BIN" --version
+          npx vitest run --project installer-integration
 
-      - name: Record lane result
+      - name: Record receipt-bound lane result
         if: ${{ always() }}
         env:
           CANDIDATE_OUTCOME: ${{ steps.candidate.outcome }}
@@ -228,24 +199,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          conclusion=failure
-          if [[ "$CANDIDATE_OUTCOME" == success && "$LANE_OUTCOME" == success ]]; then
-            conclusion=success
-          fi
           mkdir -p candidate-results
-          CONCLUSION="$conclusion" node -e '
-            const fs = require("node:fs");
-            const observedPath = `candidate-observed-${process.env.LANE}.json`;
-            const observed = fs.existsSync(observedPath) ? JSON.parse(fs.readFileSync(observedPath, "utf8")) : {};
-            const result = {
-              conclusion: process.env.CONCLUSION,
-              lane: process.env.LANE,
-              observedOutput: observed.observedOutput,
-              observedVersion: observed.observedVersion,
-              resolutionId: process.env.RESOLUTION_ID,
-            };
-            fs.writeFileSync(`candidate-results/${process.env.LANE}.json`, JSON.stringify(result) + "\n", {mode: 0o600});
-          '
+          if [[ "$CANDIDATE_OUTCOME" == success && "$LANE_OUTCOME" == success ]]; then
+            node --experimental-strip-types controller/tools/candidate-compat.mts verify-invocations \
+              --receipt candidate-input/candidate-receipt.json \
+              --resolution-id "$RESOLUTION_ID" \
+              --log "$NEMOCLAW_CANDIDATE_INVOCATION_LOG" \
+              --lane "$LANE" \
+              --output "candidate-results/${LANE}.json"
+          else
+            LANE_NAME="$LANE" node -e '
+              const fs = require("node:fs");
+              fs.writeFileSync(`candidate-results/${process.env.LANE_NAME}.json`, JSON.stringify({
+                conclusion: "failure",
+                lane: process.env.LANE_NAME,
+                resolutionId: process.env.RESOLUTION_ID,
+              }) + "\n", {mode: 0o600});
+            '
+          fi
 
       - name: Upload lane evidence
         if: ${{ always() }}
@@ -264,11 +235,129 @@ jobs:
         if: ${{ always() && (steps.candidate.outcome != 'success' || steps.lane.outcome != 'success') }}
         run: exit 1
 
+  live:
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out trusted compatibility controller
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          path: controller
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out resolved NemoClaw commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.resolve.outputs.nemoclaw_sha }}
+          path: candidate-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: candidate-source/package-lock.json
+
+      - name: Install repository dependencies
+        working-directory: candidate-source
+        run: npm ci --ignore-scripts
+
+      - name: Download immutable resolution and plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: candidate-resolution-${{ needs.resolve.outputs.resolution_id }}
+          path: candidate-input
+
+      - id: candidate
+        name: Materialize verified OpenShell runtime
+        continue-on-error: true
+        env:
+          RESOLUTION_ID: ${{ needs.resolve.outputs.resolution_id }}
+        run: |
+          set -euo pipefail
+          node --experimental-strip-types controller/tools/candidate-compat.mts materialize \
+            --receipt candidate-input/candidate-receipt.json \
+            --resolution-id "$RESOLUTION_ID" \
+            --directory "${RUNNER_TEMP}/candidate-runtime" \
+            --output candidate-live-observed.json \
+            --github-env "$GITHUB_ENV"
+
+      - id: live_test
+        name: Run OpenShell gateway auth contract against candidate
+        if: ${{ steps.candidate.outcome == 'success' }}
+        continue-on-error: true
+        working-directory: candidate-source
+        env:
+          DOCKER_GRPC_PROBE_IMAGE: node:22-trixie-slim@sha256:2d9f5c76c8f4dd36e8f253bee5d828a83a6c09f36188f0b0414325232e0b175d
+          E2E_ARTIFACT_DIR: ${{ github.workspace }}/candidate-source/e2e-artifacts/live/openshell-gateway-auth-contract
+          E2E_JOB: "1"
+          E2E_TARGET_ID: openshell-gateway-auth-contract
+          NEMOCLAW_NON_INTERACTIVE: "1"
+          NEMOCLAW_RUN_LIVE_E2E: "1"
+        run: |
+          set -euo pipefail
+          npm run build:cli
+          docker pull "$DOCKER_GRPC_PROBE_IMAGE"
+          "$OPENSHELL_GATEWAY_BIN" --version
+          npx vitest run --project e2e-live \
+            test/e2e/live/openshell-gateway-auth-source-contract.test.ts \
+            --silent=false --reporter=default --reporter=test/e2e/risk-signal-reporter.ts
+
+      - name: Record receipt-bound live result
+        if: ${{ always() }}
+        env:
+          CANDIDATE_OUTCOME: ${{ steps.candidate.outcome }}
+          LANE_OUTCOME: ${{ steps.live_test.outcome }}
+          RESOLUTION_ID: ${{ needs.resolve.outputs.resolution_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p candidate-results
+          lane=live:openshell-gateway-auth-contract
+          if [[ "$CANDIDATE_OUTCOME" == success && "$LANE_OUTCOME" == success ]]; then
+            node --experimental-strip-types controller/tools/candidate-compat.mts verify-invocations \
+              --receipt candidate-input/candidate-receipt.json \
+              --resolution-id "$RESOLUTION_ID" \
+              --log "$NEMOCLAW_CANDIDATE_INVOCATION_LOG" \
+              --lane "$lane" \
+              --output candidate-results/live-openshell-gateway-auth-contract.json
+          else
+            LANE_NAME="$lane" node -e '
+              const fs = require("node:fs");
+              fs.writeFileSync("candidate-results/live-openshell-gateway-auth-contract.json", JSON.stringify({
+                conclusion: "failure",
+                lane: process.env.LANE_NAME,
+                resolutionId: process.env.RESOLUTION_ID,
+              }) + "\n", {mode: 0o600});
+            '
+          fi
+
+      - name: Upload live evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-result-${{ needs.resolve.outputs.resolution_id }}-live-openshell-gateway-auth-contract
+          path: |
+            candidate-results/live-openshell-gateway-auth-contract.json
+            candidate-live-observed.json
+            candidate-source/e2e-artifacts/live/openshell-gateway-auth-contract/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce live result
+        if: ${{ always() && (steps.candidate.outcome != 'success' || steps.live_test.outcome != 'success') }}
+        run: exit 1
+
   evidence:
     if: ${{ always() && needs.resolve.result == 'success' }}
     needs:
       - resolve
       - deterministic
+      - live
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -321,7 +410,7 @@ jobs:
             console.log(`| \`${lane.id}\` | ${lane.status} | ${results.get(lane.id) ?? lane.reason} |`);
           }
           for (const lane of evidence.plan.live) {
-            console.log(`| \`e2e:${lane.id}\` | ${lane.status} | ${lane.reason} |`);
+            console.log(`| \`e2e:${lane.id}\` | ${lane.status} | ${results.get(`live:${lane.id}`) ?? lane.reason} |`);
           }
           NODE
 
@@ -340,4 +429,5 @@ jobs:
       - name: Enforce aggregate result
         env:
           DETERMINISTIC_RESULT: ${{ needs.deterministic.result }}
-        run: test "$DETERMINISTIC_RESULT" = success
+          LIVE_RESULT: ${{ needs.live.result }}
+        run: test "$DETERMINISTIC_RESULT" = success && test "$LIVE_RESULT" = success

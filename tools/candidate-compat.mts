@@ -7,14 +7,15 @@ import { chmod, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const COMPONENTS = ["openshell", "openclaw", "hermes", "dcode"] as const;
+export const COMPONENTS = ["openshell"] as const;
 export type CandidateComponent = (typeof COMPONENTS)[number];
 
 export type Artifact = {
   digest: string;
-  digestAlgorithm: "sha256" | "sha512";
-  kind: "archive" | "npm" | "wheel";
+  digestAlgorithm: "sha256";
+  kind: "archive";
   name: string;
+  role: "cli" | "gateway" | "sandbox";
   url: string;
 };
 
@@ -26,7 +27,6 @@ export type CandidateReceipt = {
   requestedCandidate: string;
   resolutionId: string;
   resolvedCandidate: string;
-  resolvedCommit?: string;
   schemaVersion: 1;
 };
 
@@ -41,14 +41,14 @@ export type CandidatePlan = {
     id: string;
     reason: string;
     selector: "job" | "target";
-    status: "skipped";
+    status: "selected" | "skipped";
   }>;
   schemaVersion: 1;
 };
 
 type LaneResult = {
   conclusion: "failure" | "success";
-  lane: DeterministicLane;
+  lane: string;
   observedOutput?: string;
   observedVersion?: string;
   resolutionId: string;
@@ -65,16 +65,16 @@ type DeterministicLane =
 
 const FULL_SHA = /^[a-f0-9]{40}$/;
 const VERSION = /^[0-9]+(?:\.[0-9]+){2}(?:[-+][0-9A-Za-z.-]+)?$/;
-const HERMES_TAG = /^v[0-9]+(?:\.[0-9]+){2}$/;
 const DIGEST = /^[a-f0-9]+$/;
 const OFFICIAL_HOSTS = new Set([
   "api.github.com",
   "codeload.github.com",
-  "files.pythonhosted.org",
   "github.com",
-  "registry.npmjs.org",
 ]);
-const DOWNLOAD_HOSTS = new Set([...OFFICIAL_HOSTS, "release-assets.githubusercontent.com"]);
+const DOWNLOAD_HOSTS = new Set([
+  ...OFFICIAL_HOSTS,
+  "release-assets.githubusercontent.com",
+]);
 const MAX_DOWNLOAD_REDIRECTS = 5;
 const ALL_LANES: DeterministicLane[] = [
   "source-unit",
@@ -85,27 +85,18 @@ const ALL_LANES: DeterministicLane[] = [
   "e2e-support",
 ];
 
-const SELECTED_LANES: Record<CandidateComponent, ReadonlySet<DeterministicLane>> = {
-  openshell: new Set(["source-unit", "integration", "installer", "e2e-support"]),
-  openclaw: new Set(["source-unit", "integration", "package-contract", "plugin", "e2e-support"]),
-  hermes: new Set(["source-unit", "integration", "e2e-support"]),
-  dcode: new Set(["source-unit", "integration", "e2e-support"]),
+const SELECTED_LANES: Record<
+  CandidateComponent,
+  ReadonlySet<DeterministicLane>
+> = {
+  openshell: new Set(["installer"]),
 };
 
 const LIVE_SELECTORS: Record<
   CandidateComponent,
   ReadonlyArray<{ id: string; selector: "job" | "target" }>
 > = {
-  openshell: [
-    { id: "full-e2e", selector: "job" },
-    { id: "openshell-gateway-auth-contract", selector: "job" },
-  ],
-  openclaw: [
-    { id: "full-e2e", selector: "job" },
-    { id: "openclaw-skill-cli", selector: "job" },
-  ],
-  hermes: [{ id: "hermes-e2e", selector: "job" }],
-  dcode: [{ id: "ubuntu-repo-cloud-langchain-deepagents-code", selector: "target" }],
+  openshell: [{ id: "openshell-gateway-auth-contract", selector: "job" }],
 };
 
 function stableJson(value: unknown): string {
@@ -113,7 +104,7 @@ function stableJson(value: unknown): string {
   if (value && typeof value === "object") {
     return `{${Object.entries(value as Record<string, unknown>)
       .filter(([, item]) => item !== undefined)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
       .join(",")}}`;
   }
@@ -130,15 +121,18 @@ function assertComponent(value: string): asserts value is CandidateComponent {
   }
 }
 
-function assertCandidate(component: CandidateComponent, candidate: string): void {
-  if (candidate.length > 128 || candidate.includes("/") || /[\x00-\x20\x7f]/u.test(candidate)) {
+function assertCandidate(
+  component: CandidateComponent,
+  candidate: string,
+): void {
+  if (
+    candidate.length > 128 ||
+    candidate.includes("/") ||
+    /[\x00-\x20\x7f]/u.test(candidate)
+  ) {
     throw new Error("candidate contains unsafe characters");
   }
-  if (component === "hermes") {
-    if (!HERMES_TAG.test(candidate)) throw new Error("Hermes candidate must match vX.Y.Z");
-    return;
-  }
-  const normalized = component === "openshell" ? candidate.replace(/^v/u, "") : candidate;
+  const normalized = candidate.replace(/^v/u, "");
   if (!VERSION.test(normalized)) {
     throw new Error(`${component} candidate must be an exact version`);
   }
@@ -147,10 +141,14 @@ function assertCandidate(component: CandidateComponent, candidate: string): void
 function assertOfficialUrl(raw: string, expectedPathPrefix: string): URL {
   const url = new URL(raw);
   if (url.protocol !== "https:" || !OFFICIAL_HOSTS.has(url.hostname)) {
-    throw new Error(`candidate artifact is not on an approved official HTTPS host: ${raw}`);
+    throw new Error(
+      `candidate artifact is not on an approved official HTTPS host: ${raw}`,
+    );
   }
   if (!url.pathname.startsWith(expectedPathPrefix)) {
-    throw new Error(`candidate artifact has unexpected official-source path: ${raw}`);
+    throw new Error(
+      `candidate artifact has unexpected official-source path: ${raw}`,
+    );
   }
   if (url.username || url.password || url.search || url.hash) {
     throw new Error(
@@ -160,7 +158,11 @@ function assertOfficialUrl(raw: string, expectedPathPrefix: string): URL {
   return url;
 }
 
-async function fetchJson(fetcher: FetchLike, url: string, token?: string): Promise<unknown> {
+async function fetchJson(
+  fetcher: FetchLike,
+  url: string,
+  token?: string,
+): Promise<unknown> {
   const response = await fetcher(url, {
     headers: {
       Accept: "application/vnd.github+json, application/json",
@@ -169,7 +171,9 @@ async function fetchJson(fetcher: FetchLike, url: string, token?: string): Promi
     redirect: "error",
   });
   if (!response.ok)
-    throw new Error(`official metadata request failed (${response.status}): ${url}`);
+    throw new Error(
+      `official metadata request failed (${response.status}): ${url}`,
+    );
   return response.json();
 }
 
@@ -180,7 +184,11 @@ function record(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function stringField(value: Record<string, unknown>, key: string, label: string): string {
+function stringField(
+  value: Record<string, unknown>,
+  key: string,
+  label: string,
+): string {
   const field = value[key];
   if (typeof field !== "string" || field.length === 0) {
     throw new Error(`${label}.${key} must be a non-empty string`);
@@ -190,10 +198,13 @@ function stringField(value: Record<string, unknown>, key: string, label: string)
 
 function artifact(input: Artifact, expectedPathPrefix: string): Artifact {
   const url = assertOfficialUrl(input.url, expectedPathPrefix);
-  if (!DIGEST.test(input.digest)) throw new Error(`${input.name} has an invalid digest`);
-  const expectedLength = input.digestAlgorithm === "sha256" ? 64 : 128;
+  if (!DIGEST.test(input.digest))
+    throw new Error(`${input.name} has an invalid digest`);
+  const expectedLength = 64;
   if (input.digest.length !== expectedLength) {
-    throw new Error(`${input.name} has an invalid ${input.digestAlgorithm} digest`);
+    throw new Error(
+      `${input.name} has an invalid ${input.digestAlgorithm} digest`,
+    );
   }
   return { ...input, url: url.href };
 }
@@ -202,7 +213,9 @@ async function resolveOpenShell(
   candidate: string,
   fetcher: FetchLike,
   token?: string,
-): Promise<Omit<CandidateReceipt, "nemoclawSha" | "resolutionId" | "schemaVersion">> {
+): Promise<
+  Omit<CandidateReceipt, "nemoclawSha" | "resolutionId" | "schemaVersion">
+> {
   const version = candidate.replace(/^v/u, "");
   const tag = `v${version}`;
   const metadata = record(
@@ -213,200 +226,65 @@ async function resolveOpenShell(
     ),
     "OpenShell release",
   );
-  if (metadata.draft === true) throw new Error("OpenShell candidate release is a draft");
+  if (metadata.draft === true)
+    throw new Error("OpenShell candidate release is a draft");
   if (stringField(metadata, "tag_name", "OpenShell release") !== tag) {
-    throw new Error("OpenShell release tag does not match the requested candidate");
+    throw new Error(
+      "OpenShell release tag does not match the requested candidate",
+    );
   }
-  if (!Array.isArray(metadata.assets)) throw new Error("OpenShell release assets must be an array");
-  const name = "openshell-x86_64-unknown-linux-musl.tar.gz";
-  const assetMetadata = metadata.assets
-    .map((item) => record(item, "OpenShell asset"))
-    .find((item) => item.name === name);
-  if (!assetMetadata) throw new Error(`OpenShell release is missing ${name}`);
-  const digest = stringField(assetMetadata, "digest", "OpenShell asset");
-  if (!digest.startsWith("sha256:"))
-    throw new Error("OpenShell asset is missing SHA-256 provenance");
+  if (!Array.isArray(metadata.assets))
+    throw new Error("OpenShell release assets must be an array");
+  const requiredAssets = [
+    {
+      name: "openshell-x86_64-unknown-linux-musl.tar.gz",
+      role: "cli" as const,
+    },
+    {
+      name: "openshell-gateway-x86_64-unknown-linux-gnu.tar.gz",
+      role: "gateway" as const,
+    },
+    {
+      name: "openshell-sandbox-x86_64-unknown-linux-gnu.tar.gz",
+      role: "sandbox" as const,
+    },
+  ];
+  const releaseAssets = metadata.assets.map((item) =>
+    record(item, "OpenShell asset"),
+  );
+  const artifacts = requiredAssets.map(({ name, role }) => {
+    const assetMetadata = releaseAssets.find((item) => item.name === name);
+    if (!assetMetadata) throw new Error(`OpenShell release is missing ${name}`);
+    const digest = stringField(
+      assetMetadata,
+      "digest",
+      `OpenShell asset ${name}`,
+    );
+    if (!digest.startsWith("sha256:")) {
+      throw new Error(`OpenShell asset ${name} is missing SHA-256 provenance`);
+    }
+    return artifact(
+      {
+        digest: digest.slice("sha256:".length),
+        digestAlgorithm: "sha256",
+        kind: "archive",
+        name,
+        role,
+        url: stringField(
+          assetMetadata,
+          "browser_download_url",
+          `OpenShell asset ${name}`,
+        ),
+      },
+      `/NVIDIA/OpenShell/releases/download/${tag}/`,
+    );
+  });
   return {
-    artifacts: [
-      artifact(
-        {
-          digest: digest.slice("sha256:".length),
-          digestAlgorithm: "sha256",
-          kind: "archive",
-          name,
-          url: stringField(assetMetadata, "browser_download_url", "OpenShell asset"),
-        },
-        `/NVIDIA/OpenShell/releases/download/${tag}/`,
-      ),
-    ],
+    artifacts,
     component: "openshell",
     officialSource: `github:NVIDIA/OpenShell:release:${String(metadata.id)}`,
     requestedCandidate: candidate,
     resolvedCandidate: version,
-  };
-}
-
-function npmArtifact(metadata: Record<string, unknown>, packageName: string): Artifact {
-  const dist = record(metadata.dist, `${packageName} dist`);
-  const integrity = stringField(dist, "integrity", `${packageName} dist`);
-  if (!integrity.startsWith("sha512-"))
-    throw new Error(`${packageName} requires sha512 npm integrity`);
-  let digest: string;
-  try {
-    digest = Buffer.from(integrity.slice("sha512-".length), "base64").toString("hex");
-  } catch {
-    throw new Error(`${packageName} has invalid npm integrity`);
-  }
-  return artifact(
-    {
-      digest,
-      digestAlgorithm: "sha512",
-      kind: "npm",
-      name: `${packageName}-${stringField(metadata, "version", packageName)}.tgz`,
-      url: stringField(dist, "tarball", `${packageName} dist`),
-    },
-    `/${packageName}/-/`,
-  );
-}
-
-async function resolveNpm(
-  component: "openclaw",
-  candidate: string,
-  fetcher: FetchLike,
-): Promise<Omit<CandidateReceipt, "nemoclawSha" | "resolutionId" | "schemaVersion">> {
-  const packageName = component;
-  const metadata = record(
-    await fetchJson(fetcher, `https://registry.npmjs.org/${packageName}/${candidate}`),
-    `${packageName} metadata`,
-  );
-  const resolvedCandidate = stringField(metadata, "version", `${packageName} metadata`);
-  if (resolvedCandidate !== candidate)
-    throw new Error(`${packageName} metadata resolved a different version`);
-  return {
-    artifacts: [npmArtifact(metadata, packageName)],
-    component,
-    officialSource: `npm:${packageName}@${resolvedCandidate}`,
-    requestedCandidate: candidate,
-    resolvedCandidate,
-  };
-}
-
-async function peelGitTag(fetcher: FetchLike, candidate: string, token?: string): Promise<string> {
-  let object = record(
-    record(
-      await fetchJson(
-        fetcher,
-        `https://api.github.com/repos/NousResearch/hermes-agent/git/ref/tags/${candidate}`,
-        token,
-      ),
-      "Hermes tag ref",
-    ).object,
-    "Hermes tag object",
-  );
-  for (let depth = 0; depth < 2 && object.type === "tag"; depth += 1) {
-    const tag = record(
-      await fetchJson(fetcher, stringField(object, "url", "Hermes tag object"), token),
-      "Hermes annotated tag",
-    );
-    object = record(tag.object, "Hermes annotated tag object");
-  }
-  if (object.type !== "commit") throw new Error("Hermes tag does not resolve to a commit");
-  const commit = stringField(object, "sha", "Hermes tag object");
-  if (!FULL_SHA.test(commit)) throw new Error("Hermes tag resolved an invalid commit SHA");
-  return commit;
-}
-
-async function resolveHermes(
-  candidate: string,
-  fetcher: FetchLike,
-  token?: string,
-): Promise<Omit<CandidateReceipt, "nemoclawSha" | "resolutionId" | "schemaVersion">> {
-  const release = record(
-    await fetchJson(
-      fetcher,
-      `https://api.github.com/repos/NousResearch/hermes-agent/releases/tags/${candidate}`,
-      token,
-    ),
-    "Hermes release",
-  );
-  if (release.draft === true) throw new Error("Hermes candidate release is a draft");
-  if (stringField(release, "tag_name", "Hermes release") !== candidate) {
-    throw new Error("Hermes release tag does not match the requested candidate");
-  }
-  const commit = await peelGitTag(fetcher, candidate, token);
-  const pyprojectResponse = await fetcher(
-    `https://raw.githubusercontent.com/NousResearch/hermes-agent/${commit}/pyproject.toml`,
-    { redirect: "error" },
-  );
-  if (!pyprojectResponse.ok)
-    throw new Error("failed to read Hermes package version at resolved commit");
-  const pyproject = await pyprojectResponse.text();
-  const version = pyproject.match(/^version\s*=\s*"([^"]+)"\s*$/mu)?.[1];
-  if (!version || !VERSION.test(version))
-    throw new Error("Hermes pyproject has no exact package version");
-  const npmMetadata = record(
-    await fetchJson(fetcher, `https://registry.npmjs.org/hermes-agent/${version}`),
-    "Hermes npm metadata",
-  );
-  if (stringField(npmMetadata, "version", "Hermes npm metadata") !== version) {
-    throw new Error("Hermes npm package version does not match the resolved source");
-  }
-  const wheel = await resolvePypiWheel("hermes-agent", version, fetcher);
-  return {
-    artifacts: [npmArtifact(npmMetadata, "hermes-agent"), wheel],
-    component: "hermes",
-    officialSource: `github:NousResearch/hermes-agent:release:${String(release.id)}`,
-    requestedCandidate: candidate,
-    resolvedCandidate: version,
-    resolvedCommit: commit,
-  };
-}
-
-async function resolvePypiWheel(
-  packageName: string,
-  version: string,
-  fetcher: FetchLike,
-): Promise<Artifact> {
-  const metadata = record(
-    await fetchJson(fetcher, `https://pypi.org/pypi/${packageName}/${version}/json`),
-    `${packageName} PyPI metadata`,
-  );
-  const info = record(metadata.info, `${packageName} PyPI info`);
-  if (stringField(info, "name", `${packageName} PyPI info`).toLowerCase() !== packageName) {
-    throw new Error(`PyPI returned a different package for ${packageName}`);
-  }
-  if (stringField(info, "version", `${packageName} PyPI info`) !== version) {
-    throw new Error(`PyPI resolved a different ${packageName} version`);
-  }
-  if (!Array.isArray(metadata.urls)) throw new Error(`${packageName} PyPI files must be an array`);
-  const wheel = metadata.urls
-    .map((item) => record(item, `${packageName} PyPI file`))
-    .find((item) => item.packagetype === "bdist_wheel" && item.yanked !== true);
-  if (!wheel) throw new Error(`${packageName} release has no non-yanked wheel`);
-  const digests = record(wheel.digests, `${packageName} PyPI file digests`);
-  return artifact(
-    {
-      digest: stringField(digests, "sha256", `${packageName} PyPI file digests`),
-      digestAlgorithm: "sha256",
-      kind: "wheel",
-      name: stringField(wheel, "filename", `${packageName} PyPI file`),
-      url: stringField(wheel, "url", `${packageName} PyPI file`),
-    },
-    "/packages/",
-  );
-}
-
-async function resolveDcode(
-  candidate: string,
-  fetcher: FetchLike,
-): Promise<Omit<CandidateReceipt, "nemoclawSha" | "resolutionId" | "schemaVersion">> {
-  const wheel = await resolvePypiWheel("deepagents-code", candidate, fetcher);
-  return {
-    artifacts: [wheel],
-    component: "dcode",
-    officialSource: `pypi:deepagents-code==${candidate}`,
-    requestedCandidate: candidate,
-    resolvedCandidate: candidate,
   };
 }
 
@@ -418,17 +296,15 @@ export async function resolveCandidate(input: {
   nemoclawSha: string;
 }): Promise<CandidateReceipt> {
   assertComponent(input.component);
-  if (!FULL_SHA.test(input.nemoclawSha)) throw new Error("NemoClaw ref must resolve to a full SHA");
+  if (!FULL_SHA.test(input.nemoclawSha))
+    throw new Error("NemoClaw ref must resolve to a full SHA");
   assertCandidate(input.component, input.candidate);
   const fetcher = input.fetcher ?? fetch;
-  const resolved =
-    input.component === "openshell"
-      ? await resolveOpenShell(input.candidate, fetcher, input.githubToken)
-      : input.component === "openclaw"
-        ? await resolveNpm(input.component, input.candidate, fetcher)
-        : input.component === "hermes"
-          ? await resolveHermes(input.candidate, fetcher, input.githubToken)
-          : await resolveDcode(input.candidate, fetcher);
+  const resolved = await resolveOpenShell(
+    input.candidate,
+    fetcher,
+    input.githubToken,
+  );
   const receiptWithoutId = {
     ...resolved,
     nemoclawSha: input.nemoclawSha,
@@ -442,17 +318,22 @@ export async function resolveCandidate(input: {
 
 function parseArtifact(
   value: unknown,
-  component: CandidateComponent,
   resolvedCandidate: string,
   index: number,
 ): Artifact {
   const input = record(value, `candidate artifact ${index}`);
-  const digestAlgorithm = stringField(input, "digestAlgorithm", `candidate artifact ${index}`);
-  if (digestAlgorithm !== "sha256" && digestAlgorithm !== "sha512") {
-    throw new Error(`candidate artifact ${index} has an invalid digest algorithm`);
+  const digestAlgorithm = stringField(
+    input,
+    "digestAlgorithm",
+    `candidate artifact ${index}`,
+  );
+  if (digestAlgorithm !== "sha256") {
+    throw new Error(
+      `candidate artifact ${index} has an invalid digest algorithm`,
+    );
   }
   const kind = stringField(input, "kind", `candidate artifact ${index}`);
-  if (kind !== "archive" && kind !== "npm" && kind !== "wheel") {
+  if (kind !== "archive") {
     throw new Error(`candidate artifact ${index} has an invalid kind`);
   }
   const name = stringField(input, "name", `candidate artifact ${index}`);
@@ -460,31 +341,24 @@ function parseArtifact(
     throw new Error(`candidate artifact ${index} has an unsafe name`);
   }
 
-  const expected =
-    component === "openshell"
-      ? {
-          kind: "archive",
-          name: "openshell-x86_64-unknown-linux-musl.tar.gz",
-          path: `/NVIDIA/OpenShell/releases/download/v${resolvedCandidate}/`,
-        }
-      : component === "openclaw"
-        ? {
-            kind: "npm",
-            name: `openclaw-${resolvedCandidate}.tgz`,
-            path: "/openclaw/-/",
-          }
-        : component === "hermes" && index === 0
-          ? {
-              kind: "npm",
-              name: `hermes-agent-${resolvedCandidate}.tgz`,
-              path: "/hermes-agent/-/",
-            }
-          : { kind: "wheel", name: null, path: "/packages/" };
-  if (kind !== expected.kind || (expected.name !== null && name !== expected.name)) {
-    throw new Error(`candidate artifact ${index} does not match the resolved component`);
-  }
-  if (kind === "wheel" && !/^[0-9A-Za-z_.+-]+\.whl$/u.test(name)) {
-    throw new Error(`candidate artifact ${index} has an invalid wheel name`);
+  const expected = [
+    {
+      name: "openshell-x86_64-unknown-linux-musl.tar.gz",
+      role: "cli" as const,
+    },
+    {
+      name: "openshell-gateway-x86_64-unknown-linux-gnu.tar.gz",
+      role: "gateway" as const,
+    },
+    {
+      name: "openshell-sandbox-x86_64-unknown-linux-gnu.tar.gz",
+      role: "sandbox" as const,
+    },
+  ][index];
+  if (!expected || name !== expected.name || input.role !== expected.role) {
+    throw new Error(
+      `candidate artifact ${index} does not match the resolved component`,
+    );
   }
   return artifact(
     {
@@ -492,9 +366,10 @@ function parseArtifact(
       digestAlgorithm,
       kind,
       name,
+      role: expected.role,
       url: stringField(input, "url", `candidate artifact ${index}`),
     },
-    expected.path,
+    `/NVIDIA/OpenShell/releases/download/v${resolvedCandidate}/`,
   );
 }
 
@@ -507,60 +382,53 @@ export function parseCandidateReceipt(
     throw new Error("expected candidate resolution id is invalid");
   }
   const input = record(value, "candidate receipt");
-  if (input.schemaVersion !== 1) throw new Error("candidate receipt schema version must be 1");
+  if (input.schemaVersion !== 1)
+    throw new Error("candidate receipt schema version must be 1");
   const component = stringField(input, "component", "candidate receipt");
   assertComponent(component);
-  const requestedCandidate = stringField(input, "requestedCandidate", "candidate receipt");
+  const requestedCandidate = stringField(
+    input,
+    "requestedCandidate",
+    "candidate receipt",
+  );
   assertCandidate(component, requestedCandidate);
-  const resolvedCandidate = stringField(input, "resolvedCandidate", "candidate receipt");
+  const resolvedCandidate = stringField(
+    input,
+    "resolvedCandidate",
+    "candidate receipt",
+  );
   if (!VERSION.test(resolvedCandidate)) {
     throw new Error("candidate receipt has an invalid resolved version");
   }
-  if (
-    (component === "openshell" && requestedCandidate.replace(/^v/u, "") !== resolvedCandidate) ||
-    ((component === "openclaw" || component === "dcode") &&
-      requestedCandidate !== resolvedCandidate)
-  ) {
-    throw new Error("candidate receipt resolved version does not match the request");
+  if (requestedCandidate.replace(/^v/u, "") !== resolvedCandidate) {
+    throw new Error(
+      "candidate receipt resolved version does not match the request",
+    );
   }
   const nemoclawSha = stringField(input, "nemoclawSha", "candidate receipt");
-  if (!FULL_SHA.test(nemoclawSha)) throw new Error("candidate receipt has an invalid NemoClaw SHA");
+  if (!FULL_SHA.test(nemoclawSha))
+    throw new Error("candidate receipt has an invalid NemoClaw SHA");
   if (!Array.isArray(input.artifacts))
     throw new Error("candidate receipt artifacts must be an array");
-  const expectedArtifactCount = component === "hermes" ? 2 : 1;
+  const expectedArtifactCount = 3;
   if (input.artifacts.length !== expectedArtifactCount) {
-    throw new Error(`candidate receipt for ${component} has an invalid artifact count`);
+    throw new Error(
+      `candidate receipt for ${component} has an invalid artifact count`,
+    );
   }
   const artifacts = input.artifacts.map((item, index) =>
-    parseArtifact(item, component, resolvedCandidate, index),
+    parseArtifact(item, resolvedCandidate, index),
   );
-  const officialSource = stringField(input, "officialSource", "candidate receipt");
-  const sourcePattern =
-    component === "openshell"
-      ? /^github:NVIDIA\/OpenShell:release:[1-9][0-9]*$/u
-      : component === "openclaw"
-        ? new RegExp(
-            `^npm:openclaw@${resolvedCandidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
-            "u",
-          )
-        : component === "hermes"
-          ? /^github:NousResearch\/hermes-agent:release:[1-9][0-9]*$/u
-          : new RegExp(
-              `^pypi:deepagents-code==${resolvedCandidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
-              "u",
-            );
+  const officialSource = stringField(
+    input,
+    "officialSource",
+    "candidate receipt",
+  );
+  const sourcePattern = /^github:NVIDIA\/OpenShell:release:[1-9][0-9]*$/u;
   if (!sourcePattern.test(officialSource)) {
     throw new Error("candidate receipt has an invalid official source");
   }
-  const resolvedCommitValue = input.resolvedCommit;
-  const resolvedCommit =
-    resolvedCommitValue === undefined
-      ? undefined
-      : stringField(input, "resolvedCommit", "candidate receipt");
-  if (
-    (component === "hermes" && (!resolvedCommit || !FULL_SHA.test(resolvedCommit))) ||
-    (component !== "hermes" && resolvedCommit !== undefined)
-  ) {
+  if (input.resolvedCommit !== undefined) {
     throw new Error("candidate receipt has an invalid resolved commit");
   }
   const receiptWithoutId = {
@@ -570,7 +438,6 @@ export function parseCandidateReceipt(
     officialSource,
     requestedCandidate,
     resolvedCandidate,
-    ...(resolvedCommit ? { resolvedCommit } : {}),
     schemaVersion: 1 as const,
   };
   const resolutionId = sha256(stableJson(receiptWithoutId));
@@ -578,7 +445,9 @@ export function parseCandidateReceipt(
     stringField(input, "resolutionId", "candidate receipt") !== resolutionId ||
     resolutionId !== expectedResolutionId
   ) {
-    throw new Error("candidate receipt does not match the trusted resolution id");
+    throw new Error(
+      "candidate receipt does not match the trusted resolution id",
+    );
   }
   return { ...receiptWithoutId, resolutionId };
 }
@@ -589,14 +458,18 @@ export function buildCandidatePlan(
 ): CandidatePlan {
   const selected = SELECTED_LANES[component];
   const live = LIVE_SELECTORS[component].map((entry) => {
-    const marker = entry.selector === "job" ? `  ${entry.id}:\n` : `id: "${entry.id}"`;
+    const marker =
+      entry.selector === "job" ? `  ${entry.id}:\n` : `id: "${entry.id}"`;
     if (!e2eSources.includes(marker)) {
-      throw new Error(`E2E source of truth does not declare ${entry.selector} ${entry.id}`);
+      throw new Error(
+        `E2E source of truth does not declare ${entry.selector} ${entry.id}`,
+      );
     }
     return {
       ...entry,
-      reason: "candidate injection is not yet wired into the credential-bearing E2E boundary",
-      status: "skipped" as const,
+      reason:
+        "the selected live job executes the digest-bound OpenShell gateway candidate",
+      status: "selected" as const,
     };
   });
   return {
@@ -614,15 +487,29 @@ export function buildCandidatePlan(
 }
 
 export function verifyDigest(bytes: Uint8Array, artifactValue: Artifact): void {
-  const actual = createHash(artifactValue.digestAlgorithm).update(bytes).digest("hex");
+  const actual = createHash(artifactValue.digestAlgorithm)
+    .update(bytes)
+    .digest("hex");
   if (actual !== artifactValue.digest) {
-    throw new Error(`${artifactValue.name} ${artifactValue.digestAlgorithm} mismatch`);
+    throw new Error(
+      `${artifactValue.name} ${artifactValue.digestAlgorithm} mismatch`,
+    );
   }
 }
 
-export function verifyObservedVersion(receipt: CandidateReceipt, output: string): string {
-  const escaped = receipt.resolvedCandidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  if (!new RegExp(`(^|[^0-9A-Za-z.])v?${escaped}([^0-9A-Za-z.]|$)`, "u").test(output.trim())) {
+export function verifyObservedVersion(
+  receipt: CandidateReceipt,
+  output: string,
+): string {
+  const escaped = receipt.resolvedCandidate.replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&",
+  );
+  if (
+    !new RegExp(`(^|[^0-9A-Za-z.])v?${escaped}([^0-9A-Za-z.]|$)`, "u").test(
+      output.trim(),
+    )
+  ) {
     throw new Error(
       `observed ${receipt.component} version does not match ${receipt.resolvedCandidate}: ${output.trim()}`,
     );
@@ -637,31 +524,46 @@ export function finalizeEvidence(input: {
   results: LaneResult[];
   runId: string;
 }): Record<string, unknown> {
-  if (!/^[1-9][0-9]*$/u.test(input.runId) || !/^[1-9][0-9]*$/u.test(input.attempt)) {
+  if (
+    !/^[1-9][0-9]*$/u.test(input.runId) ||
+    !/^[1-9][0-9]*$/u.test(input.attempt)
+  ) {
     throw new Error("run id and attempt must be positive integers");
   }
-  const selected = input.plan.deterministic
-    .filter((lane) => lane.status === "selected")
-    .map((lane) => lane.id)
-    .sort();
+  const selected = [
+    ...input.plan.deterministic
+      .filter((lane) => lane.status === "selected")
+      .map((lane) => lane.id),
+    ...input.plan.live
+      .filter((lane) => lane.status === "selected")
+      .map((lane) => `live:${lane.id}`),
+  ].sort();
   const actual = input.results.map((result) => result.lane).sort();
-  if (new Set(actual).size !== actual.length || stableJson(actual) !== stableJson(selected)) {
+  if (
+    new Set(actual).size !== actual.length ||
+    stableJson(actual) !== stableJson(selected)
+  ) {
     throw new Error(
-      "lane results do not account for every selected deterministic lane exactly once",
+      "lane results do not account for every selected compatibility lane exactly once",
     );
   }
   for (const result of input.results) {
     if (result.resolutionId !== input.receipt.resolutionId) {
-      throw new Error(`lane ${result.lane} used a different candidate resolution`);
+      throw new Error(
+        `lane ${result.lane} used a different candidate resolution`,
+      );
     }
     if (result.conclusion !== "success" && result.conclusion !== "failure") {
       throw new Error(`lane ${result.lane} has an invalid conclusion`);
     }
     if (
       result.conclusion === "success" &&
-      (result.observedVersion !== input.receipt.resolvedCandidate || !result.observedOutput)
+      (result.observedVersion !== input.receipt.resolvedCandidate ||
+        !result.observedOutput)
     ) {
-      throw new Error(`lane ${result.lane} has no matching observed candidate version`);
+      throw new Error(
+        `lane ${result.lane} has no matching observed candidate version`,
+      );
     }
   }
   return {
@@ -671,7 +573,9 @@ export function finalizeEvidence(input: {
       : "failure",
     plan: input.plan,
     receipt: input.receipt,
-    results: [...input.results].sort((left, right) => left.lane.localeCompare(right.lane)),
+    results: [...input.results].sort((left, right) =>
+      left.lane < right.lane ? -1 : left.lane > right.lane ? 1 : 0,
+    ),
     schemaVersion: 1,
   };
 }
@@ -688,8 +592,14 @@ function run(
     stdio: ["ignore", "pipe", "pipe"],
   });
   if (result.status !== 0) {
-    const detail = result.error?.message ?? result.stderr?.trim() ?? result.stdout?.trim() ?? "";
-    throw new Error(`${command} ${args.join(" ")} failed${detail ? `: ${detail}` : ""}`);
+    const detail =
+      result.error?.message ??
+      result.stderr?.trim() ??
+      result.stdout?.trim() ??
+      "";
+    throw new Error(
+      `${command} ${args.join(" ")} failed${detail ? `: ${detail}` : ""}`,
+    );
   }
   return result.stdout.trim();
 }
@@ -709,16 +619,24 @@ function assertDownloadUrl(raw: string): URL {
   return url;
 }
 
-async function fetchDownload(fetcher: FetchLike, rawUrl: string): Promise<Response> {
+async function fetchDownload(
+  fetcher: FetchLike,
+  rawUrl: string,
+): Promise<Response> {
   let current = assertDownloadUrl(rawUrl);
-  for (let redirectCount = 0; redirectCount <= MAX_DOWNLOAD_REDIRECTS; redirectCount += 1) {
+  for (
+    let redirectCount = 0;
+    redirectCount <= MAX_DOWNLOAD_REDIRECTS;
+    redirectCount += 1
+  ) {
     const response = await fetcher(current.href, { redirect: "manual" });
     if (![301, 302, 303, 307, 308].includes(response.status)) return response;
     if (redirectCount === MAX_DOWNLOAD_REDIRECTS) {
       throw new Error("candidate download exceeded the redirect limit");
     }
     const location = response.headers.get("location");
-    if (!location) throw new Error("candidate download redirect has no location");
+    if (!location)
+      throw new Error("candidate download redirect has no location");
     current = assertDownloadUrl(new URL(location, current).href);
   }
   throw new Error("candidate download redirect handling failed");
@@ -731,81 +649,154 @@ export async function downloadCandidateArtifact(
   fetcher: FetchLike = fetch,
 ): Promise<string> {
   const response = await fetchDownload(fetcher, artifactValue.url);
-  if (!response.ok) throw new Error(`candidate download failed (${response.status})`);
+  if (!response.ok)
+    throw new Error(`candidate download failed (${response.status})`);
   const bytes = new Uint8Array(await response.arrayBuffer());
   verifyDigest(bytes, artifactValue);
-  const extension =
-    artifactValue.kind === "archive" ? ".tar.gz" : artifactValue.kind === "npm" ? ".tgz" : ".whl";
-  const target = join(directory, `candidate-${index}${extension}`);
+  const target = join(directory, `candidate-${index}.tar.gz`);
   await writeFile(target, bytes, { mode: 0o600 });
   return target;
 }
 
-export async function materializeCandidate(receipt: CandidateReceipt, directory: string) {
+const ROLE_BINARY: Record<Artifact["role"], string> = {
+  cli: "openshell",
+  gateway: "openshell-gateway",
+  sandbox: "openshell-sandbox",
+};
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function extractCandidateBinary(
+  archive: string,
+  artifactValue: Artifact,
+  runtimeDirectory: string,
+): string {
+  const binaryName = ROLE_BINARY[artifactValue.role];
+  const members = run("tar", ["-tzf", archive]);
+  if (members !== binaryName) {
+    throw new Error(
+      `${artifactValue.name} must contain exactly one ${binaryName} binary`,
+    );
+  }
+  const listing = run("tar", ["-tvzf", archive]);
+  if (
+    listing.includes("\n") ||
+    !listing.startsWith("-") ||
+    !listing.endsWith(` ${binaryName}`)
+  ) {
+    throw new Error(
+      `${artifactValue.name} must contain one regular ${binaryName} binary`,
+    );
+  }
+  run("tar", ["-xzf", archive, "-C", runtimeDirectory, binaryName]);
+  return join(runtimeDirectory, binaryName);
+}
+
+export function verifyCandidateInvocations(input: {
+  invocationLog: string;
+  lane: string;
+  receipt: CandidateReceipt;
+}): LaneResult {
+  const entries = input.invocationLog
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const separator = line.indexOf("\t");
+      if (separator <= 0)
+        throw new Error("candidate invocation log contains a malformed entry");
+      return {
+        args: line.slice(separator + 1),
+        role: line.slice(0, separator),
+      };
+    });
+  const requiredRoles =
+    input.lane === "installer" ? ["cli", "gateway", "sandbox"] : ["gateway"];
+  if (
+    input.lane !== "installer" &&
+    input.lane !== "live:openshell-gateway-auth-contract"
+  ) {
+    throw new Error(`unsupported candidate-aware lane: ${input.lane}`);
+  }
+  for (const role of requiredRoles) {
+    if (
+      !entries.some(
+        (entry) => entry.role === role && entry.args === "--version",
+      )
+    ) {
+      throw new Error(`lane ${input.lane} did not invoke ${role} --version`);
+    }
+  }
+  if (
+    input.lane === "live:openshell-gateway-auth-contract" &&
+    !entries.some(
+      (entry) => entry.role === "gateway" && entry.args !== "--version",
+    )
+  ) {
+    throw new Error("live gateway lane did not start the candidate runtime");
+  }
+  return {
+    conclusion: "success",
+    lane: input.lane,
+    observedOutput: entries
+      .map((entry) => `${entry.role} ${entry.args}`)
+      .join("\n"),
+    observedVersion: input.receipt.resolvedCandidate,
+    resolutionId: input.receipt.resolutionId,
+  };
+}
+
+export async function materializeCandidate(
+  receipt: CandidateReceipt,
+  directory: string,
+  fetcher: FetchLike = fetch,
+) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  const artifactValue = receipt.artifacts[0];
-  if (!artifactValue) throw new Error("candidate receipt has no artifact");
+  const runtimeDirectory = join(directory, "runtime");
+  const binDirectory = join(directory, "bin");
+  await mkdir(runtimeDirectory, { mode: 0o700 });
+  await mkdir(binDirectory, { mode: 0o700 });
   const archives = await Promise.all(
     receipt.artifacts.map((candidateArtifact, index) =>
-      downloadCandidateArtifact(candidateArtifact, directory, index),
+      downloadCandidateArtifact(candidateArtifact, directory, index, fetcher),
     ),
   );
-  const archive = archives[0]!;
-  let binDirectory: string;
-  let observedOutput: string;
-  if (receipt.component === "openshell") {
-    const extractDirectory = join(directory, "openshell");
-    await mkdir(extractDirectory, { mode: 0o700 });
-    run("tar", ["-xzf", archive, "-C", extractDirectory]);
-    const binary = run("find", [
-      extractDirectory,
-      "-type",
-      "f",
-      "-name",
-      "openshell",
-      "-print",
-      "-quit",
-    ]);
-    if (!binary) throw new Error("OpenShell archive has no openshell binary");
-    await chmod(binary, 0o700);
-    binDirectory = resolve(binary, "..");
-    observedOutput = run(binary, ["--version"]);
-  } else if (receipt.component === "dcode" || receipt.component === "hermes") {
-    const venv = join(directory, "venv");
-    run("python3", ["-m", "venv", venv]);
-    const wheel =
-      receipt.component === "dcode"
-        ? archive
-        : archives[receipt.artifacts.findIndex((item) => item.kind === "wheel")];
-    if (!wheel) throw new Error(`${receipt.component} receipt has no verified wheel`);
-    run(join(venv, "bin", "python"), ["-m", "pip", "install", "--no-deps", "--no-index", wheel]);
-    binDirectory = join(venv, "bin");
-    const packageName = receipt.component === "dcode" ? "deepagents-code" : "hermes-agent";
-    observedOutput = run(join(venv, "bin", "python"), [
-      "-c",
-      `import importlib.metadata; print(importlib.metadata.version("${packageName}"))`,
-    ]);
-  } else {
-    const prefix = join(directory, "npm");
-    run("npm", [
-      "install",
-      "--ignore-scripts",
-      "--no-audit",
-      "--no-fund",
-      "--prefix",
-      prefix,
+  const observed: Record<
+    string,
+    { output: string; path: string; version: string }
+  > = {};
+  for (const [index, artifactValue] of receipt.artifacts.entries()) {
+    const archive = archives[index];
+    if (!archive)
+      throw new Error(`candidate artifact ${index} was not downloaded`);
+    const binary = extractCandidateBinary(
       archive,
-    ]);
-    binDirectory = join(prefix, "node_modules", ".bin");
-    const executable = receipt.component === "openclaw" ? "openclaw" : "hermes";
-    observedOutput = run(join(binDirectory, executable), ["--version"]);
+      artifactValue,
+      runtimeDirectory,
+    );
+    await chmod(binary, 0o700);
+    const output = run(binary, ["--version"]);
+    const version = verifyObservedVersion(receipt, output);
+    const wrapper = join(binDirectory, ROLE_BINARY[artifactValue.role]);
+    await writeFile(
+      wrapper,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        ': "${NEMOCLAW_CANDIDATE_INVOCATION_LOG:?candidate invocation log is required}"',
+        `printf '%s\\t%s\\n' ${shellQuote(artifactValue.role)} "$*" >> "$NEMOCLAW_CANDIDATE_INVOCATION_LOG"`,
+        `exec ${shellQuote(binary)} "$@"`,
+        "",
+      ].join("\n"),
+      { mode: 0o500 },
+    );
+    observed[artifactValue.role] = { output, path: binary, version };
   }
-  const observedVersion = verifyObservedVersion(receipt, observedOutput);
   return {
     binDirectory,
     component: receipt.component,
-    observedOutput,
-    observedVersion,
+    observed,
     resolutionId: receipt.resolutionId,
     schemaVersion: 1 as const,
   };
@@ -840,7 +831,9 @@ async function main(argv: string[]): Promise<void> {
       githubToken: process.env.GITHUB_TOKEN,
       nemoclawSha: required(args, "--nemoclaw-sha"),
     });
-    await writeFile(required(args, "--output"), `${stableJson(receipt)}\n`, { mode: 0o600 });
+    await writeFile(required(args, "--output"), `${stableJson(receipt)}\n`, {
+      mode: 0o600,
+    });
     return;
   }
   if (command === "plan") {
@@ -851,7 +844,9 @@ async function main(argv: string[]): Promise<void> {
       readFile(required(args, "--e2e-registry"), "utf8"),
     ]);
     const plan = buildCandidatePlan(component, sources.join("\n"));
-    await writeFile(required(args, "--output"), `${stableJson(plan)}\n`, { mode: 0o600 });
+    await writeFile(required(args, "--output"), `${stableJson(plan)}\n`, {
+      mode: 0o600,
+    });
     return;
   }
   if (command === "materialize") {
@@ -859,18 +854,31 @@ async function main(argv: string[]): Promise<void> {
       JSON.parse(await readFile(required(args, "--receipt"), "utf8")),
       required(args, "--resolution-id"),
     );
-    const observed = await materializeCandidate(receipt, required(args, "--directory"));
-    await writeFile(required(args, "--output"), `${stableJson(observed)}\n`, { mode: 0o600 });
+    const observed = await materializeCandidate(
+      receipt,
+      required(args, "--directory"),
+    );
+    await writeFile(required(args, "--output"), `${stableJson(observed)}\n`, {
+      mode: 0o600,
+    });
     const githubEnv = args.get("--github-env");
     if (githubEnv) {
+      const invocationLog = join(
+        required(args, "--directory"),
+        "candidate-invocations.log",
+      );
       await writeFile(
         githubEnv,
         [
           `PATH=${observed.binDirectory}:${process.env.PATH ?? ""}`,
           `NEMOCLAW_CANDIDATE_COMPONENT=${receipt.component}`,
+          `NEMOCLAW_CANDIDATE_INVOCATION_LOG=${invocationLog}`,
           `NEMOCLAW_CANDIDATE_RECEIPT=${resolve(required(args, "--receipt"))}`,
           `NEMOCLAW_CANDIDATE_RESOLUTION_ID=${receipt.resolutionId}`,
           `NEMOCLAW_CANDIDATE_VERSION=${receipt.resolvedCandidate}`,
+          `NEMOCLAW_OPENSHELL_SANDBOX_BIN=${join(observed.binDirectory, "openshell-sandbox")}`,
+          `OPENSHELL_BIN=${join(observed.binDirectory, "openshell")}`,
+          `OPENSHELL_GATEWAY_BIN=${join(observed.binDirectory, "openshell-gateway")}`,
           "",
         ].join("\n"),
         { flag: "a" },
@@ -878,25 +886,36 @@ async function main(argv: string[]): Promise<void> {
     }
     return;
   }
+  if (command === "verify-invocations") {
+    const receipt = parseCandidateReceipt(
+      JSON.parse(await readFile(required(args, "--receipt"), "utf8")),
+      required(args, "--resolution-id"),
+    );
+    const result = verifyCandidateInvocations({
+      invocationLog: await readFile(required(args, "--log"), "utf8"),
+      lane: required(args, "--lane"),
+      receipt,
+    });
+    await writeFile(required(args, "--output"), `${stableJson(result)}\n`, {
+      mode: 0o600,
+    });
+    return;
+  }
   if (command === "finalize") {
     const receipt = JSON.parse(
       await readFile(required(args, "--receipt"), "utf8"),
     ) as CandidateReceipt;
-    const plan = JSON.parse(await readFile(required(args, "--plan"), "utf8")) as CandidatePlan;
+    const plan = JSON.parse(
+      await readFile(required(args, "--plan"), "utf8"),
+    ) as CandidatePlan;
     const resultDirectory = required(args, "--results");
-    const resultFiles = (await readdir(resultDirectory, { recursive: true })).filter((path) =>
-      path.endsWith(".json"),
-    );
+    const resultFiles = (
+      await readdir(resultDirectory, { recursive: true })
+    ).filter((path) => path.endsWith(".json"));
     const results = await Promise.all(
-      plan.deterministic
-        .filter((lane) => lane.status === "selected")
-        .map(async (lane) => {
-          const matches = resultFiles.filter((path) => basename(path) === `${lane.id}.json`);
-          if (matches.length !== 1) {
-            throw new Error(`expected exactly one result file for lane ${lane.id}`);
-          }
-          return JSON.parse(await readFile(join(resultDirectory, matches[0]!), "utf8"));
-        }),
+      resultFiles.map(async (path) =>
+        JSON.parse(await readFile(join(resultDirectory, path), "utf8")),
+      ),
     );
     const evidence = finalizeEvidence({
       attempt: required(args, "--attempt"),
@@ -905,15 +924,24 @@ async function main(argv: string[]): Promise<void> {
       results,
       runId: required(args, "--run-id"),
     });
-    await writeFile(required(args, "--output"), `${stableJson(evidence)}\n`, { mode: 0o600 });
+    await writeFile(required(args, "--output"), `${stableJson(evidence)}\n`, {
+      mode: 0o600,
+    });
     return;
   }
-  throw new Error("command must be resolve, plan, materialize, or finalize");
+  throw new Error(
+    "command must be resolve, plan, materialize, verify-invocations, or finalize",
+  );
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
   main(process.argv.slice(2)).catch((error) => {
-    console.error(`candidate-compat: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(
+      `candidate-compat: ${error instanceof Error ? error.message : String(error)}`,
+    );
     process.exitCode = 1;
   });
 }

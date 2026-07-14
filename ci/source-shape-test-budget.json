@@ -63,7 +63,7 @@
     },
     {
       "file": "test/candidate-compat.test.ts",
-      "test": "keeps the manual controller read-only and separate from candidate source (#6691)",
+      "test": "keeps the manual controller read-only and runs digest-bound deterministic and live lanes (#6691)",
       "category": "security"
     },
     {
