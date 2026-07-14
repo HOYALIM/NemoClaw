@@ -52,6 +52,56 @@ function mutatedLock(mutate: (lock: any) => void): string {
   return target;
 }
 
+type InstalledFixtureLayout =
+  | "dangling-package-symlink"
+  | "manifest-symlink"
+  | "omitted"
+  | "package-symlink"
+  | "regular";
+
+type InstalledFixtureWriter = (args: {
+  readonly actualName: string;
+  readonly actualVersion: string;
+  readonly packageDirectory: string;
+  readonly root: string;
+}) => void;
+
+function writePackageManifest(
+  packageDirectory: string,
+  actualName: string,
+  actualVersion: string,
+): void {
+  fs.mkdirSync(packageDirectory, { recursive: true });
+  fs.writeFileSync(
+    path.join(packageDirectory, "package.json"),
+    JSON.stringify({ name: actualName, version: actualVersion }),
+  );
+}
+
+const INSTALLED_FIXTURE_WRITERS: Readonly<Record<InstalledFixtureLayout, InstalledFixtureWriter>> =
+  {
+    "dangling-package-symlink": ({ packageDirectory, root }) => {
+      fs.mkdirSync(path.dirname(packageDirectory), { recursive: true });
+      fs.symlinkSync(path.join(root, "substituted-package"), packageDirectory);
+    },
+    "manifest-symlink": ({ actualName, actualVersion, packageDirectory, root }) => {
+      fs.mkdirSync(packageDirectory, { recursive: true });
+      const target = path.join(root, "substituted-package.json");
+      fs.writeFileSync(target, JSON.stringify({ name: actualName, version: actualVersion }));
+      fs.symlinkSync(target, path.join(packageDirectory, "package.json"));
+    },
+    omitted: () => undefined,
+    "package-symlink": ({ actualName, actualVersion, packageDirectory, root }) => {
+      const target = path.join(root, "substituted-package");
+      writePackageManifest(target, actualName, actualVersion);
+      fs.mkdirSync(path.dirname(packageDirectory), { recursive: true });
+      fs.symlinkSync(target, packageDirectory);
+    },
+    regular: ({ actualName, actualVersion, packageDirectory }) => {
+      writePackageManifest(packageDirectory, actualName, actualVersion);
+    },
+  };
+
 function installedFixture({
   actualName = "chalk",
   actualVersion = "5.6.2",
@@ -90,31 +140,21 @@ function installedFixture({
     },
   };
   fs.writeFileSync(lockfilePath, `${JSON.stringify(lock, null, 2)}\n`);
-  if (!omit) {
-    if (symlink) {
-      const target = path.join(root, "substituted-package");
-      if (!danglingSymlink) {
-        fs.mkdirSync(target, { recursive: true });
-        fs.writeFileSync(
-          path.join(target, "package.json"),
-          JSON.stringify({ name: actualName, version: actualVersion }),
-        );
-      }
-      fs.mkdirSync(path.dirname(packageDirectory), { recursive: true });
-      fs.symlinkSync(target, packageDirectory);
-    } else {
-      fs.mkdirSync(packageDirectory, { recursive: true });
-      const manifest = JSON.stringify({ name: actualName, version: actualVersion });
-      const manifestPath = path.join(packageDirectory, "package.json");
-      if (manifestSymlink) {
-        const target = path.join(root, "substituted-package.json");
-        fs.writeFileSync(target, manifest);
-        fs.symlinkSync(target, manifestPath);
-      } else {
-        fs.writeFileSync(manifestPath, manifest);
-      }
-    }
-  }
+  const layout: InstalledFixtureLayout = omit
+    ? "omitted"
+    : symlink
+      ? danglingSymlink
+        ? "dangling-package-symlink"
+        : "package-symlink"
+      : manifestSymlink
+        ? "manifest-symlink"
+        : "regular";
+  INSTALLED_FIXTURE_WRITERS[layout]({
+    actualName,
+    actualVersion,
+    packageDirectory,
+    root,
+  });
   return {
     expectedLockSha256: sha256(lockfilePath),
     installRoot,
@@ -138,6 +178,7 @@ describe("locked OpenClaw production installation (#5896)", () => {
     });
   });
 
+  // source-shape-contract: security -- The committed production lock digest must fail before any registry-controlled metadata is consulted
   it("rejects any lock byte tamper before registry metadata is consulted", () => {
     const lockfilePath = mutatedLock((lock) => {
       lock.packages["node_modules/openclaw/node_modules/chalk"].integrity =
@@ -153,6 +194,7 @@ describe("locked OpenClaw production installation (#5896)", () => {
     expect(npmCalled).toBe(false);
   });
 
+  // source-shape-contract: security -- Mutating the shipped lock proves every reviewed transitive identity remains bound to committed production bytes
   it.each([
     {
       expected: "root must depend only on openclaw@2026.6.10",
@@ -206,17 +248,22 @@ describe("locked OpenClaw production installation (#5896)", () => {
   it("binds npm aliases to the canonical package name recorded in the lock", () => {
     expect(
       verifyInstalledNpmLock(
-        installedFixture({ actualName: "@scope/canonical", lockedName: "@scope/canonical" }),
+        installedFixture({
+          actualName: "@scope/canonical",
+          lockedName: "@scope/canonical",
+        }),
       ),
     ).toEqual(["@scope/canonical@5.6.2"]);
   });
 
+  // source-shape-contract: security -- The installed production graph must reject package identity substitution after a reviewed tarball is extracted
   it("rejects a same-registry tarball with a substituted package manifest", () => {
     expect(() =>
       verifyInstalledNpmLock(installedFixture({ actualName: "is-odd", actualVersion: "3.0.1" })),
     ).toThrow("expected chalk@5.6.2, found is-odd@3.0.1");
   });
 
+  // source-shape-contract: security -- Production lock verification must fail closed when required package locations are absent or redirected through symlinks
   it("fails closed on missing required packages and symlinked package roots", () => {
     expect(() => verifyInstalledNpmLock(installedFixture({ omit: true }))).toThrow(
       "missing installed package: chalk@5.6.2",
@@ -226,11 +273,16 @@ describe("locked OpenClaw production installation (#5896)", () => {
     );
     expect(() =>
       verifyInstalledNpmLock(
-        installedFixture({ danglingSymlink: true, optional: true, symlink: true }),
+        installedFixture({
+          danglingSymlink: true,
+          optional: true,
+          symlink: true,
+        }),
       ),
     ).toThrow("installed package must be a non-symlink directory");
   });
 
+  // source-shape-contract: security -- Installed production manifests must remain regular files beneath their reviewed package locations
   it("rejects symlinked package manifests", () => {
     expect(() => verifyInstalledNpmLock(installedFixture({ manifestSymlink: true }))).toThrow(
       "manifest must be a non-symlink regular file",
@@ -241,6 +293,7 @@ describe("locked OpenClaw production installation (#5896)", () => {
     expect(verifyInstalledNpmLock(installedFixture({ omit: true, optional: true }))).toEqual([]);
   });
 
+  // source-shape-contract: compatibility -- Both shipped Dockerfiles must preserve the reviewed lock verification and installation sequence
   it.each([
     "Dockerfile",
     "Dockerfile.base",
@@ -286,6 +339,7 @@ describe("locked OpenClaw production installation (#5896)", () => {
     expect(contents).toContain("locked-ci+reviewed-lifecycle-v2");
   });
 
+  // source-shape-contract: security -- The shipped audit and base-image rebuild inputs must share the exact committed production lock authority
   it("audits the same lock and rebuilds the base when its graph changes", () => {
     const audit = JSON.parse(
       fs.readFileSync(path.join(REPO_ROOT, "ci", "reviewed-npm-audit.json"), "utf-8"),
