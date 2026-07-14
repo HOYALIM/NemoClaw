@@ -8,27 +8,14 @@
  * suite protects schema behavior without coupling it to those config values.
  */
 
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import Ajv, { type ValidateFunction } from "ajv/dist/2020.js";
+import type { ValidateFunction } from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
 
-import { discoverTargets } from "../scripts/validate-configs.mts";
-
-const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-
-function repoPath(...segments: string[]): string {
-  return join(REPO_ROOT, ...segments);
-}
+import { compileConfigSchema, discoverTargets } from "../scripts/validate-configs.mts";
 
 type LooseScalar = string | number | boolean | null;
 type LooseValue = LooseScalar | LooseObject | LooseValue[];
 type LooseObject = { [key: string]: LooseValue };
-
-function parseJson<T>(text: string): T {
-  return JSON.parse(text);
-}
 
 function isLooseValue(value: LooseValue | object | undefined): value is LooseValue {
   if (value === null) return true;
@@ -50,18 +37,8 @@ function isLooseObject(value: LooseValue | object | undefined): value is LooseOb
   );
 }
 
-function loadJSON(path: string): LooseObject {
-  const parsed = parseJson<LooseValue>(readFileSync(path, "utf-8"));
-  if (!isLooseObject(parsed)) {
-    throw new Error(`Expected JSON object in ${path}`);
-  }
-  return parsed;
-}
-
 function compileSchema(schemaRelPath: string): ValidateFunction {
-  const ajv = new Ajv({ allErrors: true, strict: false, $data: true });
-  const schema = loadJSON(repoPath(schemaRelPath));
-  return ajv.compile(schema);
+  return compileConfigSchema(schemaRelPath);
 }
 
 function asRecord(value: LooseValue | undefined): LooseObject {
