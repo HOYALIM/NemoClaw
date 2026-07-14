@@ -15,21 +15,24 @@ describe("onboard shared gateway route containment", () => {
       endpointUrl: "https://public-name.example/v1",
       resolvedAddress: "93.184.216.34",
       trustedHosts: "",
-      accepted: true,
+      expectedError: null,
+      expectedPinnedAddresses: ["93.184.216.34"],
     },
     {
       scenario: "operator-trusted private",
       endpointUrl: "https://llm.corp.example/v1",
       resolvedAddress: "10.0.0.8",
       trustedHosts: "llm.corp.example",
-      accepted: true,
+      expectedError: null,
+      expectedPinnedAddresses: ["10.0.0.8"],
     },
     {
       scenario: "unlisted private",
       endpointUrl: "https://unlisted.corp.example/v1",
       resolvedAddress: "10.0.0.8",
       trustedHosts: "",
-      accepted: false,
+      expectedError: "exit 1",
+      expectedPinnedAddresses: [],
     },
   ])("handles a resumed $scenario endpoint at the shared preflight", async (scenario) => {
     vi.stubEnv("NEMOCLAW_TRUSTED_PRIVATE_INFERENCE_HOSTS", scenario.trustedHosts);
@@ -88,28 +91,22 @@ describe("onboard shared gateway route containment", () => {
       }),
     } as unknown as SetupInferenceDeps);
 
-    const setup = setupInference(
+    const errorMessage = await setupInference(
       "sandbox-a",
       "model-a",
       "compatible-endpoint",
       scenario.endpointUrl,
       "COMPATIBLE_API_KEY",
+    ).then(
+      () => null,
+      (error: Error) => error.message,
     );
-    if (!scenario.accepted) {
-      await expect(setup).rejects.toThrow("exit 1");
-      expect(verifyOnboardInferenceSmoke).not.toHaveBeenCalled();
-      return;
-    }
 
-    await expect(setup).resolves.toEqual({ ok: true });
-
+    expect(errorMessage).toBe(scenario.expectedError);
     expect(resolveEndpointHost).toHaveBeenCalledOnce();
-    expect(verifyOnboardInferenceSmoke).toHaveBeenCalledWith(
-      expect.objectContaining({ pinnedAddresses: [scenario.resolvedAddress] }),
-    );
-    if (scenario.resolvedAddress !== "10.0.0.8") {
-      expect(JSON.stringify(verifyOnboardInferenceSmoke.mock.calls)).not.toContain("10.0.0.8");
-    }
+    expect(
+      verifyOnboardInferenceSmoke.mock.calls.flatMap(([request]) => request.pinnedAddresses ?? []),
+    ).toEqual(scenario.expectedPinnedAddresses);
   });
 
   it("warns once inside the gateway lock before applying a valid conflicting route (#6315)", async () => {
