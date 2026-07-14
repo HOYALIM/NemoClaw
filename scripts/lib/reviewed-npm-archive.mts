@@ -4,7 +4,16 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -419,16 +428,27 @@ export function verifyInstalledNpmLock(
 
     const manifestPath = join(packageDirectory, "package.json");
     let manifest: unknown;
+    let manifestDescriptor: number | undefined;
     try {
-      const manifestEntry = lstatSync(manifestPath);
-      if (!manifestEntry.isFile() || manifestEntry.isSymbolicLink()) {
+      manifestDescriptor = openSync(manifestPath, "r");
+      const openedManifestEntry = fstatSync(manifestDescriptor);
+      const pathManifestEntry = lstatSync(manifestPath);
+      if (
+        !openedManifestEntry.isFile() ||
+        !pathManifestEntry.isFile() ||
+        pathManifestEntry.isSymbolicLink() ||
+        openedManifestEntry.dev !== pathManifestEntry.dev ||
+        openedManifestEntry.ino !== pathManifestEntry.ino
+      ) {
         throw new Error("manifest must be a non-symlink regular file");
       }
-      manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+      manifest = JSON.parse(readFileSync(manifestDescriptor, "utf-8"));
     } catch (error) {
       throw new Error(
         `${request.label} installed package manifest is unreadable: ${location}: ${String(error)}`,
       );
+    } finally {
+      if (manifestDescriptor !== undefined) closeSync(manifestDescriptor);
     }
     if (typeof manifest !== "object" || manifest === null || Array.isArray(manifest)) {
       throw new Error(`${request.label} installed package manifest is invalid: ${location}`);
@@ -567,7 +587,7 @@ function parseCliOptions(argv: readonly string[]): CliOptions {
     };
   }
   if (verifyLock) {
-    if (verifyOnly || verifyInstalledLock || values.has("--cache")) {
+    if (verifyOnly || values.has("--cache")) {
       throw new Error("reviewed npm lock verification cannot be combined with other modes");
     }
     return {
