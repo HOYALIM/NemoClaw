@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createSetupNimOllamaHandlers } from "./setup-nim-ollama";
 import type { SetupNimSelectionState } from "./setup-nim-selection";
@@ -24,6 +24,10 @@ function makeState(): SetupNimSelectionState {
 }
 
 type Deps = Parameters<typeof createSetupNimOllamaHandlers>[0];
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function makeDeps(overrides: Partial<Deps> = {}): Deps {
   return {
