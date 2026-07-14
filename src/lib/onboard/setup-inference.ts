@@ -5,6 +5,7 @@ import { isBedrockRuntimeEndpoint } from "../inference/bedrock-runtime";
 import {
   assertEndpointResolvesPublic,
   type EndpointDnsLookupFn,
+  parseTrustedPrivateInferenceHosts,
 } from "../inference/endpoint-ssrf-preflight";
 import {
   type CurrentGatewayRouteCompatibilityCheck,
@@ -82,6 +83,8 @@ type ProviderBranchDeps = Pick<
 export type SetupInferenceDeps = ProviderBranchDeps & {
   /** Injectable resolver for resumed custom-endpoint SSRF preflight tests. */
   resolveEndpointHost?: EndpointDnsLookupFn;
+  /** Exact private endpoint hosts trusted by the operator (tests may inject this). */
+  trustedPrivateEndpointHosts?: readonly string[];
   checkGatewayRouteCompatibility: CurrentGatewayRouteCompatibilityCheck;
   withGatewayRouteMutationLock: typeof withGatewayRouteMutationLock;
   withSandboxMutationLock: typeof withSandboxMutationLock;
@@ -274,6 +277,13 @@ export function createSetupInference(
           const preflight = await assertEndpointResolvesPublic(
             endpointUrl,
             deps.resolveEndpointHost,
+            {
+              trustedPrivateHosts:
+                deps.trustedPrivateEndpointHosts ??
+                parseTrustedPrivateInferenceHosts(
+                  process.env.NEMOCLAW_TRUSTED_PRIVATE_INFERENCE_HOSTS,
+                ),
+            },
           );
           if (!preflight.ok) {
             deps.error(

@@ -41,7 +41,7 @@ OPERATOR_TRUSTABLE_PRIVATE_NETWORKS.addSubnet("172.16.0.0", 12, "ipv4");
 OPERATOR_TRUSTABLE_PRIVATE_NETWORKS.addSubnet("192.168.0.0", 16, "ipv4");
 OPERATOR_TRUSTABLE_PRIVATE_NETWORKS.addSubnet("fc00::", 7, "ipv6");
 
-function isOperatorTrustablePrivateIp(address: string): boolean {
+export function isOperatorTrustablePrivateIp(address: string): boolean {
   const family = isIP(address);
   return (
     family !== 0 &&

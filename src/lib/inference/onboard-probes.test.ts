@@ -477,6 +477,35 @@ describe("OpenAI-compatible inference probes", () => {
       expect(result.message).toMatch(/private\/internal address/i);
     });
 
+    it("allows a preflight-approved RFC1918 literal while keeping metadata blocked (#6861)", () => {
+      const body = `if [ -n "$outfile" ]; then
+  cat <<'JSON' > "$outfile"
+{"choices":[{"message":{"content":"OK"}}]}
+JSON
+fi
+printf '200'
+exit 0
+`;
+      withFakeCurlProbe(
+        { script: makeFakeCurlScript(body), dirPrefix: "nemoclaw-trusted-private-probe-" },
+        () => {
+          const approved = probeOpenAiLikeEndpoint("http://10.0.0.8/v1", "openai/model", "dummy", {
+            skipResponsesProbe: true,
+            pinnedAddresses: [],
+          });
+          expect(approved).toMatchObject({ ok: true });
+
+          const metadata = probeOpenAiLikeEndpoint(
+            "http://169.254.169.254/v1",
+            "openai/model",
+            "dummy",
+            { skipResponsesProbe: true, pinnedAddresses: [] },
+          );
+          expect(metadata).toMatchObject({ ok: false });
+        },
+      );
+    });
+
     it("allows a loopback endpoint so local inference validation can proceed (#6293)", () => {
       const body = `if [ -n "$outfile" ]; then
   cat <<'JSON' > "$outfile"

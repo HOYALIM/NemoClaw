@@ -100,6 +100,39 @@ describe("assertEndpointResolvesPublic (#6293)", () => {
     expect(lookup).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "100.64.0.0",
+    "100.127.255.255",
+    "fc00::1",
+    "fdff:ffff::1",
+  ])("admits the operator-trustable private boundary address %s (#6861)", async (address) => {
+    const result = await assertEndpointResolvesPublic(
+      "https://llm.corp.example/v1",
+      resolverTo(address),
+      { trustedPrivateHosts: ["llm.corp.example"] },
+    );
+    expect(result).toEqual({
+      ok: true,
+      addresses: [address],
+      trustedPrivateEndpoint: true,
+    });
+  });
+
+  it.each([
+    "169.254.0.1",
+    "198.18.0.1",
+    "fe80::1",
+    "ff00::1",
+  ])("keeps the reserved address %s blocked for an allowlisted host (#6861)", async (address) => {
+    const result = await assertEndpointResolvesPublic(
+      "https://llm.corp.example/v1",
+      resolverTo(address),
+      { trustedPrivateHosts: ["llm.corp.example"] },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain(address);
+  });
+
   it("parses and canonicalizes the private inference host allowlist (#6861)", () => {
     expect(
       parseTrustedPrivateInferenceHosts(" LLM.CORP.EXAMPLE.,10.0.0.8,llm.corp.example "),

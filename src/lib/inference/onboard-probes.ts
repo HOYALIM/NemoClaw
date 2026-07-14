@@ -35,8 +35,8 @@ const {
   isHijackedDockerInternalUrl,
 } = require("./onboard-host-docker-internal");
 const { isNvcfFunctionNotFoundForAccount, nvcfFunctionNotFoundMessage } = require("../validation");
-const { isPrivateHostname, isLoopbackHostname } = require("../private-networks");
-const { buildResolvePinArgs } = require("./endpoint-ssrf-preflight");
+const { isPrivateHostname, isPrivateIp, isLoopbackHostname } = require("../private-networks");
+const { buildResolvePinArgs, isOperatorTrustablePrivateIp } = require("./endpoint-ssrf-preflight");
 const {
   executeProbeWithHttpRetry,
   isProbeTimeout,
@@ -692,11 +692,27 @@ function probeOpenAiLikeEndpoint(endpointUrl, model, apiKey, options = {}) {
   } catch {
     probeHostname = "";
   }
+  const bareProbeHostname =
+    probeHostname.startsWith("[") && probeHostname.endsWith("]")
+      ? probeHostname.slice(1, -1)
+      : probeHostname;
+  const pinnedAddresses = options.pinnedAddresses;
+  // A defined pinned-address capability means the caller completed the shared
+  // DNS preflight. Admit only the bounded enterprise ranges that preflight can
+  // explicitly trust; metadata and other reserved ranges remain blocked.
+  const trustedPrivatePreflight =
+    pinnedAddresses !== undefined &&
+    (isOperatorTrustablePrivateIp(bareProbeHostname) ||
+      (pinnedAddresses.length > 0 &&
+        pinnedAddresses.every(
+          (address) => !isPrivateIp(address) || isOperatorTrustablePrivateIp(address),
+        )));
   if (
     probeHostname &&
     isPrivateHostname(probeHostname) &&
     !isLoopbackHostname(probeHostname) &&
-    !isHijackedDockerInternalUrl(endpointUrl)
+    !isHijackedDockerInternalUrl(endpointUrl) &&
+    !trustedPrivatePreflight
   ) {
     return {
       ok: false,
@@ -721,7 +737,6 @@ function probeOpenAiLikeEndpoint(endpointUrl, model, apiKey, options = {}) {
   // Pin every probe curl to the SSRF-preflight-validated address(es) the caller
   // captured, so a second DNS lookup here cannot rebind the hostname to a
   // private/internal address after the public preflight (TOCTOU — cv, #6293).
-  const pinnedAddresses = options.pinnedAddresses;
   let authConfig;
   try {
     authConfig = buildOpenAiLikeAuthConfig(apiKey, options);
