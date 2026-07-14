@@ -190,6 +190,95 @@ describe("sandbox base-image warm resolution", () => {
     expect(dockerMocks.pull).not.toHaveBeenCalled();
   });
 
+  it("rejects an override outside the trusted base-image repository (#5896)", () => {
+    const options = resolutionOptions();
+
+    expect(() =>
+      resolveSandboxBaseImage({
+        ...options,
+        envVar: "NEMOCLAW_SANDBOX_BASE_IMAGE_REF",
+        env: {
+          ...options.env,
+          NEMOCLAW_SANDBOX_BASE_IMAGE_REF: "registry.example/unreviewed/base:latest",
+        },
+      }),
+    ).toThrow("outside the trusted repository 'ghcr.io/nvidia/nemoclaw/sandbox-base'");
+    expect(dockerMocks.imageInspect).not.toHaveBeenCalled();
+    expect(dockerMocks.pull).not.toHaveBeenCalled();
+  });
+
+  it("rejects a floating trusted override when Docker cannot prove its digest (#5896)", () => {
+    const options = resolutionOptions();
+    const floatingRef = `${IMAGE_NAME}:published`;
+    dockerMocks.imageInspect.mockReturnValue({ status: 0 });
+    dockerMocks.imageInspectFormat.mockReturnValue("[]");
+
+    expect(() =>
+      resolveSandboxBaseImage({
+        ...options,
+        envVar: "NEMOCLAW_SANDBOX_BASE_IMAGE_REF",
+        env: {
+          ...options.env,
+          NEMOCLAW_SANDBOX_BASE_IMAGE_REF: floatingRef,
+        },
+      }),
+    ).toThrow("could not be resolved to an immutable trusted digest");
+    expect(dockerMocks.pull).not.toHaveBeenCalled();
+  });
+
+  it("accepts only a local override bound to its Docker image ID (#5896)", () => {
+    const options = resolutionOptions();
+    const imageId = `sha256:${"c".repeat(64)}`;
+    const localRef = `nemoclaw-sandbox-base-local:image-${"c".repeat(64)}`;
+    dockerMocks.imageInspectFormat.mockImplementation((format: string) =>
+      format === "{{.Id}}"
+        ? imageId
+        : JSON.stringify({
+            Id: imageId,
+            RepoDigests: [],
+            Os: "linux",
+            Architecture: "amd64",
+          }),
+    );
+
+    const resolved = resolveSandboxBaseImage({
+      ...options,
+      envVar: "NEMOCLAW_SANDBOX_BASE_IMAGE_REF",
+      env: {
+        ...options.env,
+        NEMOCLAW_SANDBOX_BASE_IMAGE_REF: localRef,
+      },
+    });
+
+    expect(resolved).toMatchObject({
+      ref: localRef,
+      digest: null,
+      source: "local",
+      metadata: { imageId, source: "local" },
+    });
+    expect(dockerMocks.imageInspect).not.toHaveBeenCalled();
+    expect(dockerMocks.pull).not.toHaveBeenCalled();
+  });
+
+  it("rejects a local override whose image-ID tag is stale (#5896)", () => {
+    const options = resolutionOptions();
+    const localRef = `nemoclaw-sandbox-base-local:image-${"c".repeat(64)}`;
+    dockerMocks.imageInspectFormat.mockReturnValue(`sha256:${"d".repeat(64)}`);
+
+    expect(() =>
+      resolveSandboxBaseImage({
+        ...options,
+        envVar: "NEMOCLAW_SANDBOX_BASE_IMAGE_REF",
+        env: {
+          ...options.env,
+          NEMOCLAW_SANDBOX_BASE_IMAGE_REF: localRef,
+        },
+      }),
+    ).toThrow("does not match its content-addressed image ID");
+    expect(dockerMocks.imageInspect).not.toHaveBeenCalled();
+    expect(dockerMocks.pull).not.toHaveBeenCalled();
+  });
+
   it("fails closed when offline and no cached image can be validated (#4680)", () => {
     dockerMocks.imageInspect.mockReturnValue({ status: 1 });
     dockerMocks.pull.mockReturnValue({ status: 1 });

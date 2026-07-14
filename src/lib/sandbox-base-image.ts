@@ -130,6 +130,63 @@ function imageRefCanRefresh(imageRef: string): boolean {
   return !imageRef.includes("@sha256:");
 }
 
+function isExpectedRemoteBaseImageRef(imageName: string, imageRef: string): boolean {
+  return (
+    imageRef === imageName ||
+    imageRef.startsWith(`${imageName}:`) ||
+    imageRef.startsWith(`${imageName}@sha256:`)
+  );
+}
+
+function contentAddressedLocalImageId(localTag: string, imageRef: string): string | null {
+  const localImageName = localTag.replace(/:[^/:]+$/, "");
+  const prefix = `${localImageName}:image-`;
+  if (!imageRef.startsWith(prefix)) return null;
+  const digest = imageRef.slice(prefix.length);
+  return /^[0-9a-f]{64}$/.test(digest) ? `sha256:${digest}` : null;
+}
+
+function resolveContentAddressedLocalOverride(
+  imageRef: string,
+  options: ResolveBaseImageOptions,
+): SandboxBaseImageResolution | null {
+  const expectedImageId = contentAddressedLocalImageId(options.localTag, imageRef);
+  if (!expectedImageId) return null;
+
+  const imageId = dockerImageInspectFormat("{{.Id}}", imageRef, { ignoreError: true })
+    .trim()
+    .toLowerCase();
+  if (imageId !== expectedImageId) {
+    throw new SandboxBaseImageResolutionError(
+      `${options.label || "Sandbox base image"} local override '${imageRef}' does not match ` +
+        "its content-addressed image ID.",
+    );
+  }
+
+  let glibcVersion: string | null = null;
+  if (options.requireOpenshellSandboxAbi) {
+    const check = imageMeetsMinimumGlibc(
+      imageRef,
+      options.minGlibcVersion || OPENSHELL_SANDBOX_MIN_GLIBC,
+    );
+    glibcVersion = check.version;
+    if (!check.ok) {
+      throw new SandboxBaseImageResolutionError(
+        `${options.label || "Sandbox base image"} local override '${imageRef}' failed ` +
+          "the required OpenShell sandbox ABI check.",
+      );
+    }
+  }
+  if (options.validateImage && !options.validateImage(imageRef)) {
+    throw new SandboxBaseImageResolutionError(
+      `${options.label || "Sandbox base image"} local override '${imageRef}' lacks ` +
+        `${options.validationDescription || "a required runtime capability"}.`,
+    );
+  }
+
+  return { ref: imageRef, digest: null, source: "local", glibcVersion };
+}
+
 function validatePulledCandidate(
   imageName: string,
   imageRef: string,
@@ -330,11 +387,19 @@ export function resolveSandboxBaseImage(
   };
 
   if (override) {
+    const localOverride = resolveContentAddressedLocalOverride(override, options);
+    if (localOverride) return finish(localOverride);
+    if (!isExpectedRemoteBaseImageRef(options.imageName, override)) {
+      throw new SandboxBaseImageResolutionError(
+        `${options.label || "Sandbox base image"} override '${override}' is outside the ` +
+          `trusted repository '${options.imageName}'.`,
+      );
+    }
     const resolved = resolvePulledCandidate(options.imageName, override, "override", options);
-    if (resolved) return finish(resolved);
+    if (resolved?.digest) return finish(resolved);
     throw new SandboxBaseImageResolutionError(
       `${options.label || "Sandbox base image"} override '${override}' could not be resolved ` +
-        "or failed required compatibility checks.",
+        "to an immutable trusted digest or failed required compatibility checks.",
     );
   } else {
     const rootDir = options.rootDir || ROOT;
