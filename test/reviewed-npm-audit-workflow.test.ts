@@ -27,6 +27,8 @@ type Workflow = {
 
 const REPO_ROOT = path.join(import.meta.dirname, "..");
 const BOOTSTRAP_SHA = "f2e670fd059e2032034b8c03ee6d016755c3d2d6";
+// Removal condition: delete the PR-6830 fork bootstrap after this PR merges and
+// the base branch contains the schema-v2 reviewed npm audit action.
 const BOOTSTRAP_IF =
   "${{ steps.trusted-reviewed-npm-audit.outputs.available != 'true' && github.event.pull_request.number == 6830 && github.event.pull_request.head.repo.full_name == 'HOYALIM/NemoClaw' }}";
 

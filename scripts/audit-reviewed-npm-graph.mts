@@ -32,21 +32,47 @@ type AuditConfig = Readonly<{
 }>;
 
 const TRUSTED_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const REPO_ROOT = path.resolve(
-  process.env.NEMOCLAW_REVIEWED_NPM_AUDIT_TARGET_ROOT ?? TRUSTED_REPO_ROOT,
+const REPO_ROOT = fs.realpathSync(
+  path.resolve(process.env.NEMOCLAW_REVIEWED_NPM_AUDIT_TARGET_ROOT ?? TRUSTED_REPO_ROOT),
 );
-const CONFIG_PATH = path.join(REPO_ROOT, "ci", "reviewed-npm-audit.json");
+const CONFIG_PATH = resolveTargetPath(
+  "ci/reviewed-npm-audit.json",
+  "reviewed npm audit configuration",
+);
 const SEVERITIES: readonly Severity[] = ["info", "low", "moderate", "high", "critical"];
 
-function resolveTargetPath(relativePath: string, label: string): string {
+export function resolvePathWithinTargetRoot(
+  targetRoot: string,
+  relativePath: string,
+  label: string,
+): string {
   if (!relativePath || path.isAbsolute(relativePath)) {
     throw new Error(`${label} must be a nonempty target-relative path`);
   }
-  const resolved = path.resolve(REPO_ROOT, relativePath);
-  if (!resolved.startsWith(`${REPO_ROOT}${path.sep}`)) {
+  const canonicalRoot = fs.realpathSync(path.resolve(targetRoot));
+  const resolved = path.resolve(canonicalRoot, relativePath);
+  if (!resolved.startsWith(`${canonicalRoot}${path.sep}`)) {
     throw new Error(`${label} escapes the target root: ${relativePath}`);
   }
+  let current = canonicalRoot;
+  for (const component of path.relative(canonicalRoot, resolved).split(path.sep)) {
+    current = path.join(current, component);
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(current);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
+      throw error;
+    }
+    if (stat.isSymbolicLink()) {
+      throw new Error(`${label} contains a symbolic-link component: ${relativePath}`);
+    }
+  }
   return resolved;
+}
+
+function resolveTargetPath(relativePath: string, label: string): string {
+  return resolvePathWithinTargetRoot(REPO_ROOT, relativePath, label);
 }
 
 function run(command: string, args: readonly string[], cwd: string, allowAuditFindings = false) {
@@ -184,21 +210,27 @@ function materializeLockedGraph(
   tempRoot: string,
   registryOrigin: string,
 ): string {
-  const source = resolveTargetPath(graph.directory, `${graph.label} directory`);
+  const sourcePackage = resolveTargetPath(
+    path.join(graph.directory, "package.json"),
+    `${graph.label} package manifest`,
+  );
+  const sourceLock = resolveTargetPath(
+    path.join(graph.directory, "package-lock.json"),
+    `${graph.label} lockfile`,
+  );
   verifyReviewedNpmLock({
     expectedIntegrity: graph.integrity,
     expectedLockSha256: graph.lockSha256,
     label: graph.label,
-    lockfilePath: path.join(source, "package-lock.json"),
+    lockfilePath: sourceLock,
     packageSpec: graph.packageSpec,
     registryOrigin,
     tarballUrl: graph.tarballUrl,
   });
   const destination = path.join(tempRoot, `locked-${path.basename(graph.directory)}`);
   fs.mkdirSync(destination);
-  for (const filename of ["package.json", "package-lock.json"]) {
-    fs.copyFileSync(path.join(source, filename), path.join(destination, filename));
-  }
+  fs.copyFileSync(sourcePackage, path.join(destination, "package.json"));
+  fs.copyFileSync(sourceLock, path.join(destination, "package-lock.json"));
   run("npm", ["ci", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund"], destination);
   verifyInstalledNpmLock({
     expectedLockSha256: graph.lockSha256,

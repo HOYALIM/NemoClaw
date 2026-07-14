@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   exceedsAuditThreshold,
   parseAuditReport,
+  resolvePathWithinTargetRoot,
   vulnerabilityCounts,
 } from "../scripts/audit-reviewed-npm-graph.mts";
 
@@ -16,6 +18,11 @@ const CONFIG = JSON.parse(
 ) as {
   severityThreshold: "info" | "low" | "moderate" | "high" | "critical";
 };
+const roots: string[] = [];
+
+afterEach(() => {
+  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+});
 
 describe("reviewed npm audit gate", () => {
   it("fails at high or critical findings while retaining lower severities", () => {
@@ -62,5 +69,27 @@ describe("reviewed npm audit gate", () => {
     expect(() =>
       parseAuditReport({ status: 0, stderr: "", stdout: JSON.stringify(report) }),
     ).toThrow(/vulnerability report|vulnerability count/);
+  });
+
+  it.each(["direct", "ancestor"])("rejects a %s symlink in an audit target", (layout) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-reviewed-audit-path-"));
+    roots.push(root);
+    const outside = path.join(root, "outside");
+    const targetRoot = path.join(root, "repo");
+    fs.mkdirSync(outside);
+    fs.mkdirSync(targetRoot);
+
+    if (layout === "direct") {
+      fs.writeFileSync(path.join(outside, "config.json"), "{}");
+      fs.mkdirSync(path.join(targetRoot, "ci"));
+      fs.symlinkSync(path.join(outside, "config.json"), path.join(targetRoot, "ci", "config.json"));
+    } else {
+      fs.symlinkSync(outside, path.join(targetRoot, "artifacts"));
+    }
+
+    const relative = layout === "direct" ? "ci/config.json" : "artifacts/audit";
+    expect(() => resolvePathWithinTargetRoot(targetRoot, relative, "audit target")).toThrow(
+      "contains a symbolic-link component",
+    );
   });
 });

@@ -342,12 +342,18 @@ export function verifyReviewedNpmLock(
     throw new Error("reviewed npm lock is missing its root package record");
   }
   const rootDependencies = root.dependencies;
+  const rootOptionalDependencies = root.optionalDependencies;
   if (
     typeof rootDependencies !== "object" ||
     rootDependencies === null ||
     Array.isArray(rootDependencies) ||
     Object.keys(rootDependencies).length !== 1 ||
-    (rootDependencies as Record<string, unknown>)[name] !== version
+    (rootDependencies as Record<string, unknown>)[name] !== version ||
+    (rootOptionalDependencies !== undefined &&
+      (typeof rootOptionalDependencies !== "object" ||
+        rootOptionalDependencies === null ||
+        Array.isArray(rootOptionalDependencies) ||
+        Object.keys(rootOptionalDependencies).length > 0))
   ) {
     throw new Error(`reviewed npm lock root must depend only on ${request.packageSpec}`);
   }

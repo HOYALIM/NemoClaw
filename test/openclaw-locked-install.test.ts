@@ -204,6 +204,13 @@ describe("locked OpenClaw production installation (#5896)", () => {
       name: "root version drift",
     },
     {
+      expected: "root must depend only on openclaw@2026.6.10",
+      mutate: (lock: any) => {
+        lock.packages[""].optionalDependencies = { "left-pad": "1.3.0" };
+      },
+      name: "root optional dependency injection",
+    },
+    {
       expected: "lock integrity mismatch for openclaw@2026.6.10",
       mutate: (lock: any) => {
         lock.packages["node_modules/openclaw"].integrity = `sha512-${"B".repeat(88)}`;
