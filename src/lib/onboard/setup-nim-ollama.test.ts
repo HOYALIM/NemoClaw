@@ -108,7 +108,7 @@ describe("createSetupNimOllamaHandlers", () => {
 
   it("keeps shared-route guidance silent in non-interactive mode (#6758)", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    const selectModel = vi.fn(async () => ({
+    const selectModel = vi.fn<Deps["selectAndValidateOllamaModel"]>(async () => ({
       outcome: "selected" as const,
       model: "required/model",
       allowToolsIncompatible: false,
