@@ -123,6 +123,7 @@ function getRepoDigest(
 
 type PulledCandidateOptions = {
   pinnedRemoteRef?: string;
+  refreshBeforeValidation?: boolean;
   refreshIfLocalInvalid?: boolean;
 };
 
@@ -252,8 +253,15 @@ function resolvePulledCandidate(
     source,
     present: localPresent,
   });
-  if (!localPresent) {
-    addTraceEvent("nemoclaw.sandbox_base_image.remote_pull", { source });
+  const refreshBeforeValidation =
+    candidateOptions.refreshBeforeValidation === true && imageRefCanRefresh(imageRef);
+  if (!localPresent || refreshBeforeValidation) {
+    addTraceEvent(
+      refreshBeforeValidation
+        ? "nemoclaw.sandbox_base_image.remote_refresh"
+        : "nemoclaw.sandbox_base_image.remote_pull",
+      { source },
+    );
     const pullResult = dockerPull(imageRef, { ignoreError: true, suppressOutput: true });
     if (pullResult.status !== 0) return null;
   }
@@ -264,7 +272,7 @@ function resolvePulledCandidate(
     source,
     options,
     candidateOptions,
-    !localPresent || !candidateOptions.refreshIfLocalInvalid,
+    !localPresent || refreshBeforeValidation || !candidateOptions.refreshIfLocalInvalid,
   );
   if (resolved) return resolved;
 
@@ -395,7 +403,9 @@ export function resolveSandboxBaseImage(
           `trusted repository '${options.imageName}'.`,
       );
     }
-    const resolved = resolvePulledCandidate(options.imageName, override, "override", options);
+    const resolved = resolvePulledCandidate(options.imageName, override, "override", options, {
+      refreshBeforeValidation: true,
+    });
     if (resolved?.digest) return finish(resolved);
     throw new SandboxBaseImageResolutionError(
       `${options.label || "Sandbox base image"} override '${override}' could not be resolved ` +

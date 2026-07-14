@@ -212,6 +212,7 @@ describe("sandbox base-image warm resolution", () => {
     const floatingRef = `${IMAGE_NAME}:published`;
     dockerMocks.imageInspect.mockReturnValue({ status: 0 });
     dockerMocks.imageInspectFormat.mockReturnValue("[]");
+    dockerMocks.pull.mockReturnValue({ status: 0 });
 
     expect(() =>
       resolveSandboxBaseImage({
@@ -223,7 +224,43 @@ describe("sandbox base-image warm resolution", () => {
         },
       }),
     ).toThrow("could not be resolved to an immutable trusted digest");
-    expect(dockerMocks.pull).not.toHaveBeenCalled();
+    expect(dockerMocks.pull).toHaveBeenCalledWith(floatingRef, {
+      ignoreError: true,
+      suppressOutput: true,
+    });
+  });
+
+  it("refreshes a floating override before reading its repository digest (#5896)", () => {
+    const options = resolutionOptions();
+    const floatingRef = `${IMAGE_NAME}:published`;
+    const refreshedDigest = `sha256:${"d".repeat(64)}`;
+    const events: string[] = [];
+    dockerMocks.imageInspect.mockReturnValue({ status: 0 });
+    dockerMocks.pull.mockImplementation(() => {
+      events.push("pull");
+      return { status: 0 };
+    });
+    dockerMocks.imageInspectFormat.mockImplementation(() => {
+      events.push("inspect-digest");
+      return JSON.stringify([`${IMAGE_NAME}@${refreshedDigest}`]);
+    });
+
+    const resolved = resolveSandboxBaseImage({
+      ...options,
+      envVar: "NEMOCLAW_SANDBOX_BASE_IMAGE_REF",
+      env: {
+        ...options.env,
+        NEMOCLAW_SANDBOX_BASE_IMAGE_REF: floatingRef,
+      },
+    });
+
+    expect(resolved).toMatchObject({
+      ref: `${IMAGE_NAME}@${refreshedDigest}`,
+      digest: refreshedDigest,
+      source: "override",
+    });
+    expect(events[0]).toBe("pull");
+    expect(events).toContain("inspect-digest");
   });
 
   it("accepts only a local override bound to its Docker image ID (#5896)", () => {
