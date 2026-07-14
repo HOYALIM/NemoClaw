@@ -942,7 +942,7 @@ function probeOpenAiLikeEndpoint(endpointUrl, model, apiKey, options = {}) {
       .map((failure) => `${failure.name}: ${failure.message}`)
       .join(" | ");
     const wslHint =
-      isWsl() && retriedAfterTimeout
+      isWsl({ isWsl: options.isWsl }) && retriedAfterTimeout
         ? " · WSL2 detected \u2014 network verification may be slower than expected. " +
           "Run `nemoclaw onboard` with the `--skip-verify` flag if this endpoint is known to be reachable."
         : "";
@@ -1051,6 +1051,20 @@ export async function verifyOnboardInferenceSmoke(options: any) {
   if (process.env.VITEST === "true") return;
 
   const endpointUrl = options.endpointUrl || require("./config").INFERENCE_ROUTE_URL;
+  if (
+    options.capabilityCache?.takeCompletedOpenAiChat({
+      endpointUrl,
+      model: options.model,
+      authMode: getProbeAuthMode(options.provider),
+      extraHeaders: getProbeExtraHeaders(options.provider),
+      pinnedAddresses: options.pinnedAddresses,
+    })
+  ) {
+    console.log(
+      `  ✓ Reusing selected Chat Completions validation: ${options.provider} / ${options.model}`,
+    );
+    return;
+  }
   const credentialEnv = options.credentialEnv || null;
   const apiKey = credentialEnv
     ? resolveProviderCredential(credentialEnv) || getCredential(credentialEnv) || ""
@@ -1066,6 +1080,8 @@ export async function verifyOnboardInferenceSmoke(options: any) {
     console.log(`  ✓ Inference smoke passed: ${options.provider} / ${options.model}`);
     return;
   }
+
+  options.capabilityCache?.invalidate();
 
   const { compactText } = require("../core/url-utils");
   const { redact } = require("../runner");

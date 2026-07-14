@@ -3,6 +3,7 @@
 
 import { getCredential } from "../credentials/store";
 import { getCompatibleAnthropicOpenAiSurfaceBaseUrl } from "../inference/config";
+import type { OnboardInferenceCapabilityCache } from "./inference-capability-cache";
 
 const { probeAnthropicEndpoint, probeOpenAiLikeEndpointOptimized } =
   require("../inference/onboard-probes") as {
@@ -78,6 +79,7 @@ export interface InferenceSelectionValidationHelpers {
       skipResponsesProbe?: boolean;
       probeStreaming?: boolean;
       allowHostDockerInternal?: boolean;
+      capabilityCache?: OnboardInferenceCapabilityCache;
     },
   ): Promise<EndpointValidationResult>;
   validateAnthropicSelectionWithRetryMessage(
@@ -105,6 +107,15 @@ export interface InferenceSelectionValidationHelpers {
       intendedApi?: "anthropic-messages" | "openai-completions";
     },
   ): Promise<EndpointValidationResult>;
+}
+
+function printOpenAiSurfaceGuidance(): void {
+  console.error(
+    "  This agent needs an endpoint that serves the OpenAI Chat Completions API (/v1/chat/completions).",
+  );
+  console.error("  The selected Anthropic-compatible endpoint does not serve it.");
+  console.error("  Use an OpenAI-compatible endpoint, or switch to an Anthropic-native agent:");
+  console.error("  `nemoclaw onboard --agent openclaw`.");
 }
 
 export function createInferenceSelectionValidationHelpers(
@@ -196,6 +207,7 @@ export function createInferenceSelectionValidationHelpers(
       skipResponsesProbe?: boolean;
       probeStreaming?: boolean;
       allowHostDockerInternal?: boolean;
+      capabilityCache?: OnboardInferenceCapabilityCache;
     } = {},
   ): Promise<EndpointValidationResult> {
     const apiKey = credentialEnv ? resolveCredential(credentialEnv) : "";
@@ -204,6 +216,7 @@ export function createInferenceSelectionValidationHelpers(
       calibrateTimeouts: true,
     });
     if (!probe.ok) {
+      options.capabilityCache?.invalidate();
       printValidationFailure(label, probe);
       if (deps.isNonInteractive()) {
         exitNonInteractiveValidationFailure();
@@ -225,7 +238,17 @@ export function createInferenceSelectionValidationHelpers(
     } else {
       console.log(`  ${probe.label} available — ${deps.agentProductName()} will use ${probe.api}.`);
     }
-    return { ok: true, api: probe.api ?? "openai-completions" };
+    const api = probe.api ?? "openai-completions";
+    if (api === "openai-completions" && probe.validated !== false) {
+      options.capabilityCache?.rememberCompletedOpenAiChat({
+        endpointUrl,
+        model,
+        authMode: options.authMode,
+        requireChatCompletionsToolCalling: options.requireChatCompletionsToolCalling,
+        extraHeaders: options.extraHeaders,
+      });
+    }
+    return { ok: true, api };
   }
 
   async function validateAnthropicSelectionWithRetryMessage(
@@ -362,15 +385,14 @@ export function createInferenceSelectionValidationHelpers(
       return { ok: true, api: intendedApi, pinnedAddresses };
     }
     printValidationFailure(label, probe);
+    const recovery = getProbeRecovery(probe, { allowModelRetry: true });
+    if (intendedApi === "openai-completions" && recovery.kind === "endpoint") {
+      printOpenAiSurfaceGuidance();
+    }
     if (deps.isNonInteractive()) {
       exitNonInteractiveValidationFailure();
     }
-    const retry = await deps.promptValidationRecovery(
-      label,
-      getProbeRecovery(probe, { allowModelRetry: true }),
-      credentialEnv,
-      helpUrl,
-    );
+    const retry = await deps.promptValidationRecovery(label, recovery, credentialEnv, helpUrl);
     if (retry === "selection") {
       console.log("  Please choose a provider/model again.");
       console.log("");
