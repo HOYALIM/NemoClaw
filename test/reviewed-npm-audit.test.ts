@@ -20,6 +20,16 @@ const CONFIG = JSON.parse(
 };
 const roots: string[] = [];
 
+function createAuditPathRoot(): { outside: string; targetRoot: string } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-reviewed-audit-path-"));
+  roots.push(root);
+  const outside = path.join(root, "outside");
+  const targetRoot = path.join(root, "repo");
+  fs.mkdirSync(outside);
+  fs.mkdirSync(targetRoot);
+  return { outside, targetRoot };
+}
+
 afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
@@ -71,25 +81,23 @@ describe("reviewed npm audit gate", () => {
     ).toThrow(/vulnerability report|vulnerability count/);
   });
 
-  it.each(["direct", "ancestor"])("rejects a %s symlink in an audit target", (layout) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-reviewed-audit-path-"));
-    roots.push(root);
-    const outside = path.join(root, "outside");
-    const targetRoot = path.join(root, "repo");
-    fs.mkdirSync(outside);
-    fs.mkdirSync(targetRoot);
+  it("rejects a direct symlink in an audit target", () => {
+    const { outside, targetRoot } = createAuditPathRoot();
+    fs.writeFileSync(path.join(outside, "config.json"), "{}");
+    fs.mkdirSync(path.join(targetRoot, "ci"));
+    fs.symlinkSync(path.join(outside, "config.json"), path.join(targetRoot, "ci", "config.json"));
 
-    if (layout === "direct") {
-      fs.writeFileSync(path.join(outside, "config.json"), "{}");
-      fs.mkdirSync(path.join(targetRoot, "ci"));
-      fs.symlinkSync(path.join(outside, "config.json"), path.join(targetRoot, "ci", "config.json"));
-    } else {
-      fs.symlinkSync(outside, path.join(targetRoot, "artifacts"));
-    }
-
-    const relative = layout === "direct" ? "ci/config.json" : "artifacts/audit";
-    expect(() => resolvePathWithinTargetRoot(targetRoot, relative, "audit target")).toThrow(
+    expect(() => resolvePathWithinTargetRoot(targetRoot, "ci/config.json", "audit target")).toThrow(
       "contains a symbolic-link component",
     );
+  });
+
+  it("rejects an ancestor symlink in an audit target", () => {
+    const { outside, targetRoot } = createAuditPathRoot();
+    fs.symlinkSync(outside, path.join(targetRoot, "artifacts"));
+
+    expect(() =>
+      resolvePathWithinTargetRoot(targetRoot, "artifacts/audit", "audit target"),
+    ).toThrow("contains a symbolic-link component");
   });
 });
