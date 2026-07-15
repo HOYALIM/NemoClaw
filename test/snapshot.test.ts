@@ -81,8 +81,9 @@ function writeExecutable(filePath: string, source: string): void {
   fs.writeFileSync(filePath, source, { mode: 0o755 });
 }
 function restoreEnv(name: string, value: string | undefined): void {
-  if (value === undefined) delete process.env[name];
-  else process.env[name] = value;
+  value === undefined
+    ? Reflect.deleteProperty(process.env, name)
+    : Reflect.set(process.env, name, value);
 }
 function writeAgentRegistry(
   sandboxName: string,
