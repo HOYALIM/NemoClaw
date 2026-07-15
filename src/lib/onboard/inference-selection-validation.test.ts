@@ -202,6 +202,42 @@ describe("inference selection validation", () => {
     }
   });
 
+  it("honors an exactly allowlisted private endpoint during non-interactive validation (#6861)", async () => {
+    vi.stubEnv("NEMOCLAW_TRUSTED_PRIVATE_INFERENCE_HOSTS", "llm.corp.example");
+    const probeOpenAiLikeEndpoint = vi.fn(() => ({ ok: true, api: "openai-completions" }));
+    const promptValidationRecovery = vi.fn(async () => "selection" as const);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const helpers = createInferenceSelectionValidationHelpers({
+      isNonInteractive: () => true,
+      agentProductName: () => "OpenClaw",
+      getCredential: () => "test-key",
+      probeOpenAiLikeEndpoint,
+      promptValidationRecovery,
+      resolveEndpointHost: async () => [{ address: "10.0.0.8", family: 4 }],
+    });
+
+    try {
+      const result = await helpers.validateCustomOpenAiLikeSelection(
+        "Custom endpoint",
+        "https://llm.corp.example/v1",
+        "model-a",
+        "COMPATIBLE_API_KEY",
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        api: "openai-completions",
+        pinnedAddresses: ["10.0.0.8"],
+      });
+      expect(result.ok && result.trustedPrivateCapability?.addresses).toEqual(["10.0.0.8"]);
+      expect(promptValidationRecovery).not.toHaveBeenCalled();
+      expect(probeOpenAiLikeEndpoint).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("routes an unreachable custom endpoint through transport recovery, not a silent loop (#6854)", async () => {
     const probeOpenAiLikeEndpoint = vi.fn(() => ({ ok: true, api: "openai-completions" }));
     let capturedRecovery: { kind?: string } | undefined;
