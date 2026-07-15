@@ -5,14 +5,6 @@ import { lookup as dnsLookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
 
 import { isLoopbackHostname, isPrivateHostname, isPrivateIp } from "../private-networks";
-import { issueTrustedPrivateEndpointCapability } from "./trusted-private-endpoint-capability";
-
-export {
-  isTrustedPrivateEndpointCapability,
-  type TrustedPrivateEndpointCapability,
-} from "./trusted-private-endpoint-capability";
-
-import type { TrustedPrivateEndpointCapability } from "./trusted-private-endpoint-capability";
 
 /** Injectable DNS resolver, shaped like `dns/promises` `lookup(host, {all:true})`. */
 export type EndpointDnsLookupFn = (
@@ -49,6 +41,38 @@ OPERATOR_TRUSTABLE_PRIVATE_NETWORKS.addSubnet("172.16.0.0", 12, "ipv4");
 OPERATOR_TRUSTABLE_PRIVATE_NETWORKS.addSubnet("192.168.0.0", 16, "ipv4");
 OPERATOR_TRUSTABLE_PRIVATE_NETWORKS.addSubnet("fc00::", 7, "ipv6");
 
+declare const trustedPrivateEndpointCapabilityBrand: unique symbol;
+
+/**
+ * Ephemeral proof that the shared SSRF preflight admitted an exact set of
+ * operator-trusted private addresses. Callers can carry this value, but only
+ * this module can issue one and the curl boundary validates its provenance.
+ */
+export interface TrustedPrivateEndpointCapability {
+  readonly addresses: readonly string[];
+  readonly [trustedPrivateEndpointCapabilityBrand]: true;
+}
+
+const TRUSTED_PRIVATE_ENDPOINT_CAPABILITIES = new WeakSet<object>();
+
+function issueTrustedPrivateEndpointCapability(
+  addresses: readonly string[],
+): TrustedPrivateEndpointCapability {
+  const capability = Object.freeze({
+    addresses: Object.freeze([...new Set(addresses)]),
+  }) as unknown as TrustedPrivateEndpointCapability;
+  TRUSTED_PRIVATE_ENDPOINT_CAPABILITIES.add(capability);
+  return capability;
+}
+
+/** True only for a capability issued by this module in the current process. */
+export function isTrustedPrivateEndpointCapability(
+  value: unknown,
+): value is TrustedPrivateEndpointCapability {
+  return (
+    typeof value === "object" && value !== null && TRUSTED_PRIVATE_ENDPOINT_CAPABILITIES.has(value)
+  );
+}
 export function isOperatorTrustablePrivateIp(address: string): boolean {
   const family = isIP(address);
   return (

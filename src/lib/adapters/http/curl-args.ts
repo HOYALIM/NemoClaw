@@ -4,9 +4,10 @@
 import { isIP } from "node:net";
 import path from "node:path";
 import {
+  isOperatorTrustablePrivateIp,
   isTrustedPrivateEndpointCapability,
   type TrustedPrivateEndpointCapability,
-} from "../../inference/trusted-private-endpoint-capability";
+} from "../../inference/endpoint-ssrf-preflight";
 import { isCredentialShapedName } from "../../security/credential-env";
 import { ROOT } from "../../state/paths";
 
@@ -196,12 +197,6 @@ function isPrivateResolveAddress(address: string): boolean {
 }
 
 function isOperatorTrustablePrivateResolveAddress(address: string): boolean {
-  // Keep the generic curl validator import-light while sharing the exact
-  // enterprise-range boundary with the SSRF preflight that issues this
-  // capability. The uncommon --resolve path runs after module initialization,
-  // so this lazy import does not create a runtime cycle.
-  const { isOperatorTrustablePrivateIp } =
-    require("../../inference/endpoint-ssrf-preflight") as typeof import("../../inference/endpoint-ssrf-preflight");
   return isOperatorTrustablePrivateIp(address);
 }
 

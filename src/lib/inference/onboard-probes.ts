@@ -36,11 +36,7 @@ const {
 } = require("./onboard-host-docker-internal");
 const { isNvcfFunctionNotFoundForAccount, nvcfFunctionNotFoundMessage } = require("../validation");
 const { isPrivateHostname, isPrivateIp, isLoopbackHostname } = require("../private-networks");
-const {
-  buildResolvePinArgs,
-  isOperatorTrustablePrivateIp,
-  isTrustedPrivateEndpointCapability,
-} = require("./endpoint-ssrf-preflight");
+const { buildResolvePinArgs, isOperatorTrustablePrivateIp } = require("./endpoint-ssrf-preflight");
 const {
   executeProbeWithHttpRetry,
   isProbeTimeout,
@@ -711,10 +707,11 @@ function probeOpenAiLikeEndpoint(endpointUrl, model, apiKey, options = {}) {
       ? probeHostname.slice(1, -1)
       : probeHostname;
   const pinnedAddresses = options.pinnedAddresses;
+  // This synchronous source check is defense-in-depth; the curl boundary
+  // validates that the capability was actually issued by the preflight.
+  const trustedCapabilityAddresses = options.trustedPrivateCapability?.addresses;
   const trustedPrivateAddresses = new Set(
-    isTrustedPrivateEndpointCapability(options.trustedPrivateCapability)
-      ? options.trustedPrivateCapability.addresses
-      : [],
+    Array.isArray(trustedCapabilityAddresses) ? trustedCapabilityAddresses : [],
   );
   // Private destinations require the exact address capability issued by the
   // shared DNS preflight. Public pins remain sufficient for reserved internal
