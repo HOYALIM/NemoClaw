@@ -7,7 +7,6 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { captureAuthConfigPath } from "../adapters/http/auth-config-test-helpers";
-import { assertEndpointResolvesPublic } from "./endpoint-ssrf-preflight";
 import {
   HARNESS_COUNTER,
   HARNESS_TMPDIR,
@@ -28,6 +27,8 @@ const {
   probeOpenAiLikeEndpoint,
   RETRIABLE_HTTP_PROBE_STATUSES,
 } = require("./onboard-probes");
+const { assertEndpointResolvesPublic } =
+  require("./endpoint-ssrf-preflight") as typeof import("./endpoint-ssrf-preflight");
 
 const FAKE_CONFIG_PATH = "/tmp/nemoclaw-test-credential.conf";
 const FAKE_CREDENTIAL_ARGS = ["--config", FAKE_CONFIG_PATH] as const;

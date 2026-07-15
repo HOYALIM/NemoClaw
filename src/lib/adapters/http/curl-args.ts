@@ -3,7 +3,10 @@
 
 import { isIP } from "node:net";
 import path from "node:path";
-import type { TrustedPrivateEndpointCapability } from "../../inference/endpoint-ssrf-preflight";
+import {
+  isTrustedPrivateEndpointCapability,
+  type TrustedPrivateEndpointCapability,
+} from "../../inference/trusted-private-endpoint-capability";
 import { isCredentialShapedName } from "../../security/credential-env";
 import { ROOT } from "../../state/paths";
 
@@ -206,8 +209,6 @@ function getTrustedPrivateResolveAddresses(
   capability: TrustedPrivateEndpointCapability | undefined,
 ): readonly string[] {
   if (!capability) return [];
-  const { isTrustedPrivateEndpointCapability } =
-    require("../../inference/endpoint-ssrf-preflight") as typeof import("../../inference/endpoint-ssrf-preflight");
   if (!isTrustedPrivateEndpointCapability(capability)) {
     throw new Error("curl probe trusted private capability was not issued by the SSRF preflight");
   }

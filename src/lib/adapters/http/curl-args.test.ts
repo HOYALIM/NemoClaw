@@ -167,6 +167,30 @@ describe("validateCurlProbeArgs — credential-leak defence", () => {
     ).toThrow(/not issued by the SSRF preflight/);
   });
 
+  it("does not trust a process-global mutable capability registry (#6861)", () => {
+    const forged = { addresses: ["10.0.0.8"] } as never;
+    const registryKey = Symbol.for("nemoclaw.trusted-private-endpoint-capability-registry");
+    Object.defineProperty(globalThis, registryKey, {
+      configurable: true,
+      value: new WeakSet([forged]),
+    });
+    try {
+      expect(() =>
+        validateCurlProbeArgs(
+          [
+            "-sS",
+            "--resolve",
+            "llm.corp.example:443:10.0.0.8",
+            "https://llm.corp.example/v1/models",
+          ],
+          { pinnedAddresses: ["10.0.0.8"], trustedPrivateCapability: forged },
+        ),
+      ).toThrow(/not issued by the SSRF preflight/);
+    } finally {
+      Reflect.deleteProperty(globalThis, registryKey);
+    }
+  });
+
   it("requires a valid capability to match an exact private IP URL when no DNS pin is needed (#6861)", async () => {
     const preflight = await assertEndpointResolvesPublic(
       "http://10.0.0.8/v1/models",
