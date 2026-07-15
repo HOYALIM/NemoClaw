@@ -188,11 +188,9 @@ describe("validateCurlProbeArgs — credential-leak defence", () => {
         ),
       ).toThrow(/not issued by the SSRF preflight/);
     } finally {
-      if (previousRegistry) {
-        Object.defineProperty(globalThis, registryKey, previousRegistry);
-      } else {
-        Reflect.deleteProperty(globalThis, registryKey);
-      }
+      previousRegistry === undefined
+        ? Reflect.deleteProperty(globalThis, registryKey)
+        : Object.defineProperty(globalThis, registryKey, previousRegistry);
     }
   });
 
