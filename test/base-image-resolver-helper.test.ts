@@ -31,7 +31,7 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-describe("base image resolver helper", () => {
+describe("base image resolver helper (#6957)", () => {
   it("pulls a remote image and accepts a compatible glibc version", () => {
     const bin = fakeDocker(`
 if [[ "$1" == pull ]]; then exit 0; fi
