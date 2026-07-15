@@ -170,6 +170,7 @@ describe("validateCurlProbeArgs — credential-leak defence", () => {
   it("does not trust a process-global mutable capability registry (#6861)", () => {
     const forged = { addresses: ["10.0.0.8"] } as never;
     const registryKey = Symbol.for("nemoclaw.trusted-private-endpoint-capability-registry");
+    const previousRegistry = Object.getOwnPropertyDescriptor(globalThis, registryKey);
     Object.defineProperty(globalThis, registryKey, {
       configurable: true,
       value: new WeakSet([forged]),
@@ -187,7 +188,11 @@ describe("validateCurlProbeArgs — credential-leak defence", () => {
         ),
       ).toThrow(/not issued by the SSRF preflight/);
     } finally {
-      Reflect.deleteProperty(globalThis, registryKey);
+      if (previousRegistry) {
+        Object.defineProperty(globalThis, registryKey, previousRegistry);
+      } else {
+        Reflect.deleteProperty(globalThis, registryKey);
+      }
     }
   });
 
