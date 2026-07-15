@@ -6,6 +6,7 @@
 //   - listBackups computes virtual v<N> versions by timestamp-ascending position
 //   - findBackup resolves selectors (v<N>, name, exact timestamp)
 import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -458,11 +459,14 @@ describe("sandbox directory backup semantics", () => {
     const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-openclaw-empty-dirs-"));
     const oldPath = process.env.PATH;
     const oldOpenshell = process.env.NEMOCLAW_OPENSHELL_BIN;
+    const oldTmpdir = process.env.TMPDIR;
     try {
       const binDir = path.join(fixture, "bin");
       const openclawDir = path.join(fixture, "sandbox-root", ".openclaw");
+      const stagingRoot = path.join(fixture, "staging");
       const existingDirs = ["agents", "extensions", "workspace", "skills", "hooks", "cron"];
       fs.mkdirSync(binDir, { recursive: true });
+      fs.mkdirSync(stagingRoot);
       for (const dirName of existingDirs) {
         fs.mkdirSync(path.join(openclawDir, dirName), { recursive: true });
       }
@@ -487,7 +491,17 @@ if (cmd.includes("find ")) {
   process.exit(0);
 }
 if (cmd.includes("tar -cf -")) {
-  if (!fs.fstatSync(1).isFile()) {
+  const stagingDirs = fs.readdirSync(${JSON.stringify(stagingRoot)});
+  const archivePaths = stagingDirs
+    .map((entry) => require("node:path").join(${JSON.stringify(stagingRoot)}, entry, "archive.tar"))
+    .filter((candidate) => fs.existsSync(candidate));
+  const archivePath = archivePaths.length === 1 ? archivePaths[0] : "";
+  if (
+    !fs.fstatSync(1).isFile() ||
+    !archivePath ||
+    !fs.existsSync(archivePath) ||
+    fs.statSync(archivePath).ino !== fs.fstatSync(1).ino
+  ) {
     process.stderr.write("backup tar stdout must stream to a file\\n");
     process.exit(64);
   }
@@ -507,6 +521,7 @@ process.exit(0);
         openclawImagePluginInstalls: [],
       });
       process.env.NEMOCLAW_OPENSHELL_BIN = openshell;
+      process.env.TMPDIR = stagingRoot;
       process.env.PATH = `${binDir}${path.delimiter}${oldPath || ""}`;
 
       const backup = sandboxState.backupSandboxState("alpha");
@@ -516,11 +531,76 @@ process.exit(0);
       expect(backup.manifest?.backedUpDirs).toEqual(existingDirs);
       expect(backup.manifest?.reconcileOpenClawImagePluginProvenance).toBe(true);
       expect(backup.manifest?.openclawImagePluginInstalls).toEqual([]);
+      expect(fs.readdirSync(stagingRoot)).toEqual([]);
     } finally {
       if (oldOpenshell === undefined) {
         delete process.env.NEMOCLAW_OPENSHELL_BIN;
       } else {
         process.env.NEMOCLAW_OPENSHELL_BIN = oldOpenshell;
+      }
+      if (oldTmpdir === undefined) {
+        delete process.env.TMPDIR;
+      } else {
+        process.env.TMPDIR = oldTmpdir;
+      }
+      process.env.PATH = oldPath;
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it("returns a structured failure when the archive staging file cannot be created", () => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-backup-staging-failure-"));
+    const oldPath = process.env.PATH;
+    const oldOpenshell = process.env.NEMOCLAW_OPENSHELL_BIN;
+    const oldTmpdir = process.env.TMPDIR;
+    const originalOpenSync = fs.openSync;
+    try {
+      const binDir = path.join(fixture, "bin");
+      const stagingRoot = path.join(fixture, "staging");
+      fs.mkdirSync(binDir);
+      fs.mkdirSync(stagingRoot);
+      const openshell = writeFakeOpenshell(binDir);
+      writeExecutable(
+        path.join(binDir, "ssh"),
+        `#!/usr/bin/env node
+const cmd = process.argv[process.argv.length - 1] || "";
+if (cmd.includes("[ -d ")) process.stdout.write("workspace\\n");
+if (cmd.includes("openclaw.json") && cmd.includes("cat --")) process.exit(2);
+process.exit(0);
+`,
+      );
+      writeOpenClawRegistry("alpha");
+      process.env.NEMOCLAW_OPENSHELL_BIN = openshell;
+      process.env.TMPDIR = stagingRoot;
+      process.env.PATH = `${binDir}${path.delimiter}${oldPath || ""}`;
+
+      fs.openSync = ((filePath, flags, mode) => {
+        if (String(filePath).endsWith(`${path.sep}archive.tar`)) {
+          const error = new Error("ENOSPC: no space left on device");
+          Object.assign(error, { code: "ENOSPC" });
+          throw error;
+        }
+        return originalOpenSync(filePath, flags, mode);
+      }) as typeof fs.openSync;
+      syncBuiltinESMExports();
+
+      const backup = sandboxState.backupSandboxState("alpha");
+      expect(backup.success).toBe(false);
+      expect(backup.failedDirs).toEqual(["workspace"]);
+      expect(backup.error).toMatch(/Failed to create backup archive file.*ENOSPC/);
+      expect(fs.readdirSync(stagingRoot)).toEqual([]);
+    } finally {
+      fs.openSync = originalOpenSync;
+      syncBuiltinESMExports();
+      if (oldOpenshell === undefined) {
+        delete process.env.NEMOCLAW_OPENSHELL_BIN;
+      } else {
+        process.env.NEMOCLAW_OPENSHELL_BIN = oldOpenshell;
+      }
+      if (oldTmpdir === undefined) {
+        delete process.env.TMPDIR;
+      } else {
+        process.env.TMPDIR = oldTmpdir;
       }
       process.env.PATH = oldPath;
       fs.rmSync(fixture, { recursive: true, force: true });

@@ -15,6 +15,7 @@ import {
   chmodSync,
   existsSync,
   lstatSync,
+  mkdtempSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -1166,8 +1167,29 @@ export function backupSandboxState(sandboxName: string, options: BackupOptions =
         // could create symlinks to exfiltrate config contents via backup.
         const tarCmd = `tar -cf - -C ${shellQuote(dir)} -- ${existingDirs.map(shellQuote).join(" ")}`;
         _log(`Downloading via SSH+tar: ${tarCmd}`);
-        const downloadedTarPath = path.join(backupPath, ".nemoclaw-state-download.tar");
-        const downloadedTarFd = openSync(downloadedTarPath, "wx", 0o600);
+        let downloadedTarDir: string | undefined;
+        let downloadedTarPath: string;
+        let downloadedTarFd: number;
+        try {
+          downloadedTarDir = mkdtempSync(path.join(os.tmpdir(), "nemoclaw-state-download-"));
+          downloadedTarPath = path.join(downloadedTarDir, "archive.tar");
+          downloadedTarFd = openSync(downloadedTarPath, "wx", 0o600);
+        } catch (error) {
+          if (downloadedTarDir) {
+            rmSync(downloadedTarDir, { recursive: true, force: true });
+          }
+          const detail = error instanceof Error ? error.message : String(error);
+          _log(`FAILED: Could not create local backup archive staging file — ${detail}`);
+          return {
+            success: false,
+            manifest,
+            backedUpDirs,
+            failedDirs: [...existingDirs],
+            backedUpFiles,
+            failedFiles: stateFiles.map((f) => f.path),
+            error: `Failed to create backup archive file: ${detail}`,
+          };
+        }
         let result: ReturnType<typeof spawnSync>;
         try {
           result = spawnSync("ssh", [...sshArgs(configFile, sandboxName), tarCmd], {
@@ -1205,7 +1227,7 @@ export function backupSandboxState(sandboxName: string, options: BackupOptions =
             extractResult = safeTarExtract({ filePath: downloadedTarPath }, backupPath);
           }
         } finally {
-          rmSync(downloadedTarPath, { force: true });
+          rmSync(downloadedTarDir, { recursive: true, force: true });
         }
 
         if (tarExitedWithData) {
