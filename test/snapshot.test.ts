@@ -487,6 +487,10 @@ if (cmd.includes("find ")) {
   process.exit(0);
 }
 if (cmd.includes("tar -cf -")) {
+  if (!fs.fstatSync(1).isFile()) {
+    process.stderr.write("backup tar stdout must stream to a file\\n");
+    process.exit(64);
+  }
   const r = spawnSync("tar", ["-cf", "-", "-C", ${JSON.stringify(openclawDir)}, ...existingDirs], {
     stdio: ["ignore", "pipe", "pipe"],
   });
