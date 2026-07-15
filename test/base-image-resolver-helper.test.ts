@@ -107,10 +107,16 @@ resolver_try_candidates reject first second`);
     const valid = run("resolver_write_env BASE_IMAGE ghcr.io/nvidia/nemoclaw/sandbox-base:latest", {
       GITHUB_ENV: githubEnv,
     });
-    const invalid = run('resolver_write_env "BAD-NAME" image', { GITHUB_ENV: githubEnv });
+    const invalidName = run('resolver_write_env "BAD-NAME" image', { GITHUB_ENV: githubEnv });
+    const emptyValue = run('resolver_write_env BASE_IMAGE ""', { GITHUB_ENV: githubEnv });
+    const multilineValue = run("resolver_write_env BASE_IMAGE $'first\\nsecond'", {
+      GITHUB_ENV: githubEnv,
+    });
 
     expect(valid.status).toBe(0);
-    expect(invalid.status).not.toBe(0);
+    expect(invalidName.status).not.toBe(0);
+    expect(emptyValue.status).not.toBe(0);
+    expect(multilineValue.status).not.toBe(0);
     expect(readFileSync(githubEnv, "utf8")).toBe(
       "BASE_IMAGE=ghcr.io/nvidia/nemoclaw/sandbox-base:latest\n",
     );

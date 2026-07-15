@@ -62,7 +62,7 @@ runs:
             echo "::warning::Hermes sandbox base image ${ref} lacks the packaged MCP Streamable HTTP client imports"
             return 1
           fi
-          resolver_write_env HERMES_BASE_IMAGE "$digest_ref"
+          resolver_write_env HERMES_BASE_IMAGE "$digest_ref" || return 1
           return 0
         }
 
