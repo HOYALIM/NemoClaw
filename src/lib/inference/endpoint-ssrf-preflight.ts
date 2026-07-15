@@ -4,8 +4,6 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
 
-import { isLoopbackHostname, isPrivateHostname, isPrivateIp } from "../private-networks";
-
 /** Injectable DNS resolver, shaped like `dns/promises` `lookup(host, {all:true})`. */
 export type EndpointDnsLookupFn = (
   hostname: string,
@@ -167,6 +165,12 @@ export async function assertEndpointResolvesPublic(
   } catch {
     return { ok: false, reason: `"${String(endpointUrl)}" is not a valid URL` };
   }
+
+  // Keep the capability and range helpers import-light for generic curl
+  // validation. The YAML-backed private-network classifier is needed only
+  // when a caller actually runs the endpoint preflight.
+  const { isLoopbackHostname, isPrivateHostname, isPrivateIp } =
+    require("../private-networks") as typeof import("../private-networks");
 
   const normalizedHostname = normalizeEndpointHost(hostname);
   const trustedPrivateHost = (options.trustedPrivateHosts ?? []).some(
