@@ -15,5 +15,5 @@ export function defineAdvisoryRegistry<Context>(
   return Object.freeze([...checks]);
 }
 
-/** Checks are imported and registered explicitly as migration slices land. */
+/** Checks are imported and registered explicitly as migration slices land (#3213). */
 export const ADVISORY_CHECKS = defineAdvisoryRegistry<unknown>([]);
