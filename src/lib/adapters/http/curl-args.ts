@@ -3,6 +3,7 @@
 
 import { isIP } from "node:net";
 import path from "node:path";
+import type { TrustedPrivateEndpointCapability } from "../../inference/endpoint-ssrf-preflight";
 import { isCredentialShapedName } from "../../security/credential-env";
 import { ROOT } from "../../state/paths";
 
@@ -16,8 +17,10 @@ export interface CurlProbeArgOptions {
    * hardcoded host.
    */
   allowRedirects?: boolean;
-  /** Public addresses approved by the endpoint SSRF preflight. */
+  /** Addresses approved by the endpoint SSRF preflight. */
   pinnedAddresses?: readonly string[];
+  /** Non-forgeable proof of the exact private subset admitted by the SSRF preflight. */
+  trustedPrivateCapability?: TrustedPrivateEndpointCapability;
 }
 
 const CURL_CONFIG_OPTIONS = new Set(["--config", "-K"]);
@@ -189,6 +192,28 @@ function isPrivateResolveAddress(address: string): boolean {
   return isPrivateIp(address);
 }
 
+function isOperatorTrustablePrivateResolveAddress(address: string): boolean {
+  // Keep the generic curl validator import-light while sharing the exact
+  // enterprise-range boundary with the SSRF preflight that issues this
+  // capability. The uncommon --resolve path runs after module initialization,
+  // so this lazy import does not create a runtime cycle.
+  const { isOperatorTrustablePrivateIp } =
+    require("../../inference/endpoint-ssrf-preflight") as typeof import("../../inference/endpoint-ssrf-preflight");
+  return isOperatorTrustablePrivateIp(address);
+}
+
+function getTrustedPrivateResolveAddresses(
+  capability: TrustedPrivateEndpointCapability | undefined,
+): readonly string[] {
+  if (!capability) return [];
+  const { isTrustedPrivateEndpointCapability } =
+    require("../../inference/endpoint-ssrf-preflight") as typeof import("../../inference/endpoint-ssrf-preflight");
+  if (!isTrustedPrivateEndpointCapability(capability)) {
+    throw new Error("curl probe trusted private capability was not issued by the SSRF preflight");
+  }
+  return capability.addresses;
+}
+
 function assertResolveMatchesApprovedEndpoint(
   value: string,
   target: URL,
@@ -203,6 +228,9 @@ function assertResolveMatchesApprovedEndpoint(
   const port = value.slice(firstSeparator + 1, secondSeparator);
   const addresses = parseResolveAddresses(value.slice(secondSeparator + 1));
   const approved = [...new Set(opts.pinnedAddresses ?? [])];
+  const trustedPrivate = [
+    ...new Set(getTrustedPrivateResolveAddresses(opts.trustedPrivateCapability)),
+  ];
   if (approved.length === 0) {
     throw new Error("curl probe --resolve requires SSRF-preflight-approved pinnedAddresses");
   }
@@ -212,8 +240,25 @@ function assertResolveMatchesApprovedEndpoint(
   if (addresses.length === 0 || addresses.some((address) => isIP(address) === 0)) {
     throw new Error("curl probe --resolve addresses must be numeric IP addresses");
   }
-  if (addresses.some((address) => isPrivateResolveAddress(address))) {
-    throw new Error("curl probe --resolve must not map the destination to a private address");
+  if (
+    trustedPrivate.some(
+      (address) =>
+        isIP(address) === 0 ||
+        !isPrivateResolveAddress(address) ||
+        !isOperatorTrustablePrivateResolveAddress(address),
+    )
+  ) {
+    throw new Error(
+      "curl probe trusted private addresses must be numeric RFC1918, CGNAT, or IPv6 ULA addresses",
+    );
+  }
+  const trustedPrivateSet = new Set(trustedPrivate);
+  if (
+    addresses.some((address) => isPrivateResolveAddress(address) && !trustedPrivateSet.has(address))
+  ) {
+    throw new Error(
+      "curl probe --resolve must not map the destination to an unauthorized private address",
+    );
   }
   const actualSet = new Set(addresses);
   const approvedSet = new Set(approved);
@@ -233,6 +278,10 @@ export function validateCurlProbeArgs(
   const args = [...argv];
   const url = normalizeHttpProbeUrl(args.pop());
   const parsedUrl = new URL(url);
+  const trustedPrivate = getTrustedPrivateResolveAddresses(opts.trustedPrivateCapability);
+  if (trustedPrivate.length > 0 && opts.pinnedAddresses === undefined) {
+    throw new Error("curl probe trusted private capability requires pinnedAddresses");
+  }
   let sawResolve = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -308,6 +357,14 @@ export function validateCurlProbeArgs(
       throw new Error("curl probe received unexpected positional argument before URL");
     }
     throw new Error(`curl probe option is not allowed: ${option}`);
+  }
+  if (trustedPrivate.length > 0 && !sawResolve) {
+    const targetAddress = normalizeHostname(parsedUrl.hostname);
+    if (isIP(targetAddress) === 0 || !trustedPrivate.includes(targetAddress)) {
+      throw new Error(
+        "curl probe trusted private capability must match the exact private IP URL or --resolve mapping",
+      );
+    }
   }
   return { args, url };
 }

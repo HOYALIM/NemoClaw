@@ -7,6 +7,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { captureAuthConfigPath } from "../adapters/http/auth-config-test-helpers";
+import { assertEndpointResolvesPublic } from "./endpoint-ssrf-preflight";
 import {
   HARNESS_COUNTER,
   HARNESS_TMPDIR,
@@ -477,7 +478,10 @@ describe("OpenAI-compatible inference probes", () => {
       expect(result.message).toMatch(/private\/internal address/i);
     });
 
-    it("allows a preflight-approved RFC1918 literal while keeping metadata blocked (#6861)", () => {
+    it("allows a preflight-approved RFC1918 literal while keeping metadata blocked (#6861)", async () => {
+      const preflight = await assertEndpointResolvesPublic("http://10.0.0.8/v1", async () => [], {
+        trustedPrivateHosts: ["10.0.0.8"],
+      });
       const body = `if [ -n "$outfile" ]; then
   cat <<'JSON' > "$outfile"
 {"choices":[{"message":{"content":"OK"}}]}
@@ -492,6 +496,7 @@ exit 0
           const approved = probeOpenAiLikeEndpoint("http://10.0.0.8/v1", "openai/model", "dummy", {
             skipResponsesProbe: true,
             pinnedAddresses: [],
+            trustedPrivateCapability: preflight.trustedPrivateCapability,
           });
           expect(approved).toMatchObject({ ok: true });
 

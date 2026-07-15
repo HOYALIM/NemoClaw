@@ -17,6 +17,7 @@ describe("onboard shared gateway route containment", () => {
       trustedHosts: "",
       expectedError: null,
       expectedPinnedAddresses: ["93.184.216.34"],
+      expectedTrustedPrivateAddresses: [],
     },
     {
       scenario: "operator-trusted private",
@@ -25,6 +26,7 @@ describe("onboard shared gateway route containment", () => {
       trustedHosts: "llm.corp.example",
       expectedError: null,
       expectedPinnedAddresses: ["10.0.0.8"],
+      expectedTrustedPrivateAddresses: ["10.0.0.8"],
     },
     {
       scenario: "unlisted private",
@@ -33,6 +35,7 @@ describe("onboard shared gateway route containment", () => {
       trustedHosts: "",
       expectedError: "exit 1",
       expectedPinnedAddresses: [],
+      expectedTrustedPrivateAddresses: [],
     },
   ])("handles a resumed $scenario endpoint at the shared preflight", async (scenario) => {
     vi.stubEnv("NEMOCLAW_TRUSTED_PRIVATE_INFERENCE_HOSTS", scenario.trustedHosts);
@@ -107,6 +110,11 @@ describe("onboard shared gateway route containment", () => {
     expect(
       verifyOnboardInferenceSmoke.mock.calls.flatMap(([request]) => request.pinnedAddresses ?? []),
     ).toEqual(scenario.expectedPinnedAddresses);
+    expect(
+      verifyOnboardInferenceSmoke.mock.calls.flatMap(
+        ([request]) => request.trustedPrivateCapability?.addresses ?? [],
+      ),
+    ).toEqual(scenario.expectedTrustedPrivateAddresses);
   });
 
   it("warns once inside the gateway lock before applying a valid conflicting route (#6315)", async () => {

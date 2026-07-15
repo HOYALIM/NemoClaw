@@ -174,23 +174,26 @@ describe("inference selection validation", () => {
     });
 
     try {
-      await expect(
-        helpers.validateCustomOpenAiLikeSelection(
-          "Custom endpoint",
-          "https://llm.corp.example/v1",
-          "model-a",
-          "COMPATIBLE_API_KEY",
-        ),
-      ).resolves.toEqual({
+      const result = await helpers.validateCustomOpenAiLikeSelection(
+        "Custom endpoint",
+        "https://llm.corp.example/v1",
+        "model-a",
+        "COMPATIBLE_API_KEY",
+      );
+      expect(result).toMatchObject({
         ok: true,
         api: "openai-completions",
         pinnedAddresses: ["10.0.0.8"],
       });
+      expect(result.ok && result.trustedPrivateCapability?.addresses).toEqual(["10.0.0.8"]);
       expect(probeOpenAiLikeEndpoint).toHaveBeenCalledWith(
         "https://llm.corp.example/v1",
         "model-a",
         "test-key",
-        expect.objectContaining({ pinnedAddresses: ["10.0.0.8"] }),
+        expect.objectContaining({
+          pinnedAddresses: ["10.0.0.8"],
+          trustedPrivateCapability: expect.objectContaining({ addresses: ["10.0.0.8"] }),
+        }),
       );
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("operator-trusted private"));
     } finally {

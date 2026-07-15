@@ -41,6 +41,57 @@ OPERATOR_TRUSTABLE_PRIVATE_NETWORKS.addSubnet("172.16.0.0", 12, "ipv4");
 OPERATOR_TRUSTABLE_PRIVATE_NETWORKS.addSubnet("192.168.0.0", 16, "ipv4");
 OPERATOR_TRUSTABLE_PRIVATE_NETWORKS.addSubnet("fc00::", 7, "ipv6");
 
+declare const trustedPrivateEndpointCapabilityBrand: unique symbol;
+
+/**
+ * Ephemeral proof that the shared SSRF preflight admitted an exact set of
+ * operator-trusted private addresses. Callers can carry this value, but only
+ * this module can issue one and the curl boundary validates its provenance.
+ */
+export interface TrustedPrivateEndpointCapability {
+  readonly addresses: readonly string[];
+  readonly [trustedPrivateEndpointCapabilityBrand]: true;
+}
+
+// Source tests and the compiled CLI can load this module through both ESM and
+// CommonJS entry points. Keep the issuer registry process-wide so a capability
+// remains valid across that boundary without exposing any public constructor.
+const TRUSTED_PRIVATE_ENDPOINT_CAPABILITY_REGISTRY = Symbol.for(
+  "nemoclaw.trusted-private-endpoint-capability-registry",
+);
+const capabilityGlobal = globalThis as typeof globalThis & {
+  [TRUSTED_PRIVATE_ENDPOINT_CAPABILITY_REGISTRY]?: WeakSet<object>;
+};
+const TRUSTED_PRIVATE_ENDPOINT_CAPABILITIES =
+  capabilityGlobal[TRUSTED_PRIVATE_ENDPOINT_CAPABILITY_REGISTRY] ?? new WeakSet<object>();
+if (!capabilityGlobal[TRUSTED_PRIVATE_ENDPOINT_CAPABILITY_REGISTRY]) {
+  Object.defineProperty(capabilityGlobal, TRUSTED_PRIVATE_ENDPOINT_CAPABILITY_REGISTRY, {
+    configurable: false,
+    enumerable: false,
+    value: TRUSTED_PRIVATE_ENDPOINT_CAPABILITIES,
+    writable: false,
+  });
+}
+
+function issueTrustedPrivateEndpointCapability(
+  addresses: readonly string[],
+): TrustedPrivateEndpointCapability {
+  const capability = Object.freeze({
+    addresses: Object.freeze([...new Set(addresses)]),
+  }) as unknown as TrustedPrivateEndpointCapability;
+  TRUSTED_PRIVATE_ENDPOINT_CAPABILITIES.add(capability);
+  return capability;
+}
+
+/** True only for a capability issued by this module in the current process. */
+export function isTrustedPrivateEndpointCapability(
+  value: unknown,
+): value is TrustedPrivateEndpointCapability {
+  return (
+    typeof value === "object" && value !== null && TRUSTED_PRIVATE_ENDPOINT_CAPABILITIES.has(value)
+  );
+}
+
 export function isOperatorTrustablePrivateIp(address: string): boolean {
   const family = isIP(address);
   return (
@@ -74,6 +125,8 @@ export interface EndpointSsrfPreflightResult {
    * curl `--resolve` argument is needed.
    */
   addresses?: string[];
+  /** Non-forgeable proof of the exact private addresses admitted by the operator allowlist. */
+  trustedPrivateCapability?: TrustedPrivateEndpointCapability;
   /** True only when an exact operator allowlist entry admitted a private address. */
   trustedPrivateEndpoint?: true;
 }
@@ -160,7 +213,12 @@ export async function assertEndpointResolvesPublic(
   if (isIP(bare)) {
     if (!isPrivateIp(bare)) return { ok: true, addresses: [] };
     return trustedPrivateHost && isOperatorTrustablePrivateIp(bare)
-      ? { ok: true, addresses: [], trustedPrivateEndpoint: true }
+      ? {
+          ok: true,
+          addresses: [],
+          trustedPrivateCapability: issueTrustedPrivateEndpointCapability([bare]),
+          trustedPrivateEndpoint: true,
+        }
       : { ok: false, reason: `endpoint host "${hostname}" is a private/internal address` };
   }
 
@@ -185,8 +243,14 @@ export async function assertEndpointResolvesPublic(
     }
   }
   const resolvedAddresses = addresses.map(({ address }) => address);
-  return trustedPrivateHost && resolvedAddresses.some((address) => isPrivateIp(address))
-    ? { ok: true, addresses: resolvedAddresses, trustedPrivateEndpoint: true }
+  const trustedPrivateAddresses = resolvedAddresses.filter((address) => isPrivateIp(address));
+  return trustedPrivateHost && trustedPrivateAddresses.length > 0
+    ? {
+        ok: true,
+        addresses: resolvedAddresses,
+        trustedPrivateCapability: issueTrustedPrivateEndpointCapability(trustedPrivateAddresses),
+        trustedPrivateEndpoint: true,
+      }
     : { ok: true, addresses: resolvedAddresses };
 }
 

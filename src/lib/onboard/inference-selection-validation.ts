@@ -3,6 +3,7 @@
 
 import { getCredential } from "../credentials/store";
 import { getCompatibleAnthropicOpenAiSurfaceBaseUrl } from "../inference/config";
+import type { TrustedPrivateEndpointCapability } from "../inference/endpoint-ssrf-preflight";
 import type { OnboardInferenceCapabilityCache } from "./inference-capability-cache";
 
 const { probeAnthropicEndpoint, probeOpenAiLikeEndpointOptimized } =
@@ -11,7 +12,11 @@ const { probeAnthropicEndpoint, probeOpenAiLikeEndpointOptimized } =
       endpointUrl: string,
       model: string,
       apiKey: string | null | undefined,
-      options?: { probeStreaming?: boolean; pinnedAddresses?: readonly string[] },
+      options?: {
+        probeStreaming?: boolean;
+        pinnedAddresses?: readonly string[];
+        trustedPrivateCapability?: TrustedPrivateEndpointCapability;
+      },
     ): any;
     probeOpenAiLikeEndpointOptimized(
       endpointUrl: string,
@@ -45,6 +50,8 @@ export type EndpointValidationResult =
       retry?: undefined;
       /** Public addresses approved for this custom endpoint's host probes. */
       pinnedAddresses?: string[];
+      /** Non-forgeable proof of the exact private subset admitted by the operator allowlist. */
+      trustedPrivateCapability?: TrustedPrivateEndpointCapability;
     }
   | { ok: false; retry: "credential" | "selection" | "retry" | "model"; api?: undefined };
 
@@ -158,7 +165,13 @@ export function createInferenceSelectionValidationHelpers(
     endpointUrl: string,
     credentialEnv: string | null,
     helpUrl: string | null,
-  ): Promise<{ blocked: EndpointValidationResult } | { pinnedAddresses?: string[] }> {
+  ): Promise<
+    | { blocked: EndpointValidationResult }
+    | {
+        pinnedAddresses?: string[];
+        trustedPrivateCapability?: TrustedPrivateEndpointCapability;
+      }
+  > {
     // Always run the SSRF preflight. An explicit exact-host allowlist may admit
     // an operator-owned private endpoint, but it does not skip DNS resolution,
     // pinning, or fail-closed resolver handling (#6861).
@@ -176,7 +189,12 @@ export function createInferenceSelectionValidationHelpers(
             "NEMOCLAW_TRUSTED_PRIVATE_INFERENCE_HOSTS restricted to infrastructure you control.",
         );
       }
-      return { pinnedAddresses: preflight.addresses };
+      return {
+        pinnedAddresses: preflight.addresses,
+        ...(preflight.trustedPrivateCapability
+          ? { trustedPrivateCapability: preflight.trustedPrivateCapability }
+          : {}),
+      };
     }
     const reason = preflight.reason ?? "endpoint resolves to a private/internal address";
     // A preflight failure because the host does not resolve (an unreachable /
@@ -323,7 +341,7 @@ export function createInferenceSelectionValidationHelpers(
       helpUrl,
     );
     if ("blocked" in preflight) return preflight.blocked;
-    const { pinnedAddresses } = preflight;
+    const { pinnedAddresses, trustedPrivateCapability } = preflight;
     const apiKey = resolveCredential(credentialEnv);
     const reasoningEnabled = normalizeReasoningFlag(process.env.NEMOCLAW_REASONING) === "true";
     // Reasoning-only compatible endpoints often reject Responses, tool-call, and streaming probes.
@@ -334,6 +352,7 @@ export function createInferenceSelectionValidationHelpers(
         reasoningEnabled || shouldForceCompletionsApi(process.env.NEMOCLAW_PREFERRED_API),
       probeStreaming: !reasoningEnabled,
       pinnedAddresses,
+      trustedPrivateCapability,
     });
     if (probe.ok) {
       if (probe.note) {
@@ -343,7 +362,12 @@ export function createInferenceSelectionValidationHelpers(
           `  ${probe.label} available — ${deps.agentProductName()} will use ${probe.api}.`,
         );
       }
-      return { ok: true, api: probe.api ?? "openai-completions", pinnedAddresses };
+      return {
+        ok: true,
+        api: probe.api ?? "openai-completions",
+        pinnedAddresses,
+        ...(trustedPrivateCapability ? { trustedPrivateCapability } : {}),
+      };
     }
     printValidationFailure(label, probe);
     if (deps.isNonInteractive()) {
@@ -379,7 +403,7 @@ export function createInferenceSelectionValidationHelpers(
       helpUrl,
     );
     if ("blocked" in preflight) return preflight.blocked;
-    const { pinnedAddresses } = preflight;
+    const { pinnedAddresses, trustedPrivateCapability } = preflight;
     const apiKey = resolveCredential(credentialEnv);
     const reasoningEnabled = normalizeReasoningFlag(process.env.NEMOCLAW_REASONING) === "true";
     const intendedApi = options.intendedApi ?? "anthropic-messages";
@@ -393,13 +417,19 @@ export function createInferenceSelectionValidationHelpers(
             getCompatibleAnthropicOpenAiSurfaceBaseUrl(endpointUrl),
             model,
             apiKey,
-            { calibrateTimeouts: true, skipResponsesProbe: true, pinnedAddresses },
+            {
+              calibrateTimeouts: true,
+              skipResponsesProbe: true,
+              pinnedAddresses,
+              trustedPrivateCapability,
+            },
           )
         : runAnthropicProbe(endpointUrl, model, apiKey, {
             // Reasoning-only compatible endpoints often reject streaming probes,
             // so mirror the custom OpenAI-compatible path and skip streaming.
             probeStreaming: !reasoningEnabled,
             pinnedAddresses,
+            trustedPrivateCapability,
           });
     if (probe.ok) {
       if (probe.note) {
@@ -409,7 +439,12 @@ export function createInferenceSelectionValidationHelpers(
           `  ${probe.label} available — ${deps.agentProductName()} will use ${intendedApi}.`,
         );
       }
-      return { ok: true, api: intendedApi, pinnedAddresses };
+      return {
+        ok: true,
+        api: intendedApi,
+        pinnedAddresses,
+        ...(trustedPrivateCapability ? { trustedPrivateCapability } : {}),
+      };
     }
     printValidationFailure(label, probe);
     const recovery = getProbeRecovery(probe, { allowModelRetry: true });

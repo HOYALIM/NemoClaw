@@ -262,6 +262,7 @@ export function createSetupInference(
         }
         deps.step(4, 8, "Setting up inference provider");
         let endpointPinnedAddresses = options.endpointPinnedAddresses;
+        let endpointTrustedPrivateCapability = options.endpointTrustedPrivateCapability;
         // Strictly classified AWS Bedrock Runtime hostnames use the dedicated
         // SigV4/bearer adapter rather than the generic curl probe path. Their
         // hostname is constrained to AWS-owned suffixes by the classifier, so
@@ -293,6 +294,7 @@ export function createSetupInference(
             return { retry: "selection" };
           }
           endpointPinnedAddresses = preflight.addresses;
+          endpointTrustedPrivateCapability = preflight.trustedPrivateCapability;
         }
         const runGatewayOpenshell = createGatewayScopedOpenshellRunner(
           deps.runOpenshell,
@@ -327,6 +329,7 @@ export function createSetupInference(
             deps.verifyOnboardInferenceSmoke({
               ...input,
               pinnedAddresses: endpointPinnedAddresses,
+              trustedPrivateCapability: endpointTrustedPrivateCapability,
               capabilityCache: options.inferenceCapabilityCache,
             }),
           isNonInteractive: deps.isNonInteractive,
@@ -381,6 +384,7 @@ export function createSetupInference(
               skipHostInferenceSmoke: options.skipHostInferenceSmoke === true,
               preferredInferenceApi: options.preferredInferenceApi ?? null,
               pinnedAddresses: endpointPinnedAddresses,
+              trustedPrivateCapability: endpointTrustedPrivateCapability,
               capabilityCache: options.inferenceCapabilityCache,
             },
             {
@@ -467,6 +471,7 @@ export function createSetupInference(
             endpointUrl,
             credentialEnv,
             pinnedAddresses: endpointPinnedAddresses,
+            trustedPrivateCapability: endpointTrustedPrivateCapability,
             capabilityCache: options.inferenceCapabilityCache,
           });
         if (sandboxName) {

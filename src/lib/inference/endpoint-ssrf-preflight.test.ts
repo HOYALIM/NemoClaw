@@ -3,11 +3,13 @@
 
 import { describe, expect, it, vi } from "vitest";
 
+import { validateCurlProbeArgs } from "../adapters/http/curl-args";
 import {
   assertEndpointResolvesPublic,
   buildResolvePinArgs,
   type EndpointDnsLookupFn,
   isOpenShellManagedHost,
+  isTrustedPrivateEndpointCapability,
   parseTrustedPrivateInferenceHosts,
 } from "./endpoint-ssrf-preflight";
 
@@ -53,11 +55,13 @@ describe("assertEndpointResolvesPublic (#6293)", () => {
     const result = await assertEndpointResolvesPublic("https://LLM.CORP.EXAMPLE./v1", lookup, {
       trustedPrivateHosts: ["llm.corp.example"],
     });
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       ok: true,
       addresses: ["10.0.0.8"],
       trustedPrivateEndpoint: true,
     });
+    expect(result.trustedPrivateCapability?.addresses).toEqual(["10.0.0.8"]);
+    expect(isTrustedPrivateEndpointCapability(result.trustedPrivateCapability)).toBe(true);
     expect(lookup).toHaveBeenCalledWith("llm.corp.example", { all: true });
   });
 
@@ -96,7 +100,12 @@ describe("assertEndpointResolvesPublic (#6293)", () => {
     const result = await assertEndpointResolvesPublic("http://10.0.0.8/v1", lookup, {
       trustedPrivateHosts: ["10.0.0.8"],
     });
-    expect(result).toEqual({ ok: true, addresses: [], trustedPrivateEndpoint: true });
+    expect(result).toMatchObject({
+      ok: true,
+      addresses: [],
+      trustedPrivateEndpoint: true,
+    });
+    expect(result.trustedPrivateCapability?.addresses).toEqual(["10.0.0.8"]);
     expect(lookup).not.toHaveBeenCalled();
   });
 
@@ -111,11 +120,30 @@ describe("assertEndpointResolvesPublic (#6293)", () => {
       resolverTo(address),
       { trustedPrivateHosts: ["llm.corp.example"] },
     );
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       ok: true,
       addresses: [address],
       trustedPrivateEndpoint: true,
     });
+    expect(result.trustedPrivateCapability?.addresses).toEqual([address]);
+  });
+
+  it("carries an allowlisted private DNS result through curl argument validation (#6861)", async () => {
+    const endpointUrl = "https://llm.corp.example/v1/models";
+    const preflight = await assertEndpointResolvesPublic(endpointUrl, resolverTo("10.0.0.8"), {
+      trustedPrivateHosts: ["llm.corp.example"],
+    });
+    expect(preflight.ok).toBe(true);
+    const args = ["-sS", ...buildResolvePinArgs(endpointUrl, preflight.addresses), endpointUrl];
+    expect(() =>
+      validateCurlProbeArgs(args, {
+        pinnedAddresses: preflight.addresses,
+        trustedPrivateCapability: preflight.trustedPrivateCapability,
+      }),
+    ).not.toThrow();
+    expect(() => validateCurlProbeArgs(args, { pinnedAddresses: preflight.addresses })).toThrow(
+      /unauthorized private address/,
+    );
   });
 
   it.each([
