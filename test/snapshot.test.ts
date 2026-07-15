@@ -80,6 +80,10 @@ beforeEach(() => {
 function writeExecutable(filePath: string, source: string): void {
   fs.writeFileSync(filePath, source, { mode: 0o755 });
 }
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
 function writeAgentRegistry(
   sandboxName: string,
   agent: string | null,
@@ -533,16 +537,8 @@ process.exit(0);
       expect(backup.manifest?.openclawImagePluginInstalls).toEqual([]);
       expect(fs.readdirSync(stagingRoot)).toEqual([]);
     } finally {
-      if (oldOpenshell === undefined) {
-        delete process.env.NEMOCLAW_OPENSHELL_BIN;
-      } else {
-        process.env.NEMOCLAW_OPENSHELL_BIN = oldOpenshell;
-      }
-      if (oldTmpdir === undefined) {
-        delete process.env.TMPDIR;
-      } else {
-        process.env.TMPDIR = oldTmpdir;
-      }
+      restoreEnv("NEMOCLAW_OPENSHELL_BIN", oldOpenshell);
+      restoreEnv("TMPDIR", oldTmpdir);
       process.env.PATH = oldPath;
       fs.rmSync(fixture, { recursive: true, force: true });
     }
@@ -583,7 +579,6 @@ process.exit(0);
         return originalOpenSync(filePath, flags, mode);
       }) as typeof fs.openSync;
       syncBuiltinESMExports();
-
       const backup = sandboxState.backupSandboxState("alpha");
       expect(backup.success).toBe(false);
       expect(backup.failedDirs).toEqual(["workspace"]);
@@ -592,16 +587,8 @@ process.exit(0);
     } finally {
       fs.openSync = originalOpenSync;
       syncBuiltinESMExports();
-      if (oldOpenshell === undefined) {
-        delete process.env.NEMOCLAW_OPENSHELL_BIN;
-      } else {
-        process.env.NEMOCLAW_OPENSHELL_BIN = oldOpenshell;
-      }
-      if (oldTmpdir === undefined) {
-        delete process.env.TMPDIR;
-      } else {
-        process.env.TMPDIR = oldTmpdir;
-      }
+      restoreEnv("NEMOCLAW_OPENSHELL_BIN", oldOpenshell);
+      restoreEnv("TMPDIR", oldTmpdir);
       process.env.PATH = oldPath;
       fs.rmSync(fixture, { recursive: true, force: true });
     }
