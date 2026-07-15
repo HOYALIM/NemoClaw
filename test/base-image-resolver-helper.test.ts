@@ -85,7 +85,7 @@ resolver_try_candidates reject first second`);
   });
 
   it("builds a local fallback with the exact Dockerfile and tag", () => {
-    const bin = fakeDocker('printf "%s\\n" "$*" >> "$DOCKER_LOG"');
+    const bin = fakeDocker('printf "%s\\0" "$@" >> "$DOCKER_LOG"');
     const log = path.join(bin, "docker.log");
 
     const result = run("resolver_build_local agents/hermes/Dockerfile.base local:test", {
@@ -94,9 +94,15 @@ resolver_try_candidates reject first second`);
     });
 
     expect(result.status).toBe(0);
-    expect(readFileSync(log, "utf8")).toBe(
-      "build -f agents/hermes/Dockerfile.base -t local:test .\n",
-    );
+    expect(readFileSync(log, "utf8").split("\0")).toEqual([
+      "build",
+      "-f",
+      "agents/hermes/Dockerfile.base",
+      "-t",
+      "local:test",
+      ".",
+      "",
+    ]);
   });
 
   it("writes one validated GitHub environment assignment", () => {
