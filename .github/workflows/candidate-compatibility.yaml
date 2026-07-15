@@ -184,10 +184,21 @@ jobs:
           set -euo pipefail
           exec > >(tee "candidate-lane-${LANE}.log") 2>&1
           [[ "$LANE" == installer ]] || { echo "::error::untrusted lane id: $LANE"; exit 1; }
-          "$OPENSHELL_BIN" --version
-          "$OPENSHELL_GATEWAY_BIN" --version
-          "$NEMOCLAW_OPENSHELL_SANDBOX_BIN" --version
-          npx vitest run --project installer-integration
+          npx vitest run --project installer-integration \
+            test/install-openshell-version-check.test.ts \
+            --testNamePattern "executes every receipt-bound candidate component"
+          base_path="${PATH#*:}"
+          env \
+            -u NEMOCLAW_CANDIDATE_COMPONENT \
+            -u NEMOCLAW_CANDIDATE_INVOCATION_LOG \
+            -u NEMOCLAW_CANDIDATE_RECEIPT \
+            -u NEMOCLAW_CANDIDATE_RESOLUTION_ID \
+            -u NEMOCLAW_CANDIDATE_VERSION \
+            -u NEMOCLAW_OPENSHELL_SANDBOX_BIN \
+            -u OPENSHELL_BIN \
+            -u OPENSHELL_GATEWAY_BIN \
+            PATH="$base_path" \
+            npx vitest run --project installer-integration
 
       - name: Record receipt-bound lane result
         if: ${{ always() }}
@@ -298,6 +309,7 @@ jobs:
           E2E_JOB: "1"
           E2E_TARGET_ID: openshell-gateway-auth-contract
           NEMOCLAW_NON_INTERACTIVE: "1"
+          NEMOCLAW_CANDIDATE_INVOCATION_CONTEXT: live:openshell-gateway-auth-contract:${{ needs.resolve.outputs.resolution_id }}
           NEMOCLAW_RUN_LIVE_E2E: "1"
         run: |
           set -euo pipefail
@@ -384,6 +396,7 @@ jobs:
 
       - name: Finalize auditable evidence
         env:
+          RESOLUTION_ID: ${{ needs.resolve.outputs.resolution_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_ID: ${{ github.run_id }}
         shell: bash
@@ -391,6 +404,7 @@ jobs:
           set -euo pipefail
           node --experimental-strip-types controller/tools/candidate-compat.mts finalize \
             --receipt candidate-input/candidate-receipt.json \
+            --resolution-id "$RESOLUTION_ID" \
             --plan candidate-input/candidate-plan.json \
             --results candidate-results \
             --run-id "$RUN_ID" \

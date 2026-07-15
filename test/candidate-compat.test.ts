@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from "node:crypto";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -15,6 +15,7 @@ import {
   downloadCandidateArtifact,
   finalizeEvidence,
   materializeCandidate,
+  parseCandidatePlan,
   parseCandidateReceipt,
   resolveCandidate,
   verifyCandidateInvocations,
@@ -267,7 +268,11 @@ describe("OpenShell candidate compatibility contract", () => {
         async (url) => new Response(archives.get(url)),
       );
       const log = join(directory, "invocations.log");
-      const env = { ...process.env, NEMOCLAW_CANDIDATE_INVOCATION_LOG: log };
+      const env = {
+        ...process.env,
+        NEMOCLAW_CANDIDATE_INVOCATION_CONTEXT: `installer:${candidateReceipt.resolutionId}`,
+        NEMOCLAW_CANDIDATE_INVOCATION_LOG: log,
+      };
       for (const binary of ["openshell", "openshell-gateway", "openshell-sandbox"]) {
         expect(spawnSync(join(observed.binDirectory, binary), ["--version"], { env }).status).toBe(
           0,
@@ -282,11 +287,19 @@ describe("OpenShell candidate compatibility contract", () => {
       ).toMatchObject({ conclusion: "success", observedVersion: VERSION });
       expect(() =>
         verifyCandidateInvocations({
-          invocationLog: "gateway\t--version\n",
+          invocationLog: `gateway\tlive:openshell-gateway-auth-contract:${candidateReceipt.resolutionId}\t--version\n`,
           lane: "live:openshell-gateway-auth-contract",
           receipt: candidateReceipt,
         }),
       ).toThrow("did not start the candidate runtime");
+      expect(() =>
+        verifyCandidateInvocations({
+          invocationLog:
+            "cli\tpreflight\t--version\ngateway\tpreflight\t--version\nsandbox\tpreflight\t--version\n",
+          lane: "installer",
+          receipt: candidateReceipt,
+        }),
+      ).toThrow("receipt-bound cli");
     } finally {
       rmSync(directory, { force: true, recursive: true });
     }
@@ -294,6 +307,7 @@ describe("OpenShell candidate compatibility contract", () => {
 
   it("selects only candidate-aware deterministic and live lanes (#6691)", () => {
     const plan = buildCandidatePlan("openshell", E2E_SOURCES);
+    expect(parseCandidatePlan(plan, "openshell")).toEqual(plan);
     expect(
       plan.deterministic.filter(({ status }) => status === "selected").map(({ id }) => id),
     ).toEqual(["installer"]);
@@ -304,6 +318,62 @@ describe("OpenShell candidate compatibility contract", () => {
         status: "selected",
       }),
     ]);
+    expect(() => parseCandidatePlan({ ...plan, deterministic: [], live: [] }, "openshell")).toThrow(
+      "every deterministic lane",
+    );
+  });
+
+  it("rejects an empty persisted plan through the finalize CLI (#6691)", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "nemoclaw-candidate-finalize-"));
+    try {
+      const candidateReceipt = await resolveCandidate({
+        candidate: `v${VERSION}`,
+        component: "openshell",
+        fetcher: async () => response(releaseMetadata()),
+        nemoclawSha: SHA,
+      });
+      const receiptPath = join(directory, "receipt.json");
+      const planPath = join(directory, "plan.json");
+      const resultsPath = join(directory, "results");
+      writeFileSync(receiptPath, JSON.stringify(candidateReceipt));
+      writeFileSync(
+        planPath,
+        JSON.stringify({
+          component: "openshell",
+          deterministic: [],
+          live: [],
+          schemaVersion: 1,
+        }),
+      );
+      mkdirSync(resultsPath);
+      const result = spawnSync(
+        process.execPath,
+        [
+          "--experimental-strip-types",
+          resolve("tools/candidate-compat.mts"),
+          "finalize",
+          "--receipt",
+          receiptPath,
+          "--resolution-id",
+          candidateReceipt.resolutionId,
+          "--plan",
+          planPath,
+          "--results",
+          resultsPath,
+          "--run-id",
+          "123",
+          "--attempt",
+          "1",
+          "--output",
+          join(directory, "evidence.json"),
+        ],
+        { encoding: "utf8" },
+      );
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("every deterministic lane exactly once");
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 
   it("finalizes only complete receipt-bound deterministic and live evidence (#6691)", () => {

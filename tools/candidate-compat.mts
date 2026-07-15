@@ -66,15 +66,8 @@ type DeterministicLane =
 const FULL_SHA = /^[a-f0-9]{40}$/;
 const VERSION = /^[0-9]+(?:\.[0-9]+){2}(?:[-+][0-9A-Za-z.-]+)?$/;
 const DIGEST = /^[a-f0-9]+$/;
-const OFFICIAL_HOSTS = new Set([
-  "api.github.com",
-  "codeload.github.com",
-  "github.com",
-]);
-const DOWNLOAD_HOSTS = new Set([
-  ...OFFICIAL_HOSTS,
-  "release-assets.githubusercontent.com",
-]);
+const OFFICIAL_HOSTS = new Set(["api.github.com", "codeload.github.com", "github.com"]);
+const DOWNLOAD_HOSTS = new Set([...OFFICIAL_HOSTS, "release-assets.githubusercontent.com"]);
 const MAX_DOWNLOAD_REDIRECTS = 5;
 const ALL_LANES: DeterministicLane[] = [
   "source-unit",
@@ -85,10 +78,7 @@ const ALL_LANES: DeterministicLane[] = [
   "e2e-support",
 ];
 
-const SELECTED_LANES: Record<
-  CandidateComponent,
-  ReadonlySet<DeterministicLane>
-> = {
+const SELECTED_LANES: Record<CandidateComponent, ReadonlySet<DeterministicLane>> = {
   openshell: new Set(["installer"]),
 };
 
@@ -121,15 +111,8 @@ function assertComponent(value: string): asserts value is CandidateComponent {
   }
 }
 
-function assertCandidate(
-  component: CandidateComponent,
-  candidate: string,
-): void {
-  if (
-    candidate.length > 128 ||
-    candidate.includes("/") ||
-    /[\x00-\x20\x7f]/u.test(candidate)
-  ) {
+function assertCandidate(component: CandidateComponent, candidate: string): void {
+  if (candidate.length > 128 || candidate.includes("/") || /[\x00-\x20\x7f]/u.test(candidate)) {
     throw new Error("candidate contains unsafe characters");
   }
   const normalized = candidate.replace(/^v/u, "");
@@ -141,14 +124,10 @@ function assertCandidate(
 function assertOfficialUrl(raw: string, expectedPathPrefix: string): URL {
   const url = new URL(raw);
   if (url.protocol !== "https:" || !OFFICIAL_HOSTS.has(url.hostname)) {
-    throw new Error(
-      `candidate artifact is not on an approved official HTTPS host: ${raw}`,
-    );
+    throw new Error(`candidate artifact is not on an approved official HTTPS host: ${raw}`);
   }
   if (!url.pathname.startsWith(expectedPathPrefix)) {
-    throw new Error(
-      `candidate artifact has unexpected official-source path: ${raw}`,
-    );
+    throw new Error(`candidate artifact has unexpected official-source path: ${raw}`);
   }
   if (url.username || url.password || url.search || url.hash) {
     throw new Error(
@@ -158,11 +137,7 @@ function assertOfficialUrl(raw: string, expectedPathPrefix: string): URL {
   return url;
 }
 
-async function fetchJson(
-  fetcher: FetchLike,
-  url: string,
-  token?: string,
-): Promise<unknown> {
+async function fetchJson(fetcher: FetchLike, url: string, token?: string): Promise<unknown> {
   const response = await fetcher(url, {
     headers: {
       Accept: "application/vnd.github+json, application/json",
@@ -171,9 +146,7 @@ async function fetchJson(
     redirect: "error",
   });
   if (!response.ok)
-    throw new Error(
-      `official metadata request failed (${response.status}): ${url}`,
-    );
+    throw new Error(`official metadata request failed (${response.status}): ${url}`);
   return response.json();
 }
 
@@ -184,11 +157,7 @@ function record(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function stringField(
-  value: Record<string, unknown>,
-  key: string,
-  label: string,
-): string {
+function stringField(value: Record<string, unknown>, key: string, label: string): string {
   const field = value[key];
   if (typeof field !== "string" || field.length === 0) {
     throw new Error(`${label}.${key} must be a non-empty string`);
@@ -198,13 +167,10 @@ function stringField(
 
 function artifact(input: Artifact, expectedPathPrefix: string): Artifact {
   const url = assertOfficialUrl(input.url, expectedPathPrefix);
-  if (!DIGEST.test(input.digest))
-    throw new Error(`${input.name} has an invalid digest`);
+  if (!DIGEST.test(input.digest)) throw new Error(`${input.name} has an invalid digest`);
   const expectedLength = 64;
   if (input.digest.length !== expectedLength) {
-    throw new Error(
-      `${input.name} has an invalid ${input.digestAlgorithm} digest`,
-    );
+    throw new Error(`${input.name} has an invalid ${input.digestAlgorithm} digest`);
   }
   return { ...input, url: url.href };
 }
@@ -213,9 +179,7 @@ async function resolveOpenShell(
   candidate: string,
   fetcher: FetchLike,
   token?: string,
-): Promise<
-  Omit<CandidateReceipt, "nemoclawSha" | "resolutionId" | "schemaVersion">
-> {
+): Promise<Omit<CandidateReceipt, "nemoclawSha" | "resolutionId" | "schemaVersion">> {
   const version = candidate.replace(/^v/u, "");
   const tag = `v${version}`;
   const metadata = record(
@@ -226,15 +190,11 @@ async function resolveOpenShell(
     ),
     "OpenShell release",
   );
-  if (metadata.draft === true)
-    throw new Error("OpenShell candidate release is a draft");
+  if (metadata.draft === true) throw new Error("OpenShell candidate release is a draft");
   if (stringField(metadata, "tag_name", "OpenShell release") !== tag) {
-    throw new Error(
-      "OpenShell release tag does not match the requested candidate",
-    );
+    throw new Error("OpenShell release tag does not match the requested candidate");
   }
-  if (!Array.isArray(metadata.assets))
-    throw new Error("OpenShell release assets must be an array");
+  if (!Array.isArray(metadata.assets)) throw new Error("OpenShell release assets must be an array");
   const requiredAssets = [
     {
       name: "openshell-x86_64-unknown-linux-musl.tar.gz",
@@ -249,17 +209,11 @@ async function resolveOpenShell(
       role: "sandbox" as const,
     },
   ];
-  const releaseAssets = metadata.assets.map((item) =>
-    record(item, "OpenShell asset"),
-  );
+  const releaseAssets = metadata.assets.map((item) => record(item, "OpenShell asset"));
   const artifacts = requiredAssets.map(({ name, role }) => {
     const assetMetadata = releaseAssets.find((item) => item.name === name);
     if (!assetMetadata) throw new Error(`OpenShell release is missing ${name}`);
-    const digest = stringField(
-      assetMetadata,
-      "digest",
-      `OpenShell asset ${name}`,
-    );
+    const digest = stringField(assetMetadata, "digest", `OpenShell asset ${name}`);
     if (!digest.startsWith("sha256:")) {
       throw new Error(`OpenShell asset ${name} is missing SHA-256 provenance`);
     }
@@ -270,11 +224,7 @@ async function resolveOpenShell(
         kind: "archive",
         name,
         role,
-        url: stringField(
-          assetMetadata,
-          "browser_download_url",
-          `OpenShell asset ${name}`,
-        ),
+        url: stringField(assetMetadata, "browser_download_url", `OpenShell asset ${name}`),
       },
       `/NVIDIA/OpenShell/releases/download/${tag}/`,
     );
@@ -296,15 +246,10 @@ export async function resolveCandidate(input: {
   nemoclawSha: string;
 }): Promise<CandidateReceipt> {
   assertComponent(input.component);
-  if (!FULL_SHA.test(input.nemoclawSha))
-    throw new Error("NemoClaw ref must resolve to a full SHA");
+  if (!FULL_SHA.test(input.nemoclawSha)) throw new Error("NemoClaw ref must resolve to a full SHA");
   assertCandidate(input.component, input.candidate);
   const fetcher = input.fetcher ?? fetch;
-  const resolved = await resolveOpenShell(
-    input.candidate,
-    fetcher,
-    input.githubToken,
-  );
+  const resolved = await resolveOpenShell(input.candidate, fetcher, input.githubToken);
   const receiptWithoutId = {
     ...resolved,
     nemoclawSha: input.nemoclawSha,
@@ -316,21 +261,11 @@ export async function resolveCandidate(input: {
   };
 }
 
-function parseArtifact(
-  value: unknown,
-  resolvedCandidate: string,
-  index: number,
-): Artifact {
+function parseArtifact(value: unknown, resolvedCandidate: string, index: number): Artifact {
   const input = record(value, `candidate artifact ${index}`);
-  const digestAlgorithm = stringField(
-    input,
-    "digestAlgorithm",
-    `candidate artifact ${index}`,
-  );
+  const digestAlgorithm = stringField(input, "digestAlgorithm", `candidate artifact ${index}`);
   if (digestAlgorithm !== "sha256") {
-    throw new Error(
-      `candidate artifact ${index} has an invalid digest algorithm`,
-    );
+    throw new Error(`candidate artifact ${index} has an invalid digest algorithm`);
   }
   const kind = stringField(input, "kind", `candidate artifact ${index}`);
   if (kind !== "archive") {
@@ -356,9 +291,7 @@ function parseArtifact(
     },
   ][index];
   if (!expected || name !== expected.name || input.role !== expected.role) {
-    throw new Error(
-      `candidate artifact ${index} does not match the resolved component`,
-    );
+    throw new Error(`candidate artifact ${index} does not match the resolved component`);
   }
   return artifact(
     {
@@ -382,48 +315,30 @@ export function parseCandidateReceipt(
     throw new Error("expected candidate resolution id is invalid");
   }
   const input = record(value, "candidate receipt");
-  if (input.schemaVersion !== 1)
-    throw new Error("candidate receipt schema version must be 1");
+  if (input.schemaVersion !== 1) throw new Error("candidate receipt schema version must be 1");
   const component = stringField(input, "component", "candidate receipt");
   assertComponent(component);
-  const requestedCandidate = stringField(
-    input,
-    "requestedCandidate",
-    "candidate receipt",
-  );
+  const requestedCandidate = stringField(input, "requestedCandidate", "candidate receipt");
   assertCandidate(component, requestedCandidate);
-  const resolvedCandidate = stringField(
-    input,
-    "resolvedCandidate",
-    "candidate receipt",
-  );
+  const resolvedCandidate = stringField(input, "resolvedCandidate", "candidate receipt");
   if (!VERSION.test(resolvedCandidate)) {
     throw new Error("candidate receipt has an invalid resolved version");
   }
   if (requestedCandidate.replace(/^v/u, "") !== resolvedCandidate) {
-    throw new Error(
-      "candidate receipt resolved version does not match the request",
-    );
+    throw new Error("candidate receipt resolved version does not match the request");
   }
   const nemoclawSha = stringField(input, "nemoclawSha", "candidate receipt");
-  if (!FULL_SHA.test(nemoclawSha))
-    throw new Error("candidate receipt has an invalid NemoClaw SHA");
+  if (!FULL_SHA.test(nemoclawSha)) throw new Error("candidate receipt has an invalid NemoClaw SHA");
   if (!Array.isArray(input.artifacts))
     throw new Error("candidate receipt artifacts must be an array");
   const expectedArtifactCount = 3;
   if (input.artifacts.length !== expectedArtifactCount) {
-    throw new Error(
-      `candidate receipt for ${component} has an invalid artifact count`,
-    );
+    throw new Error(`candidate receipt for ${component} has an invalid artifact count`);
   }
   const artifacts = input.artifacts.map((item, index) =>
     parseArtifact(item, resolvedCandidate, index),
   );
-  const officialSource = stringField(
-    input,
-    "officialSource",
-    "candidate receipt",
-  );
+  const officialSource = stringField(input, "officialSource", "candidate receipt");
   const sourcePattern = /^github:NVIDIA\/OpenShell:release:[1-9][0-9]*$/u;
   if (!sourcePattern.test(officialSource)) {
     throw new Error("candidate receipt has an invalid official source");
@@ -445,9 +360,7 @@ export function parseCandidateReceipt(
     stringField(input, "resolutionId", "candidate receipt") !== resolutionId ||
     resolutionId !== expectedResolutionId
   ) {
-    throw new Error(
-      "candidate receipt does not match the trusted resolution id",
-    );
+    throw new Error("candidate receipt does not match the trusted resolution id");
   }
   return { ...receiptWithoutId, resolutionId };
 }
@@ -458,17 +371,13 @@ export function buildCandidatePlan(
 ): CandidatePlan {
   const selected = SELECTED_LANES[component];
   const live = LIVE_SELECTORS[component].map((entry) => {
-    const marker =
-      entry.selector === "job" ? `  ${entry.id}:\n` : `id: "${entry.id}"`;
+    const marker = entry.selector === "job" ? `  ${entry.id}:\n` : `id: "${entry.id}"`;
     if (!e2eSources.includes(marker)) {
-      throw new Error(
-        `E2E source of truth does not declare ${entry.selector} ${entry.id}`,
-      );
+      throw new Error(`E2E source of truth does not declare ${entry.selector} ${entry.id}`);
     }
     return {
       ...entry,
-      reason:
-        "the selected live job executes the digest-bound OpenShell gateway candidate",
+      reason: "the selected live job executes the digest-bound OpenShell gateway candidate",
       status: "selected" as const,
     };
   });
@@ -486,30 +395,91 @@ export function buildCandidatePlan(
   };
 }
 
+/** Validate a persisted plan before it can select compatibility evidence. */
+export function parseCandidatePlan(
+  value: unknown,
+  expectedComponent: CandidateComponent,
+): CandidatePlan {
+  const input = record(value, "candidate plan");
+  if (input.schemaVersion !== 1) throw new Error("candidate plan schema version must be 1");
+  const component = stringField(input, "component", "candidate plan");
+  assertComponent(component);
+  if (component !== expectedComponent) {
+    throw new Error("candidate plan component does not match the receipt");
+  }
+  if (!Array.isArray(input.deterministic)) {
+    throw new Error("candidate plan deterministic lanes must be an array");
+  }
+  const deterministic = input.deterministic.map((value, index) => {
+    const lane = record(value, `candidate plan deterministic lane ${index}`);
+    const id = stringField(lane, "id", `candidate plan deterministic lane ${index}`);
+    if (!ALL_LANES.includes(id as DeterministicLane)) {
+      throw new Error(`candidate plan has an unsupported deterministic lane: ${id}`);
+    }
+    const statusValue = stringField(lane, "status", `candidate plan deterministic lane ${index}`);
+    if (statusValue !== "selected" && statusValue !== "skipped") {
+      throw new Error(`candidate plan deterministic lane ${id} has an invalid status`);
+    }
+    const status: "selected" | "skipped" = statusValue;
+    return {
+      id: id as DeterministicLane,
+      reason: stringField(lane, "reason", `candidate plan deterministic lane ${index}`),
+      status,
+    };
+  });
+  if (
+    deterministic.length !== ALL_LANES.length ||
+    new Set(deterministic.map(({ id }) => id)).size !== ALL_LANES.length
+  ) {
+    throw new Error("candidate plan must account for every deterministic lane exactly once");
+  }
+  for (const lane of deterministic) {
+    const expectedStatus = SELECTED_LANES[component].has(lane.id) ? "selected" : "skipped";
+    if (lane.status !== expectedStatus) {
+      throw new Error(`candidate plan has an invalid selection for ${lane.id}`);
+    }
+  }
+  if (!Array.isArray(input.live)) {
+    throw new Error("candidate plan live lanes must be an array");
+  }
+  const expectedLive = LIVE_SELECTORS[component];
+  const live = input.live.map((value, index) => {
+    const lane = record(value, `candidate plan live lane ${index}`);
+    const id = stringField(lane, "id", `candidate plan live lane ${index}`);
+    const selector = stringField(lane, "selector", `candidate plan live lane ${index}`);
+    const expected = expectedLive.find((candidate) => candidate.id === id);
+    if (!expected || selector !== expected.selector) {
+      throw new Error(`candidate plan has an unsupported live lane: ${id}`);
+    }
+    if (lane.status !== "selected") {
+      throw new Error(`candidate plan live lane ${id} must be selected`);
+    }
+    return {
+      id,
+      reason: stringField(lane, "reason", `candidate plan live lane ${index}`),
+      selector: expected.selector,
+      status: "selected" as const,
+    };
+  });
+  if (
+    live.length !== expectedLive.length ||
+    new Set(live.map(({ id }) => id)).size !== expectedLive.length
+  ) {
+    throw new Error("candidate plan must account for every live lane exactly once");
+  }
+  return { component, deterministic, live, schemaVersion: 1 };
+}
+
 export function verifyDigest(bytes: Uint8Array, artifactValue: Artifact): void {
-  const actual = createHash(artifactValue.digestAlgorithm)
-    .update(bytes)
-    .digest("hex");
+  const actual = createHash(artifactValue.digestAlgorithm).update(bytes).digest("hex");
   if (actual !== artifactValue.digest) {
-    throw new Error(
-      `${artifactValue.name} ${artifactValue.digestAlgorithm} mismatch`,
-    );
+    throw new Error(`${artifactValue.name} ${artifactValue.digestAlgorithm} mismatch`);
   }
 }
 
-export function verifyObservedVersion(
-  receipt: CandidateReceipt,
-  output: string,
-): string {
-  const escaped = receipt.resolvedCandidate.replace(
-    /[.*+?^${}()|[\]\\]/g,
-    "\\$&",
-  );
-  if (
-    !new RegExp(`(^|[^0-9A-Za-z.])v?${escaped}([^0-9A-Za-z.]|$)`, "u").test(
-      output.trim(),
-    )
-  ) {
+export function verifyObservedVersion(receipt: CandidateReceipt, output: string): string {
+  const escaped = receipt.resolvedCandidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (!new RegExp(`(^|[^0-9A-Za-z.])v?${escaped}([^0-9A-Za-z.]|$)`, "u").test(output.trim())) {
     throw new Error(
       `observed ${receipt.component} version does not match ${receipt.resolvedCandidate}: ${output.trim()}`,
     );
@@ -524,46 +494,33 @@ export function finalizeEvidence(input: {
   results: LaneResult[];
   runId: string;
 }): Record<string, unknown> {
-  if (
-    !/^[1-9][0-9]*$/u.test(input.runId) ||
-    !/^[1-9][0-9]*$/u.test(input.attempt)
-  ) {
+  if (!/^[1-9][0-9]*$/u.test(input.runId) || !/^[1-9][0-9]*$/u.test(input.attempt)) {
     throw new Error("run id and attempt must be positive integers");
   }
   const selected = [
-    ...input.plan.deterministic
-      .filter((lane) => lane.status === "selected")
-      .map((lane) => lane.id),
+    ...input.plan.deterministic.filter((lane) => lane.status === "selected").map((lane) => lane.id),
     ...input.plan.live
       .filter((lane) => lane.status === "selected")
       .map((lane) => `live:${lane.id}`),
   ].sort();
   const actual = input.results.map((result) => result.lane).sort();
-  if (
-    new Set(actual).size !== actual.length ||
-    stableJson(actual) !== stableJson(selected)
-  ) {
+  if (new Set(actual).size !== actual.length || stableJson(actual) !== stableJson(selected)) {
     throw new Error(
       "lane results do not account for every selected compatibility lane exactly once",
     );
   }
   for (const result of input.results) {
     if (result.resolutionId !== input.receipt.resolutionId) {
-      throw new Error(
-        `lane ${result.lane} used a different candidate resolution`,
-      );
+      throw new Error(`lane ${result.lane} used a different candidate resolution`);
     }
     if (result.conclusion !== "success" && result.conclusion !== "failure") {
       throw new Error(`lane ${result.lane} has an invalid conclusion`);
     }
     if (
       result.conclusion === "success" &&
-      (result.observedVersion !== input.receipt.resolvedCandidate ||
-        !result.observedOutput)
+      (result.observedVersion !== input.receipt.resolvedCandidate || !result.observedOutput)
     ) {
-      throw new Error(
-        `lane ${result.lane} has no matching observed candidate version`,
-      );
+      throw new Error(`lane ${result.lane} has no matching observed candidate version`);
     }
   }
   return {
@@ -592,14 +549,8 @@ function run(
     stdio: ["ignore", "pipe", "pipe"],
   });
   if (result.status !== 0) {
-    const detail =
-      result.error?.message ??
-      result.stderr?.trim() ??
-      result.stdout?.trim() ??
-      "";
-    throw new Error(
-      `${command} ${args.join(" ")} failed${detail ? `: ${detail}` : ""}`,
-    );
+    const detail = result.error?.message ?? result.stderr?.trim() ?? result.stdout?.trim() ?? "";
+    throw new Error(`${command} ${args.join(" ")} failed${detail ? `: ${detail}` : ""}`);
   }
   return result.stdout.trim();
 }
@@ -619,24 +570,16 @@ function assertDownloadUrl(raw: string): URL {
   return url;
 }
 
-async function fetchDownload(
-  fetcher: FetchLike,
-  rawUrl: string,
-): Promise<Response> {
+async function fetchDownload(fetcher: FetchLike, rawUrl: string): Promise<Response> {
   let current = assertDownloadUrl(rawUrl);
-  for (
-    let redirectCount = 0;
-    redirectCount <= MAX_DOWNLOAD_REDIRECTS;
-    redirectCount += 1
-  ) {
+  for (let redirectCount = 0; redirectCount <= MAX_DOWNLOAD_REDIRECTS; redirectCount += 1) {
     const response = await fetcher(current.href, { redirect: "manual" });
     if (![301, 302, 303, 307, 308].includes(response.status)) return response;
     if (redirectCount === MAX_DOWNLOAD_REDIRECTS) {
       throw new Error("candidate download exceeded the redirect limit");
     }
     const location = response.headers.get("location");
-    if (!location)
-      throw new Error("candidate download redirect has no location");
+    if (!location) throw new Error("candidate download redirect has no location");
     current = assertDownloadUrl(new URL(location, current).href);
   }
   throw new Error("candidate download redirect handling failed");
@@ -649,8 +592,7 @@ export async function downloadCandidateArtifact(
   fetcher: FetchLike = fetch,
 ): Promise<string> {
   const response = await fetchDownload(fetcher, artifactValue.url);
-  if (!response.ok)
-    throw new Error(`candidate download failed (${response.status})`);
+  if (!response.ok) throw new Error(`candidate download failed (${response.status})`);
   const bytes = new Uint8Array(await response.arrayBuffer());
   verifyDigest(bytes, artifactValue);
   const target = join(directory, `candidate-${index}.tar.gz`);
@@ -676,19 +618,11 @@ function extractCandidateBinary(
   const binaryName = ROLE_BINARY[artifactValue.role];
   const members = run("tar", ["-tzf", archive]);
   if (members !== binaryName) {
-    throw new Error(
-      `${artifactValue.name} must contain exactly one ${binaryName} binary`,
-    );
+    throw new Error(`${artifactValue.name} must contain exactly one ${binaryName} binary`);
   }
   const listing = run("tar", ["-tvzf", archive]);
-  if (
-    listing.includes("\n") ||
-    !listing.startsWith("-") ||
-    !listing.endsWith(` ${binaryName}`)
-  ) {
-    throw new Error(
-      `${artifactValue.name} must contain one regular ${binaryName} binary`,
-    );
+  if (listing.includes("\n") || !listing.startsWith("-") || !listing.endsWith(` ${binaryName}`)) {
+    throw new Error(`${artifactValue.name} must contain one regular ${binaryName} binary`);
   }
   run("tar", ["-xzf", archive, "-C", runtimeDirectory, binaryName]);
   return join(runtimeDirectory, binaryName);
@@ -703,35 +637,35 @@ export function verifyCandidateInvocations(input: {
     .split("\n")
     .filter(Boolean)
     .map((line) => {
-      const separator = line.indexOf("\t");
-      if (separator <= 0)
+      const fields = line.split("\t");
+      if (fields.length !== 3 || !fields[0] || !fields[1])
         throw new Error("candidate invocation log contains a malformed entry");
       return {
-        args: line.slice(separator + 1),
-        role: line.slice(0, separator),
+        args: fields[2] ?? "",
+        context: fields[1],
+        role: fields[0],
       };
     });
-  const requiredRoles =
-    input.lane === "installer" ? ["cli", "gateway", "sandbox"] : ["gateway"];
-  if (
-    input.lane !== "installer" &&
-    input.lane !== "live:openshell-gateway-auth-contract"
-  ) {
+  const requiredRoles = input.lane === "installer" ? ["cli", "gateway", "sandbox"] : ["gateway"];
+  if (input.lane !== "installer" && input.lane !== "live:openshell-gateway-auth-contract") {
     throw new Error(`unsupported candidate-aware lane: ${input.lane}`);
   }
+  const expectedContext = `${input.lane}:${input.receipt.resolutionId}`;
   for (const role of requiredRoles) {
     if (
       !entries.some(
-        (entry) => entry.role === role && entry.args === "--version",
+        (entry) =>
+          entry.role === role && entry.context === expectedContext && entry.args === "--version",
       )
     ) {
-      throw new Error(`lane ${input.lane} did not invoke ${role} --version`);
+      throw new Error(`lane ${input.lane} did not invoke receipt-bound ${role} --version`);
     }
   }
   if (
     input.lane === "live:openshell-gateway-auth-contract" &&
     !entries.some(
-      (entry) => entry.role === "gateway" && entry.args !== "--version",
+      (entry) =>
+        entry.role === "gateway" && entry.context === expectedContext && entry.args !== "--version",
     )
   ) {
     throw new Error("live gateway lane did not start the candidate runtime");
@@ -740,7 +674,7 @@ export function verifyCandidateInvocations(input: {
     conclusion: "success",
     lane: input.lane,
     observedOutput: entries
-      .map((entry) => `${entry.role} ${entry.args}`)
+      .map((entry) => `${entry.role} ${entry.context} ${entry.args}`)
       .join("\n"),
     observedVersion: input.receipt.resolvedCandidate,
     resolutionId: input.receipt.resolutionId,
@@ -762,19 +696,11 @@ export async function materializeCandidate(
       downloadCandidateArtifact(candidateArtifact, directory, index, fetcher),
     ),
   );
-  const observed: Record<
-    string,
-    { output: string; path: string; version: string }
-  > = {};
+  const observed: Record<string, { output: string; path: string; version: string }> = {};
   for (const [index, artifactValue] of receipt.artifacts.entries()) {
     const archive = archives[index];
-    if (!archive)
-      throw new Error(`candidate artifact ${index} was not downloaded`);
-    const binary = extractCandidateBinary(
-      archive,
-      artifactValue,
-      runtimeDirectory,
-    );
+    if (!archive) throw new Error(`candidate artifact ${index} was not downloaded`);
+    const binary = extractCandidateBinary(archive, artifactValue, runtimeDirectory);
     await chmod(binary, 0o700);
     const output = run(binary, ["--version"]);
     const version = verifyObservedVersion(receipt, output);
@@ -785,7 +711,8 @@ export async function materializeCandidate(
         "#!/bin/sh",
         "set -eu",
         ': "${NEMOCLAW_CANDIDATE_INVOCATION_LOG:?candidate invocation log is required}"',
-        `printf '%s\\t%s\\n' ${shellQuote(artifactValue.role)} "$*" >> "$NEMOCLAW_CANDIDATE_INVOCATION_LOG"`,
+        ': "${NEMOCLAW_CANDIDATE_INVOCATION_CONTEXT:?candidate invocation context is required}"',
+        `printf '%s\\t%s\\t%s\\n' ${shellQuote(artifactValue.role)} "$NEMOCLAW_CANDIDATE_INVOCATION_CONTEXT" "$*" >> "$NEMOCLAW_CANDIDATE_INVOCATION_LOG"`,
         `exec ${shellQuote(binary)} "$@"`,
         "",
       ].join("\n"),
@@ -854,19 +781,13 @@ async function main(argv: string[]): Promise<void> {
       JSON.parse(await readFile(required(args, "--receipt"), "utf8")),
       required(args, "--resolution-id"),
     );
-    const observed = await materializeCandidate(
-      receipt,
-      required(args, "--directory"),
-    );
+    const observed = await materializeCandidate(receipt, required(args, "--directory"));
     await writeFile(required(args, "--output"), `${stableJson(observed)}\n`, {
       mode: 0o600,
     });
     const githubEnv = args.get("--github-env");
     if (githubEnv) {
-      const invocationLog = join(
-        required(args, "--directory"),
-        "candidate-invocations.log",
-      );
+      const invocationLog = join(required(args, "--directory"), "candidate-invocations.log");
       await writeFile(
         githubEnv,
         [
@@ -902,16 +823,18 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
   if (command === "finalize") {
-    const receipt = JSON.parse(
-      await readFile(required(args, "--receipt"), "utf8"),
-    ) as CandidateReceipt;
-    const plan = JSON.parse(
-      await readFile(required(args, "--plan"), "utf8"),
-    ) as CandidatePlan;
+    const receipt = parseCandidateReceipt(
+      JSON.parse(await readFile(required(args, "--receipt"), "utf8")),
+      required(args, "--resolution-id"),
+    );
+    const plan = parseCandidatePlan(
+      JSON.parse(await readFile(required(args, "--plan"), "utf8")),
+      receipt.component,
+    );
     const resultDirectory = required(args, "--results");
-    const resultFiles = (
-      await readdir(resultDirectory, { recursive: true })
-    ).filter((path) => path.endsWith(".json"));
+    const resultFiles = (await readdir(resultDirectory, { recursive: true })).filter((path) =>
+      path.endsWith(".json"),
+    );
     const results = await Promise.all(
       resultFiles.map(async (path) =>
         JSON.parse(await readFile(join(resultDirectory, path), "utf8")),
@@ -929,19 +852,12 @@ async function main(argv: string[]): Promise<void> {
     });
     return;
   }
-  throw new Error(
-    "command must be resolve, plan, materialize, verify-invocations, or finalize",
-  );
+  throw new Error("command must be resolve, plan, materialize, verify-invocations, or finalize");
 }
 
-if (
-  process.argv[1] &&
-  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-) {
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main(process.argv.slice(2)).catch((error) => {
-    console.error(
-      `candidate-compat: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    console.error(`candidate-compat: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
   });
 }
