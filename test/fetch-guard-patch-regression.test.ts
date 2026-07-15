@@ -130,11 +130,20 @@ function readDockerfileOpenClawTarball(): string {
   );
 }
 
+function readDockerfileOpenClawLockSha256(): string {
+  return readRequiredMatch(
+    DOCKERFILE,
+    /OPENCLAW_LOCK_SHA256=([a-f0-9]{64});/,
+    "OpenClaw runtime lock digest",
+  );
+}
+
 function runOpenClawUpgradeBlock(currentVersion: string) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-openclaw-upgrade-"));
   const blueprint = path.join(tmp, "blueprint.yaml");
   const log = path.join(tmp, "calls.log");
   const openclawInstall = path.join(tmp, "openclaw-global");
+  const openclawRuntime = path.join(tmp, "openclaw-runtime");
   const openclawShim = path.join(tmp, "openclaw-bin");
   const mcporterInstall = path.join(tmp, "mcporter-runtime");
   const mcporterShim = path.join(tmp, "mcporter-bin");
@@ -144,6 +153,7 @@ function runOpenClawUpgradeBlock(currentVersion: string) {
   const expectedMcporterVersion = readDockerfileMcporterVersion();
   const openclawIntegrity = readDockerfileOpenClawIntegrity();
   const openclawTarball = readDockerfileOpenClawTarball();
+  const openclawLockSha256 = readDockerfileOpenClawLockSha256();
   const mcporterIntegrity = readDockerfileMcporterIntegrity();
   const mcporterTarball = readRequiredMatch(
     DOCKERFILE,
@@ -152,9 +162,11 @@ function runOpenClawUpgradeBlock(currentVersion: string) {
   );
   fs.writeFileSync(blueprint, `min_openclaw_version: "${readBlueprintMinOpenClawVersion()}"\n`);
   fs.mkdirSync(openclawInstall, { recursive: true });
+  fs.mkdirSync(openclawRuntime, { recursive: true });
   fs.mkdirSync(mcporterInstall, { recursive: true });
   fs.mkdirSync(reviewedArchiveDir);
   fs.writeFileSync(path.join(mcporterInstall, "package-lock.json"), "{}");
+  fs.writeFileSync(path.join(openclawRuntime, "package-lock.json"), "{}");
   fs.writeFileSync(openclawShim, "");
   fs.writeFileSync(mcporterShim, "");
   fs.writeFileSync(reviewedArchive, "fake reviewed OpenClaw archive");
@@ -163,6 +175,7 @@ function runOpenClawUpgradeBlock(currentVersion: string) {
     "# Patch OpenClaw media fetch",
   )
     .replaceAll("/opt/nemoclaw-blueprint/blueprint.yaml", blueprint)
+    .replaceAll("/usr/local/lib/nemoclaw/openclaw-runtime", openclawRuntime)
     .replaceAll("/usr/local/lib/node_modules/openclaw", openclawInstall)
     .replaceAll("/usr/local/bin/openclaw", openclawShim)
     .replaceAll("/usr/local/lib/node_modules/mcporter", mcporterInstall)
@@ -173,18 +186,24 @@ function runOpenClawUpgradeBlock(currentVersion: string) {
     "set -euo pipefail",
     `call_log=${JSON.stringify(log)}`,
     `real_node=${JSON.stringify(process.execPath)}`,
-    `postinstall_path=${JSON.stringify(path.join(openclawInstall, "scripts/postinstall-bundled-plugins.mjs"))}`,
+    `postinstall_path=${JSON.stringify(path.join(openclawRuntime, "node_modules/openclaw/scripts/postinstall-bundled-plugins.mjs"))}`,
+    `openclaw_lock=${JSON.stringify(path.join(openclawRuntime, "package-lock.json"))}`,
     `reviewed_archive=${JSON.stringify(reviewedArchive)}`,
     `OPENCLAW_VERSION=${JSON.stringify(openclawVersion)}`,
     `BASE_IMAGE=${JSON.stringify("registry.example/nemoclaw-test-base:latest")}`,
     `MCPORTER_VERSION=${JSON.stringify(expectedMcporterVersion)}`,
     `OPENCLAW_2026_6_10_INTEGRITY=${JSON.stringify(openclawIntegrity)}`,
     `OPENCLAW_2026_6_10_TARBALL=${JSON.stringify(openclawTarball)}`,
+    `OPENCLAW_LOCK_SHA256=${JSON.stringify(openclawLockSha256)}`,
     `MCPORTER_0_7_3_INTEGRITY=${JSON.stringify(mcporterIntegrity)}`,
     `MCPORTER_0_7_3_TARBALL=${JSON.stringify(mcporterTarball)}`,
     "node() {",
     '  if [ "${1:-}" = "$postinstall_path" ]; then printf "node %s\\n" "$*" >> "$call_log"; return 0; fi',
     '  if [ "${2:-}" = "/scripts/lib/reviewed-npm-archive.mts" ]; then',
+    '    if [ "${3:-}" = "--verify-lock" ] || [ "${3:-}" = "--verify-installed-lock" ]; then',
+    '      printf "node %s\\n" "$*" >> "$call_log";',
+    "      return 0;",
+    "    fi",
     '    if [ "${3:-}" = "--verify-only" ]; then',
     '      [ "$#" -eq 11 ] && [ "${4:-}" = "--package-spec" ] && [ "${5:-}" = "mcporter@${MCPORTER_VERSION}" ] || return 91;',
     '      [ "${6:-}" = "--integrity" ] && [ "${7:-}" = "$MCPORTER_0_7_3_INTEGRITY" ] || return 92;',
@@ -200,6 +219,13 @@ function runOpenClawUpgradeBlock(currentVersion: string) {
     '    printf "%s\\n" "$reviewed_archive"; return 0;',
     "  fi",
     '  "$real_node" "$@"',
+    "}",
+    "sha256sum() {",
+    '  if [ "${1:-}" = "$openclaw_lock" ]; then',
+    '    printf "%s  %s\\n" "$OPENCLAW_LOCK_SHA256" "$1";',
+    "    return 0;",
+    "  fi",
+    '  command sha256sum "$@"',
     "}",
     `openclaw() { if [ "\${1:-}" = "--version" ]; then printf 'openclaw ${currentVersion}\\n'; else return 127; fi; }`,
     `mcporter() { if [ "\${1:-}" = "--version" ]; then printf '${expectedMcporterVersion}\\n'; else return 127; fi; }`,
@@ -327,38 +353,28 @@ describe("fetch-guard patch regression guard", () => {
     expect(fs.existsSync(inspectMarker)).toBe(true);
   });
 
-  it("installs the reviewed archive for stale and same-version OpenClaw bases", () => {
+  it("installs the reviewed locked graph for stale and same-version OpenClaw bases", () => {
     const stale = runOpenClawUpgradeBlock("2026.3.11");
     expect(stale.result.status).toBe(0);
     expect(stale.result.stdout).toContain(
       `Base image OpenClaw 2026.3.11 lacks exact reviewed provenance; installing ${CURRENT_REVIEWED_OPENCLAW_PATCH_CLASSIFIER_VERSION}`,
     );
-    expect(stale.calls).toContain(
-      `npm pack https://registry.npmjs.org/openclaw/-/openclaw-${CURRENT_REVIEWED_OPENCLAW_PATCH_CLASSIFIER_VERSION}.tgz --pack-destination`,
-    );
-    expect(stale.calls).toContain(
-      "npm install -g --no-audit --no-fund --no-progress --ignore-scripts ",
-    );
+    expect(stale.calls).toContain("--verify-lock");
+    expect(stale.calls).toContain("npm --prefix");
+    expect(stale.calls).toContain("ci --ignore-scripts --omit=dev");
+    expect(stale.calls).toContain("--verify-installed-lock");
     expect(stale.calls).toContain("postinstall-bundled-plugins.mjs");
-    expect(stale.calls).toContain(
-      `openclaw-${CURRENT_REVIEWED_OPENCLAW_PATCH_CLASSIFIER_VERSION}.tgz`,
-    );
 
     const current = runOpenClawUpgradeBlock(CURRENT_REVIEWED_OPENCLAW_PATCH_CLASSIFIER_VERSION);
     expect(current.result.status).toBe(0);
     expect(current.result.stdout).toContain(
       `Base image OpenClaw ${CURRENT_REVIEWED_OPENCLAW_PATCH_CLASSIFIER_VERSION} lacks exact reviewed provenance; installing ${CURRENT_REVIEWED_OPENCLAW_PATCH_CLASSIFIER_VERSION}`,
     );
-    expect(current.calls).toContain(
-      `npm pack https://registry.npmjs.org/openclaw/-/openclaw-${CURRENT_REVIEWED_OPENCLAW_PATCH_CLASSIFIER_VERSION}.tgz --pack-destination`,
-    );
-    expect(current.calls).toContain(
-      "npm install -g --no-audit --no-fund --no-progress --ignore-scripts ",
-    );
+    expect(current.calls).toContain("--verify-lock");
+    expect(current.calls).toContain("npm --prefix");
+    expect(current.calls).toContain("ci --ignore-scripts --omit=dev");
+    expect(current.calls).toContain("--verify-installed-lock");
     expect(current.calls).toContain("postinstall-bundled-plugins.mjs");
-    expect(current.calls).toContain(
-      `openclaw-${CURRENT_REVIEWED_OPENCLAW_PATCH_CLASSIFIER_VERSION}.tgz`,
-    );
 
     const newer = runOpenClawUpgradeBlock("2026.6.11");
     expect(newer.result.status).toBe(1);
