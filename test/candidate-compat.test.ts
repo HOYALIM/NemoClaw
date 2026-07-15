@@ -1,17 +1,18 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
 
 import { describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 
 import {
   buildCandidatePlan,
+  type CandidateReceipt,
   downloadCandidateArtifact,
   finalizeEvidence,
   materializeCandidate,
@@ -21,7 +22,6 @@ import {
   verifyCandidateInvocations,
   verifyDigest,
   verifyObservedVersion,
-  type CandidateReceipt,
 } from "../tools/candidate-compat.mts";
 
 const SHA = "a".repeat(40);
@@ -244,7 +244,16 @@ describe("OpenShell candidate compatibility contract", () => {
       const assets = receipt().artifacts.map((artifact) => {
         const binaryName = artifact.role === "cli" ? "openshell" : `openshell-${artifact.role}`;
         const source = join(directory, binaryName);
-        writeFileSync(source, `#!/bin/sh\nprintf '%s\\n' '${binaryName} ${VERSION}'\n`);
+        const features =
+          artifact.role === "cli"
+            ? "# request-body-credential-rewrite websocket-credential-rewrite"
+            : artifact.role === "sandbox"
+              ? "# allow_all_known_mcp_methods"
+              : "";
+        writeFileSync(
+          source,
+          `#!/bin/sh\n${features}\nprintf '%s\\n' '${binaryName} ${VERSION}'\n`,
+        );
         chmodSync(source, 0o700);
         const archive = join(directory, `${artifact.role}-exact.tar.gz`);
         expect(spawnSync("tar", ["-czf", archive, "-C", directory, binaryName]).status).toBe(0);
@@ -272,12 +281,20 @@ describe("OpenShell candidate compatibility contract", () => {
         ...process.env,
         NEMOCLAW_CANDIDATE_INVOCATION_CONTEXT: `installer:${candidateReceipt.resolutionId}`,
         NEMOCLAW_CANDIDATE_INVOCATION_LOG: log,
+        NEMOCLAW_OPENSHELL_CHANNEL: "stable",
+        NEMOCLAW_OPENSHELL_GATEWAY_BIN: join(observed.binDirectory, "openshell-gateway"),
+        NEMOCLAW_OPENSHELL_MAX_VERSION: VERSION,
+        NEMOCLAW_OPENSHELL_MIN_VERSION: VERSION,
+        NEMOCLAW_OPENSHELL_PIN_VERSION: VERSION,
+        NEMOCLAW_OPENSHELL_SANDBOX_BIN: join(observed.binDirectory, "openshell-sandbox"),
+        PATH: `${observed.binDirectory}:/usr/bin:/bin`,
       };
-      for (const binary of ["openshell", "openshell-gateway", "openshell-sandbox"]) {
-        expect(spawnSync(join(observed.binDirectory, binary), ["--version"], { env }).status).toBe(
-          0,
-        );
-      }
+      const installer = spawnSync("bash", [resolve("scripts/install-openshell.sh")], {
+        encoding: "utf8",
+        env,
+      });
+      expect(installer.status, `${installer.stdout}\n${installer.stderr}`).toBe(0);
+      expect(installer.stdout).toContain(`openshell already installed: ${VERSION}`);
       expect(
         verifyCandidateInvocations({
           invocationLog: readFileSync(log, "utf8"),

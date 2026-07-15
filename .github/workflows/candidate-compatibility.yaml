@@ -186,7 +186,7 @@ jobs:
           [[ "$LANE" == installer ]] || { echo "::error::untrusted lane id: $LANE"; exit 1; }
           npx vitest run --project installer-integration \
             test/install-openshell-version-check.test.ts \
-            --testNamePattern "executes every receipt-bound candidate component"
+            --testNamePattern "validates the receipt-bound candidate through the installer path"
           base_path="${PATH#*:}"
           env \
             -u NEMOCLAW_CANDIDATE_COMPONENT \

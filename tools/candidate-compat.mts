@@ -606,8 +606,23 @@ const ROLE_BINARY: Record<Artifact["role"], string> = {
   sandbox: "openshell-sandbox",
 };
 
+const INSTALLER_FEATURE_MARKERS = [
+  "request-body-credential-rewrite",
+  "websocket-credential-rewrite",
+  "allow_all_known_mcp_methods",
+] as const;
+
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function binaryContains(binary: string, marker: string): boolean {
+  const result = spawnSync("grep", ["-aFq", "--", marker, binary], {
+    stdio: "ignore",
+  });
+  if (result.status === 0) return true;
+  if (result.status === 1) return false;
+  throw new Error(`failed to inspect ${basename(binary)} for installer feature markers`);
 }
 
 function extractCandidateBinary(
@@ -705,11 +720,15 @@ export async function materializeCandidate(
     const output = run(binary, ["--version"]);
     const version = verifyObservedVersion(receipt, output);
     const wrapper = join(binDirectory, ROLE_BINARY[artifactValue.role]);
+    const installerFeatureMarkers = INSTALLER_FEATURE_MARKERS.filter((marker) =>
+      binaryContains(binary, marker),
+    );
     await writeFile(
       wrapper,
       [
         "#!/bin/sh",
         "set -eu",
+        ...installerFeatureMarkers.map((marker) => `# receipt-bound feature: ${marker}`),
         ': "${NEMOCLAW_CANDIDATE_INVOCATION_LOG:?candidate invocation log is required}"',
         ': "${NEMOCLAW_CANDIDATE_INVOCATION_CONTEXT:?candidate invocation context is required}"',
         `printf '%s\\t%s\\t%s\\n' ${shellQuote(artifactValue.role)} "$NEMOCLAW_CANDIDATE_INVOCATION_CONTEXT" "$*" >> "$NEMOCLAW_CANDIDATE_INVOCATION_LOG"`,

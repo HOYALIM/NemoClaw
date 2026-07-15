@@ -218,22 +218,24 @@ exit 0`,
 
 describe("install-openshell.sh version check", { timeout: 15_000 }, () => {
   it.runIf(CANDIDATE_RUNTIME_ENABLED)(
-    "executes every receipt-bound candidate component under the installer lane (#6691)",
+    "validates the receipt-bound candidate through the installer path (#6691)",
     () => {
       const context = `installer:${CANDIDATE_RUNTIME.resolutionId}`;
-      for (const [role, binary] of Object.entries(CANDIDATE_RUNTIME).filter(
-        ([role]) => role === "cli" || role === "gateway" || role === "sandbox",
-      )) {
-        const result = spawnSync(binary!, ["--version"], {
-          encoding: "utf8",
-          env: {
-            ...process.env,
-            NEMOCLAW_CANDIDATE_INVOCATION_CONTEXT: context,
-          },
-        });
-        expect(result.status, `${role}: ${result.stderr}`).toBe(0);
-        expect(result.stdout).toContain(CANDIDATE_RUNTIME.version);
-      }
+      const result = spawnSync("bash", [SCRIPT], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          NEMOCLAW_CANDIDATE_INVOCATION_CONTEXT: context,
+          NEMOCLAW_OPENSHELL_CHANNEL: "stable",
+          NEMOCLAW_OPENSHELL_GATEWAY_BIN: CANDIDATE_RUNTIME.gateway,
+          NEMOCLAW_OPENSHELL_MAX_VERSION: CANDIDATE_RUNTIME.version,
+          NEMOCLAW_OPENSHELL_MIN_VERSION: CANDIDATE_RUNTIME.version,
+          NEMOCLAW_OPENSHELL_PIN_VERSION: CANDIDATE_RUNTIME.version,
+          NEMOCLAW_OPENSHELL_SANDBOX_BIN: CANDIDATE_RUNTIME.sandbox,
+        },
+      });
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      expect(result.stdout).toContain(`openshell already installed: ${CANDIDATE_RUNTIME.version}`);
     },
   );
 
