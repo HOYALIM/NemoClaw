@@ -1281,16 +1281,10 @@ describe("pull request and main workflow contracts", () => {
         "HERMES_BASE_IMAGE=nemoclaw-hermes-base-local",
       );
 
-      const calls: string[][] = [];
-      let currentCall: string[] = [];
-      for (const argument of readFileSync(dockerLog, "utf8").split("\0")) {
-        if (argument) {
-          currentCall.push(argument);
-        } else if (currentCall.length > 0) {
-          calls.push(currentCall);
-          currentCall = [];
-        }
-      }
+      const calls = readFileSync(dockerLog, "utf8")
+        .split("\0\0")
+        .filter(Boolean)
+        .map((call) => call.split("\0").filter(Boolean));
       const firstPull = calls.find((args) => args[0] === "pull");
       expect(firstPull?.[0]).toBe("pull");
       expect(firstPull?.[1]).toMatch(
