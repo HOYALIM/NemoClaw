@@ -8,8 +8,14 @@ import { spawnSync } from "node:child_process";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { type CompositeAction, readYaml } from "./helpers/e2e-workflow-contract";
+import { execTimeout } from "./helpers/timeouts";
+
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const helper = path.join(repoRoot, ".github/actions/base-image-resolver.sh");
+const sandboxAction = readYaml<CompositeAction>(
+  ".github/actions/resolve-sandbox-base-image/action.yaml",
+);
 const tempDirs: string[] = [];
 
 function run(script: string, env: NodeJS.ProcessEnv = {}) {
@@ -32,6 +38,36 @@ afterEach(() => {
 });
 
 describe("base image resolver helper (#6957)", () => {
+  it("executes the sandbox action and exports a compatible candidate", () => {
+    const bin = fakeDocker(`
+if [[ "$1" == pull ]]; then exit 0; fi
+if [[ "$1" == run ]]; then echo "ldd (Ubuntu GLIBC 2.39-0ubuntu8) 2.39"; exit 0; fi
+exit 1`);
+    const githubEnv = path.join(bin, "github.env");
+    writeFileSync(githubEnv, "");
+    const resolver = sandboxAction.runs.steps.find(
+      (step) => step.name === "Resolve sandbox base image",
+    )?.run;
+
+    const result = spawnSync("bash", ["--noprofile", "--norc", "-c", resolver ?? ""], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: execTimeout(),
+      env: {
+        ...process.env,
+        GITHUB_ACTION_PATH: path.join(repoRoot, ".github/actions/resolve-sandbox-base-image"),
+        GITHUB_ENV: githubEnv,
+        GITHUB_SHA: "1".repeat(40),
+        PATH: `${bin}:${process.env.PATH}`,
+      },
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(githubEnv, "utf8")).toBe(
+      "BASE_IMAGE=ghcr.io/nvidia/nemoclaw/sandbox-base:11111111\n",
+    );
+  });
+
   it("pulls a remote image and accepts a compatible glibc version", () => {
     const bin = fakeDocker(`
 if [[ "$1" == pull ]]; then exit 0; fi
