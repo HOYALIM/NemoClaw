@@ -44,9 +44,11 @@ vi.mock("./sandbox-base-image/source-identity", async (importOriginal) => ({
 
 import {
   createSandboxBaseImageResolutionKey,
+  createSandboxBaseImageBuildProvenanceKey,
   OPENSHELL_SANDBOX_MIN_GLIBC,
   resolveSandboxBaseImage,
   SandboxBaseImageResolutionError,
+  SANDBOX_BASE_BUILD_PROVENANCE_LABEL,
   type SandboxBaseImageResolutionMetadata,
 } from "./sandbox-base-image";
 
@@ -275,6 +277,12 @@ describe("sandbox base-image warm resolution", () => {
             RepoDigests: [],
             Os: "linux",
             Architecture: "amd64",
+            Config: {
+              Labels: {
+                [SANDBOX_BASE_BUILD_PROVENANCE_LABEL]:
+                  createSandboxBaseImageBuildProvenanceKey(options),
+              },
+            },
           }),
     );
 
@@ -297,10 +305,40 @@ describe("sandbox base-image warm resolution", () => {
     expect(dockerMocks.pull).not.toHaveBeenCalled();
   });
 
+  it("rejects a matching image-ID override without current-checkout provenance (#5896)", () => {
+    const options = resolutionOptions();
+    const imageId = `sha256:${"c".repeat(64)}`;
+    const localRef = `nemoclaw-sandbox-base-local:image-${"c".repeat(64)}`;
+    dockerMocks.imageInspectFormat.mockReturnValue(
+      JSON.stringify({
+        Id: imageId,
+        RepoDigests: [],
+        Os: "linux",
+        Architecture: "amd64",
+        Config: { Labels: {} },
+      }),
+    );
+
+    expect(() =>
+      resolveSandboxBaseImage({
+        ...options,
+        envVar: "NEMOCLAW_SANDBOX_BASE_IMAGE_REF",
+        env: {
+          ...options.env,
+          NEMOCLAW_SANDBOX_BASE_IMAGE_REF: localRef,
+        },
+      }),
+    ).toThrow("was not built from the current checkout inputs");
+    expect(dockerMocks.imageInspect).not.toHaveBeenCalled();
+    expect(dockerMocks.pull).not.toHaveBeenCalled();
+  });
+
   it("rejects a local override whose image-ID tag is stale (#5896)", () => {
     const options = resolutionOptions();
     const localRef = `nemoclaw-sandbox-base-local:image-${"c".repeat(64)}`;
-    dockerMocks.imageInspectFormat.mockReturnValue(`sha256:${"d".repeat(64)}`);
+    dockerMocks.imageInspectFormat.mockReturnValue(
+      JSON.stringify({ Id: `sha256:${"d".repeat(64)}` }),
+    );
 
     expect(() =>
       resolveSandboxBaseImage({

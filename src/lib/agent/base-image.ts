@@ -18,12 +18,14 @@ import { ROOT } from "../runner";
 import { SANDBOX_BUILD_CONTEXT_PREFIX } from "../sandbox/build-context";
 import {
   buildLocalBaseTag,
+  createSandboxBaseImageBuildProvenanceKey,
   createSandboxBaseImageResolutionKey,
   createSandboxBaseImageResolutionMetadata,
   getImageGlibcVersion,
   type ResolveBaseImageOptions,
   resolveSandboxBaseImage,
   SandboxBaseImageResolutionError,
+  SANDBOX_BASE_BUILD_PROVENANCE_LABEL,
   SANDBOX_BASE_TAG,
   type SandboxBaseImageResolution,
   type SandboxBaseImageResolutionMetadata,
@@ -211,6 +213,12 @@ function createLocalResolutionMetadata(
   );
 }
 
+function localBaseImageBuildLabels(options: ResolveBaseImageOptions): Record<string, string> {
+  return {
+    [SANDBOX_BASE_BUILD_PROVENANCE_LABEL]: createSandboxBaseImageBuildProvenanceKey(options),
+  };
+}
+
 /**
  * Ensure the agent-specific sandbox base image exists locally.
  * Rebuild callers can force this so local Dockerfile.base edits are applied.
@@ -245,6 +253,7 @@ export function ensureAgentBaseImage(
     console.log(`  Rebuilding ${agent.displayName} base image...`);
     const buildResult = dockerBuild(baseDockerfile, forceBuildTag, ROOT, {
       ignoreError: true,
+      labels: localBaseImageBuildLabels(resolutionOptions),
       stdio: ["ignore", "inherit", "inherit"],
     });
     if (buildResult.error || buildResult.status !== 0) {
@@ -319,6 +328,7 @@ export function ensureAgentBaseImage(
     console.log(`  Building ${agent.displayName} base image (first time only)...`);
     const buildResult = dockerBuild(baseDockerfile, baseImageTag, ROOT, {
       ignoreError: true,
+      labels: localBaseImageBuildLabels(resolutionOptions),
       stdio: ["ignore", "inherit", "inherit"],
     });
     if (buildResult.error || buildResult.status !== 0) {

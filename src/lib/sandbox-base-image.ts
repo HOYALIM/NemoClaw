@@ -12,9 +12,13 @@ import {
 } from "./adapters/docker";
 import { ROOT, redact } from "./runner";
 import { imageMeetsMinimumGlibc } from "./sandbox-base-image/image-compatibility";
-import { createSandboxBaseImageResolutionKey } from "./sandbox-base-image/resolution-key";
+import {
+  createSandboxBaseImageBuildProvenanceKey,
+  createSandboxBaseImageResolutionKey,
+} from "./sandbox-base-image/resolution-key";
 import {
   finalizeSandboxBaseImageResolution,
+  inspectLocalImageMetadata,
   reuseSandboxBaseImageResolutionHint,
 } from "./sandbox-base-image/resolution-metadata";
 import {
@@ -27,6 +31,7 @@ import {
 import {
   OPENSHELL_SANDBOX_MIN_GLIBC,
   type ResolveBaseImageOptions,
+  SANDBOX_BASE_BUILD_PROVENANCE_LABEL,
   SANDBOX_BASE_TAG,
   type SandboxBaseImageResolution,
 } from "./sandbox-base-image/types";
@@ -154,13 +159,24 @@ function resolveContentAddressedLocalOverride(
   const expectedImageId = contentAddressedLocalImageId(options.localTag, imageRef);
   if (!expectedImageId) return null;
 
-  const imageId = dockerImageInspectFormat("{{.Id}}", imageRef, { ignoreError: true })
-    .trim()
-    .toLowerCase();
+  const inspected = inspectLocalImageMetadata(imageRef);
+  const imageId = typeof inspected?.Id === "string" ? inspected.Id.trim().toLowerCase() : "";
   if (imageId !== expectedImageId) {
     throw new SandboxBaseImageResolutionError(
       `${options.label || "Sandbox base image"} local override '${imageRef}' does not match ` +
         "its content-addressed image ID.",
+    );
+  }
+
+  const labels =
+    inspected?.Config?.Labels && typeof inspected.Config.Labels === "object"
+      ? (inspected.Config.Labels as Record<string, unknown>)
+      : {};
+  const expectedProvenance = createSandboxBaseImageBuildProvenanceKey(options);
+  if (labels[SANDBOX_BASE_BUILD_PROVENANCE_LABEL] !== expectedProvenance) {
+    throw new SandboxBaseImageResolutionError(
+      `${options.label || "Sandbox base image"} local override '${imageRef}' was not built ` +
+        "from the current checkout inputs.",
     );
   }
 
@@ -321,6 +337,9 @@ function resolveLocalCandidate(
   // On failure, surface the captured stderr so the user still gets a
   // useful diagnostic.
   const buildResult = dockerBuild(options.dockerfilePath, imageRef, options.rootDir || ROOT, {
+    labels: {
+      [SANDBOX_BASE_BUILD_PROVENANCE_LABEL]: createSandboxBaseImageBuildProvenanceKey(options),
+    },
     quiet: true,
     ignoreError: true,
     suppressOutput: true,

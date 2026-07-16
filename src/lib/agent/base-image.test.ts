@@ -173,7 +173,13 @@ describe("agent base image provisioning", () => {
           "/test/root/agents/hermes/Dockerfile.base",
           expect.stringMatching(/^nemoclaw-hermes-sandbox-base-local:build-\d+-[0-9a-f]{16}$/),
           root,
-          { ignoreError: true, stdio: ["ignore", "inherit", "inherit"] },
+          {
+            ignoreError: true,
+            labels: {
+              "com.nvidia.nemoclaw.base-build-provenance": expect.stringMatching(/^[0-9a-f]{64}$/),
+            },
+            stdio: ["ignore", "inherit", "inherit"],
+          },
         );
         expect(dockerImageInspectFormatMock).toHaveBeenCalledWith(
           "{{.Id}}",
