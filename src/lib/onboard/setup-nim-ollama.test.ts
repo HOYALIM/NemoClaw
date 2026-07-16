@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { MIN_HERMES_OLLAMA_CONTEXT_WINDOW } from "../inference/ollama-runtime-context";
 import { createSetupNimOllamaHandlers } from "./setup-nim-ollama";
 import type { SetupNimSelectionState } from "./setup-nim-selection";
 
@@ -86,6 +87,7 @@ describe("createSetupNimOllamaHandlers", () => {
         },
         selectAndValidateOllamaModel: async (_gpu, _provider, args, onModelSelected) => {
           expect(args.lockedModel).toBe("required/model");
+          expect(args.promptDefaultModel).toBeNull();
           events.push("prepare-model");
           onModelSelected?.("required/model");
           return { outcome: "selected", model: "required/model", allowToolsIncompatible: false };
@@ -137,6 +139,60 @@ describe("createSetupNimOllamaHandlers", () => {
       "  To use a different model for this agent, rerun with an unused NEMOCLAW_GATEWAY_PORT.",
     );
     log.mockRestore();
+  });
+
+  it("passes NEMOCLAW_MODEL as the interactive Ollama prompt default", async () => {
+    const state = makeState();
+    const selectModel = vi.fn(async (_gpu, _provider, args) => {
+      expect(args.requestedModel).toBeNull();
+      expect(args.lockedModel).toBeNull();
+      expect(args.promptDefaultModel).toBe("qwen3.6:35b");
+      return { outcome: "selected" as const, model: "qwen3.6:35b", allowToolsIncompatible: false };
+    });
+    const { handleRunningOllamaSelection } = createSetupNimOllamaHandlers(
+      makeDeps({
+        isNonInteractive: () => false,
+        process: {
+          ...process,
+          env: { ...process.env, NEMOCLAW_MODEL: "qwen3.6:35b" },
+        } as NodeJS.Process,
+        selectAndValidateOllamaModel: selectModel,
+      }),
+    );
+
+    const result = await handleRunningOllamaSelection(null, null, null, true, state);
+
+    expect(result).toBe("selected");
+    expect(selectModel).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes NEMOCLAW_PROVIDER_MODEL as the interactive Ollama prompt default fallback", async () => {
+    const state = makeState();
+    const selectModel = vi.fn(async (_gpu, _provider, args) => {
+      expect(args.requestedModel).toBeNull();
+      expect(args.lockedModel).toBeNull();
+      expect(args.promptDefaultModel).toBe("qwen3.6:35b");
+      return { outcome: "selected" as const, model: "qwen3.6:35b", allowToolsIncompatible: false };
+    });
+    const { handleRunningOllamaSelection } = createSetupNimOllamaHandlers(
+      makeDeps({
+        isNonInteractive: () => false,
+        process: {
+          ...process,
+          env: {
+            ...process.env,
+            NEMOCLAW_MODEL: undefined,
+            NEMOCLAW_PROVIDER_MODEL: "qwen3.6:35b",
+          },
+        } as NodeJS.Process,
+        selectAndValidateOllamaModel: selectModel,
+      }),
+    );
+
+    const result = await handleRunningOllamaSelection(null, null, null, true, state);
+
+    expect(result).toBe("selected");
+    expect(selectModel).toHaveBeenCalledTimes(1);
   });
 
   it("does not install Ollama when shared-gateway preflight rejects", async () => {
@@ -199,6 +255,40 @@ describe("createSetupNimOllamaHandlers", () => {
     assert.equal(state.model, "llama3.1:8b");
     assert.equal(state.provider, "ollama-local");
     assert.equal(state.allowToolsIncompatible, true);
+  });
+
+  it("passes the Hermes Ollama context floor to systemd repair and model validation", async () => {
+    const state = makeState();
+    state.ollamaContextWindowFloor = MIN_HERMES_OLLAMA_CONTEXT_WINDOW;
+    const ensureOverride = vi.fn(() => "unchanged");
+    const runStartup = vi.fn(() => ({ kind: "ready" as const }));
+    const selectModel = vi.fn(async (_gpu, _provider, args) => {
+      expect(args.contextWindowFloor).toBe(MIN_HERMES_OLLAMA_CONTEXT_WINDOW);
+      return { outcome: "selected" as const, model: "llama3.2:1b", allowToolsIncompatible: false };
+    });
+    const { handleRunningOllamaSelection } = createSetupNimOllamaHandlers(
+      makeDeps({
+        ensureOllamaLoopbackSystemdOverride: ensureOverride,
+        runOllamaStartupOrGate: runStartup,
+        selectAndValidateOllamaModel: selectModel,
+      }),
+    );
+
+    const result = await handleRunningOllamaSelection(null, "llama3.2:1b", null, true, state);
+
+    expect(result).toBe("selected");
+    expect(ensureOverride).toHaveBeenCalledWith({
+      isNonInteractive: expect.any(Function),
+      contextWindowFloor: MIN_HERMES_OLLAMA_CONTEXT_WINDOW,
+    });
+    expect(runStartup).toHaveBeenCalledWith({
+      ollamaReady: true,
+      ollamaPort: 11434,
+      getLocalProviderBaseUrl: expect.any(Function),
+      isNonInteractive: expect.any(Function),
+      contextWindowFloor: MIN_HERMES_OLLAMA_CONTEXT_WINDOW,
+    });
+    expect(selectModel).toHaveBeenCalledTimes(1);
   });
 
   it("preserves accepted tools-incompatible state for Windows-host Ollama", async () => {
