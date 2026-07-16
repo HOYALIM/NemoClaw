@@ -1219,30 +1219,40 @@ describe("pull request and main workflow contracts", () => {
       writeFileSync(
         join(fakeBin, "docker"),
         [
-          "#!/usr/bin/env node",
-          'const fs = require("node:fs");',
-          "const args = process.argv.slice(2);",
-          'fs.appendFileSync(process.env.DOCKER_LOG, JSON.stringify(args) + "\\n");',
-          'if (args[0] === "pull" || args[0] === "build") process.exit(0);',
-          'if (args[0] === "image" && args[1] === "inspect") {',
-          '  process.stdout.write(process.env.REMOTE_DIGEST + "\\n");',
-          "  process.exit(0);",
-          "}",
-          'if (args[0] === "run") {',
-          '  const entrypointIndex = args.indexOf("--entrypoint");',
-          "  const entrypoint = args[entrypointIndex + 1];",
-          "  const image = args[entrypointIndex + 2];",
-          '  if (entrypoint === "/usr/bin/ldd") {',
-          '    process.stdout.write("ldd (Ubuntu GLIBC 2.39) 2.39\\n");',
-          "    process.exit(0);",
-          "  }",
-          '  if (entrypoint === "sh") process.exit(0);',
-          '  if (entrypoint === "/opt/hermes/.venv/bin/python") {',
-          "    process.exit(image === process.env.REMOTE_DIGEST ? 42 : 0);",
-          "  }",
-          "}",
-          "console.error(`unexpected docker invocation: ${JSON.stringify(args)}`);",
-          "process.exit(2);",
+          "#!/usr/bin/env bash",
+          "set -u",
+          'printf "%s\\0" "$@" >> "$DOCKER_LOG"',
+          'printf "\\0" >> "$DOCKER_LOG"',
+          'if [[ "$1" == "pull" || "$1" == "build" ]]; then exit 0; fi',
+          'if [[ "$1" == "image" && "$2" == "inspect" ]]; then',
+          '  printf "%s\\n" "$REMOTE_DIGEST"',
+          "  exit 0",
+          "fi",
+          'if [[ "$1" == "run" ]]; then',
+          '  entrypoint=""',
+          '  image=""',
+          "  while (($#)); do",
+          '    if [[ "$1" == "--entrypoint" ]]; then',
+          '      entrypoint="$2"',
+          '      image="$3"',
+          "      break",
+          "    fi",
+          "    shift",
+          "  done",
+          '  if [[ "$entrypoint" == "/usr/bin/ldd" ]]; then',
+          '    printf "ldd (Ubuntu GLIBC 2.39) 2.39\\n"',
+          "    exit 0",
+          "  fi",
+          '  if [[ "$entrypoint" == "sh" ]]; then exit 0; fi',
+          '  if [[ "$entrypoint" == "/opt/hermes/.venv/bin/python" ]]; then',
+          '    [[ "$image" != "$REMOTE_DIGEST" ]]',
+          "    exit",
+          "  fi",
+          "fi",
+          'printf "unexpected docker invocation:" >&2',
+          'printf " %q" "$@" >&2',
+          'printf "\\n" >&2',
+          "exit 2",
           "",
         ].join("\n"),
         { mode: 0o755 },
@@ -1271,10 +1281,16 @@ describe("pull request and main workflow contracts", () => {
         "HERMES_BASE_IMAGE=nemoclaw-hermes-base-local",
       );
 
-      const calls = readFileSync(dockerLog, "utf8")
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as string[]);
+      const calls: string[][] = [];
+      let currentCall: string[] = [];
+      for (const argument of readFileSync(dockerLog, "utf8").split("\0")) {
+        if (argument) {
+          currentCall.push(argument);
+        } else if (currentCall.length > 0) {
+          calls.push(currentCall);
+          currentCall = [];
+        }
+      }
       const firstPull = calls.find((args) => args[0] === "pull");
       expect(firstPull?.[0]).toBe("pull");
       expect(firstPull?.[1]).toMatch(
