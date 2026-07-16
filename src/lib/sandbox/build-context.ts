@@ -252,6 +252,10 @@ function stageOptimizedSandboxBuildContext(
     path.join(stagedScriptsDir, "patch-openclaw-device-self-approval.mts"),
   );
   fs.copyFileSync(
+    path.join(rootDir, "scripts", "extract-semver.sh"),
+    path.join(stagedScriptsDir, "extract-semver.sh"),
+  );
+  fs.copyFileSync(
     path.join(rootDir, "scripts", "verify-wechat-runtime-lock.mts"),
     path.join(stagedScriptsDir, "verify-wechat-runtime-lock.mts"),
   );
