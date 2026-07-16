@@ -569,7 +569,7 @@ describe("pull request and main workflow contracts", () => {
       "test/example.test.ts",
       "src/lib/example.spec.ts",
       "nemoclaw/src/example.test.ts",
-      "scripts/find-source-shape-tests.ts",
+      "scripts/find-source-shape-tests.mts",
       "ci/source-shape-test-budget.json",
     ]) {
       expect(files.test(path), path).toBe(true);
@@ -657,7 +657,7 @@ describe("pull request and main workflow contracts", () => {
     );
     expect(cliCoverageCalls[4]).toEqual([
       "tsx",
-      "scripts/check-coverage-ratchet.ts",
+      "scripts/check-coverage-ratchet.mts",
       "coverage/cli/coverage-summary.json",
       "ci/coverage-threshold-cli.json",
       "CLI coverage",
@@ -672,7 +672,7 @@ describe("pull request and main workflow contracts", () => {
     );
     expect(pluginCoverageCalls[1]).toEqual([
       "tsx",
-      "scripts/check-coverage-ratchet.ts",
+      "scripts/check-coverage-ratchet.mts",
       "coverage/plugin/coverage-summary.json",
       "ci/coverage-threshold-plugin.json",
       "Plugin coverage",
@@ -1256,6 +1256,7 @@ describe("pull request and main workflow contracts", () => {
         env: {
           ...process.env,
           DOCKER_LOG: dockerLog,
+          GITHUB_ACTION_PATH: join(process.cwd(), ".github/actions/resolve-hermes-base-image"),
           GITHUB_ENV: githubEnv,
           GITHUB_SHA: "1".repeat(40),
           PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
