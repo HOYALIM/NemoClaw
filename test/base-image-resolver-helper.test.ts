@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -15,6 +15,9 @@ const repoRoot = path.resolve(import.meta.dirname, "..");
 const helper = path.join(repoRoot, ".github/actions/base-image-resolver.sh");
 const sandboxAction = readYaml<CompositeAction>(
   ".github/actions/resolve-sandbox-base-image/action.yaml",
+);
+const hermesAction = readYaml<CompositeAction>(
+  ".github/actions/resolve-hermes-base-image/action.yaml",
 );
 const tempDirs: string[] = [];
 
@@ -66,6 +69,76 @@ exit 1`);
     expect(readFileSync(githubEnv, "utf8")).toBe(
       "BASE_IMAGE=ghcr.io/nvidia/nemoclaw/sandbox-base:11111111\n",
     );
+  });
+
+  it("rejects a Hermes base without MCP HTTP imports and falls back locally", () => {
+    const bin = fakeDocker(`
+printf "%s\\0" "$@" >> "$DOCKER_LOG"
+printf "\\0" >> "$DOCKER_LOG"
+if [[ "$1" == pull || "$1" == build ]]; then exit 0; fi
+if [[ "$1" == image && "$2" == inspect ]]; then printf "%s\\n" "$REMOTE_DIGEST"; exit 0; fi
+if [[ "$1" == run ]]; then
+  while [[ "$1" != --entrypoint ]]; do shift; done
+  entrypoint="$2"
+  image="$3"
+  if [[ "$entrypoint" == /usr/bin/ldd ]]; then printf "ldd (Ubuntu GLIBC 2.39) 2.39\\n"; exit 0; fi
+  if [[ "$entrypoint" == sh ]]; then exit 0; fi
+  if [[ "$entrypoint" == /opt/hermes/.venv/bin/python ]]; then
+    [[ "$image" != "$REMOTE_DIGEST" ]]
+    exit
+  fi
+fi
+exit 2`);
+    const dockerLog = path.join(bin, "docker.log");
+    const githubEnv = path.join(bin, "github.env");
+    const remoteDigest = "ghcr.io/nvidia/nemoclaw/hermes-sandbox-base@sha256:" + "a".repeat(64);
+    const resolver = hermesAction.runs.steps.find(
+      (step) => step.name === "Resolve Hermes sandbox base image",
+    )?.run;
+    writeFileSync(githubEnv, "");
+
+    const result = spawnSync("bash", ["--noprofile", "--norc", "-c", resolver ?? ""], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: execTimeout(),
+      env: {
+        ...process.env,
+        DOCKER_LOG: dockerLog,
+        GITHUB_ACTION_PATH: path.join(repoRoot, ".github/actions/resolve-hermes-base-image"),
+        GITHUB_ENV: githubEnv,
+        GITHUB_SHA: "1".repeat(40),
+        PATH: `${bin}:${process.env.PATH}`,
+        REMOTE_DIGEST: remoteDigest,
+      },
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("lacks the packaged MCP Streamable HTTP client imports");
+    expect(result.stdout).toContain("building locally");
+    expect(readFileSync(githubEnv, "utf8").trim()).toBe(
+      "HERMES_BASE_IMAGE=nemoclaw-hermes-base-local",
+    );
+
+    const calls = readFileSync(dockerLog, "utf8")
+      .split("\0\0")
+      .filter(Boolean)
+      .map((call) => call.split("\0").filter(Boolean));
+    const firstPull = calls.find((args) => args[0] === "pull");
+    expect(firstPull?.[1]).toMatch(
+      /^ghcr\.io\/nvidia\/nemoclaw\/hermes-sandbox-base@sha256:[0-9a-f]{64}$/,
+    );
+    const remoteProbe = calls.findIndex(
+      (args) => args.includes("/opt/hermes/.venv/bin/python") && args.includes(remoteDigest),
+    );
+    const localBuild = calls.findIndex((args) => args[0] === "build");
+    const localProbe = calls.findIndex(
+      (args) =>
+        args.includes("/opt/hermes/.venv/bin/python") &&
+        args.includes("nemoclaw-hermes-base-local"),
+    );
+    expect(remoteProbe).toBeGreaterThanOrEqual(0);
+    expect(localBuild).toBeGreaterThan(remoteProbe);
+    expect(localProbe).toBeGreaterThan(localBuild);
   });
 
   it("pulls a remote image and accepts a compatible glibc version", () => {
