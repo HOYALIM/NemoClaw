@@ -54,6 +54,7 @@ export function getSourceShortShaTags(
   };
 
   push(env.GITHUB_SHA);
+  if (!fs.existsSync(path.join(rootDir, ".git"))) return Array.from(new Set(values));
   const git = spawnSync("git", ["-C", rootDir, "rev-parse", "HEAD"], {
     encoding: "utf-8",
     stdio: ["ignore", "pipe", "ignore"],
@@ -77,6 +78,7 @@ export function getSourceRevisionIds(
   };
 
   push(env.GITHUB_SHA);
+  if (!fs.existsSync(path.join(rootDir, ".git"))) return Array.from(new Set(values));
   const git = spawnSync("git", ["-C", rootDir, "rev-parse", "HEAD"], {
     encoding: "utf-8",
     stdio: ["ignore", "pipe", "ignore"],

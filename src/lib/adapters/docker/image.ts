@@ -34,7 +34,7 @@ export function dockerBuild(
     "build",
     ...(quiet ? ["--quiet"] : []),
     ...Object.entries(labels ?? {})
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       .flatMap(([key, value]) => ["--label", `${key}=${value}`]),
     "-f",
     dockerfilePath,

@@ -60,6 +60,10 @@ export function createSandboxBaseImageBuildProvenanceKey(options: ResolveBaseIma
   return crypto.createHash("sha256").update(JSON.stringify(material)).digest("hex");
 }
 
+export function createSandboxBaseImageBuildProvenance(options: ResolveBaseImageOptions): string {
+  return `${createSandboxBaseImageBuildProvenanceKey(options)}.${crypto.randomBytes(32).toString("hex")}`;
+}
+
 export function createSandboxBaseImageResolutionKey(options: ResolveBaseImageOptions): string {
   const env = options.env || process.env;
   const rootDir = options.rootDir || ROOT;

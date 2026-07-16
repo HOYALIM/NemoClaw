@@ -53,6 +53,12 @@ export type ResolveBaseImageOptions = {
   validationDescription?: string;
   resolutionHint?: SandboxBaseImageResolutionMetadata | null;
   forceRefresh?: boolean;
+  trustedLocalOverride?: TrustedLocalBaseImageOverride;
+};
+
+export type TrustedLocalBaseImageOverride = {
+  ref: string;
+  provenance: string;
 };
 
 export type SandboxBaseImageResolution = {

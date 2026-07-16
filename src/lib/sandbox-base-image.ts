@@ -13,6 +13,7 @@ import {
 import { ROOT, redact } from "./runner";
 import { imageMeetsMinimumGlibc } from "./sandbox-base-image/image-compatibility";
 import {
+  createSandboxBaseImageBuildProvenance,
   createSandboxBaseImageBuildProvenanceKey,
   createSandboxBaseImageResolutionKey,
 } from "./sandbox-base-image/resolution-key";
@@ -173,10 +174,18 @@ function resolveContentAddressedLocalOverride(
       ? (inspected.Config.Labels as Record<string, unknown>)
       : {};
   const expectedProvenance = createSandboxBaseImageBuildProvenanceKey(options);
-  if (labels[SANDBOX_BASE_BUILD_PROVENANCE_LABEL] !== expectedProvenance) {
+  const provenance = labels[SANDBOX_BASE_BUILD_PROVENANCE_LABEL];
+  const trustedOverride = options.trustedLocalOverride;
+  if (
+    typeof provenance !== "string" ||
+    !provenance.startsWith(`${expectedProvenance}.`) ||
+    !/^[0-9a-f]{64}\.[0-9a-f]{64}$/.test(provenance) ||
+    trustedOverride?.ref !== imageRef ||
+    trustedOverride.provenance !== provenance
+  ) {
     throw new SandboxBaseImageResolutionError(
-      `${options.label || "Sandbox base image"} local override '${imageRef}' was not built ` +
-        "from the current checkout inputs.",
+      `${options.label || "Sandbox base image"} local override '${imageRef}' is not backed ` +
+        "by the current NemoClaw build operation.",
     );
   }
 
@@ -338,7 +347,7 @@ function resolveLocalCandidate(
   // useful diagnostic.
   const buildResult = dockerBuild(options.dockerfilePath, imageRef, options.rootDir || ROOT, {
     labels: {
-      [SANDBOX_BASE_BUILD_PROVENANCE_LABEL]: createSandboxBaseImageBuildProvenanceKey(options),
+      [SANDBOX_BASE_BUILD_PROVENANCE_LABEL]: createSandboxBaseImageBuildProvenance(options),
     },
     quiet: true,
     ignoreError: true,

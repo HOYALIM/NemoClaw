@@ -18,7 +18,7 @@ import { ROOT } from "../runner";
 import { SANDBOX_BUILD_CONTEXT_PREFIX } from "../sandbox/build-context";
 import {
   buildLocalBaseTag,
-  createSandboxBaseImageBuildProvenanceKey,
+  createSandboxBaseImageBuildProvenance,
   createSandboxBaseImageResolutionKey,
   createSandboxBaseImageResolutionMetadata,
   getImageGlibcVersion,
@@ -29,6 +29,7 @@ import {
   SANDBOX_BASE_TAG,
   type SandboxBaseImageResolution,
   type SandboxBaseImageResolutionMetadata,
+  type TrustedLocalBaseImageOverride,
 } from "../sandbox-base-image";
 import { createDeepAgentsCodeBaseImageResolutionOptions } from "./deep-agents-code-base-image";
 import type { AgentDefinition } from "./defs";
@@ -213,9 +214,14 @@ function createLocalResolutionMetadata(
   );
 }
 
-function localBaseImageBuildLabels(options: ResolveBaseImageOptions): Record<string, string> {
+function localBaseImageBuildProvenance(options: ResolveBaseImageOptions): {
+  labels: Record<string, string>;
+  provenance: string;
+} {
+  const provenance = createSandboxBaseImageBuildProvenance(options);
   return {
-    [SANDBOX_BASE_BUILD_PROVENANCE_LABEL]: createSandboxBaseImageBuildProvenanceKey(options),
+    labels: { [SANDBOX_BASE_BUILD_PROVENANCE_LABEL]: provenance },
+    provenance,
   };
 }
 
@@ -237,7 +243,10 @@ export function ensureAgentBaseImage(
   const baseImageName = resolutionOptions.imageName;
   const baseImageTag = `${baseImageName}:${SANDBOX_BASE_TAG}`;
   const overrideEnvVar = getAgentSandboxBaseImageEnvVar(agent.name);
-  const resolveExactImage = (imageRef: string) =>
+  const resolveExactImage = (
+    imageRef: string,
+    trustedLocalOverride?: TrustedLocalBaseImageOverride,
+  ) =>
     resolveSandboxBaseImage({
       ...resolutionOptions,
       localTag: imageRef,
@@ -246,14 +255,16 @@ export function ensureAgentBaseImage(
         [overrideEnvVar]: imageRef,
         NEMOCLAW_SANDBOX_BASE_LOCAL_BUILD: "0",
       },
+      trustedLocalOverride,
     });
 
   if (options.forceBaseImageRebuild === true) {
     const forceBuildTag = `nemoclaw-${agent.name}-sandbox-base-local:build-${process.pid}-${crypto.randomBytes(8).toString("hex")}`;
+    const buildProvenance = localBaseImageBuildProvenance(resolutionOptions);
     console.log(`  Rebuilding ${agent.displayName} base image...`);
     const buildResult = dockerBuild(baseDockerfile, forceBuildTag, ROOT, {
       ignoreError: true,
-      labels: localBaseImageBuildLabels(resolutionOptions),
+      labels: buildProvenance.labels,
       stdio: ["ignore", "inherit", "inherit"],
     });
     if (buildResult.error || buildResult.status !== 0) {
@@ -267,7 +278,10 @@ export function ensureAgentBaseImage(
       const pinnedBaseImageTag = pinAgentSandboxBaseImageRef(agent.name, forceBuildTag);
       let resolved: SandboxBaseImageResolution | null = null;
       try {
-        resolved = resolveExactImage(pinnedBaseImageTag);
+        resolved = resolveExactImage(pinnedBaseImageTag, {
+          ref: pinnedBaseImageTag,
+          provenance: buildProvenance.provenance,
+        });
       } catch (error) {
         if (!(error instanceof SandboxBaseImageResolutionError)) throw error;
       }
@@ -326,9 +340,10 @@ export function ensureAgentBaseImage(
   });
   if (inspectResult?.status !== 0) {
     console.log(`  Building ${agent.displayName} base image (first time only)...`);
+    const buildProvenance = localBaseImageBuildProvenance(resolutionOptions);
     const buildResult = dockerBuild(baseDockerfile, baseImageTag, ROOT, {
       ignoreError: true,
-      labels: localBaseImageBuildLabels(resolutionOptions),
+      labels: buildProvenance.labels,
       stdio: ["ignore", "inherit", "inherit"],
     });
     if (buildResult.error || buildResult.status !== 0) {

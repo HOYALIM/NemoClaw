@@ -269,6 +269,7 @@ describe("sandbox base-image warm resolution", () => {
     const options = resolutionOptions();
     const imageId = `sha256:${"c".repeat(64)}`;
     const localRef = `nemoclaw-sandbox-base-local:image-${"c".repeat(64)}`;
+    const provenance = `${createSandboxBaseImageBuildProvenanceKey(options)}.${"d".repeat(64)}`;
     dockerMocks.imageInspectFormat.mockImplementation((format: string) =>
       format === "{{.Id}}"
         ? imageId
@@ -279,8 +280,7 @@ describe("sandbox base-image warm resolution", () => {
             Architecture: "amd64",
             Config: {
               Labels: {
-                [SANDBOX_BASE_BUILD_PROVENANCE_LABEL]:
-                  createSandboxBaseImageBuildProvenanceKey(options),
+                [SANDBOX_BASE_BUILD_PROVENANCE_LABEL]: provenance,
               },
             },
           }),
@@ -293,6 +293,7 @@ describe("sandbox base-image warm resolution", () => {
         ...options.env,
         NEMOCLAW_SANDBOX_BASE_IMAGE_REF: localRef,
       },
+      trustedLocalOverride: { ref: localRef, provenance },
     });
 
     expect(resolved).toMatchObject({
@@ -303,6 +304,33 @@ describe("sandbox base-image warm resolution", () => {
     });
     expect(dockerMocks.imageInspect).not.toHaveBeenCalled();
     expect(dockerMocks.pull).not.toHaveBeenCalled();
+  });
+
+  it("rejects a copied provenance label without the current build proof (#5896)", () => {
+    const options = resolutionOptions();
+    const imageId = `sha256:${"c".repeat(64)}`;
+    const localRef = `nemoclaw-sandbox-base-local:image-${"c".repeat(64)}`;
+    const provenance = `${createSandboxBaseImageBuildProvenanceKey(options)}.${"d".repeat(64)}`;
+    dockerMocks.imageInspectFormat.mockReturnValue(
+      JSON.stringify({
+        Id: imageId,
+        RepoDigests: [],
+        Os: "linux",
+        Architecture: "amd64",
+        Config: { Labels: { [SANDBOX_BASE_BUILD_PROVENANCE_LABEL]: provenance } },
+      }),
+    );
+
+    expect(() =>
+      resolveSandboxBaseImage({
+        ...options,
+        envVar: "NEMOCLAW_SANDBOX_BASE_IMAGE_REF",
+        env: {
+          ...options.env,
+          NEMOCLAW_SANDBOX_BASE_IMAGE_REF: localRef,
+        },
+      }),
+    ).toThrow("is not backed by the current NemoClaw build operation");
   });
 
   it("rejects a matching image-ID override without current-checkout provenance (#5896)", () => {
@@ -328,7 +356,7 @@ describe("sandbox base-image warm resolution", () => {
           NEMOCLAW_SANDBOX_BASE_IMAGE_REF: localRef,
         },
       }),
-    ).toThrow("was not built from the current checkout inputs");
+    ).toThrow("is not backed by the current NemoClaw build operation");
     expect(dockerMocks.imageInspect).not.toHaveBeenCalled();
     expect(dockerMocks.pull).not.toHaveBeenCalled();
   });
