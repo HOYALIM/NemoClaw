@@ -13,7 +13,6 @@ import {
   type WorkflowJob,
   type WorkflowStep,
 } from "./helpers/e2e-workflow-contract";
-import { execTimeout } from "./helpers/timeouts";
 
 type CiWorkflow = {
   "run-name"?: string;

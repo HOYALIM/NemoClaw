@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -114,6 +114,7 @@ exit 2`);
 
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain("lacks the packaged MCP Streamable HTTP client imports");
+    expect(result.stdout).toContain("building locally");
     expect(readFileSync(githubEnv, "utf8").trim()).toBe(
       "HERMES_BASE_IMAGE=nemoclaw-hermes-base-local",
     );
@@ -121,6 +122,11 @@ exit 2`);
       .split("\0\0")
       .filter(Boolean)
       .map((call) => call.split("\0").filter(Boolean));
+    const firstPull = calls.find((args) => args[0] === "pull");
+    expect(firstPull?.[0]).toBe("pull");
+    expect(firstPull?.[1]).toMatch(
+      /^ghcr\.io\/nvidia\/nemoclaw\/hermes-sandbox-base@sha256:[0-9a-f]{64}$/,
+    );
     const remoteProbe = calls.findIndex(
       (args) => args.includes("/opt/hermes/.venv/bin/python") && args.includes(remoteDigest),
     );
