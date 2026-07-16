@@ -174,14 +174,15 @@ function resolveContentAddressedLocalOverride(
       ? (inspected.Config.Labels as Record<string, unknown>)
       : {};
   const expectedProvenance = createSandboxBaseImageBuildProvenanceKey(options);
-  const provenance = labels[SANDBOX_BASE_BUILD_PROVENANCE_LABEL];
   const trustedOverride = options.trustedLocalOverride;
+  const provenance = trustedOverride?.provenance;
+  const imageProvenance = labels[SANDBOX_BASE_BUILD_PROVENANCE_LABEL];
   if (
     typeof provenance !== "string" ||
     !provenance.startsWith(`${expectedProvenance}.`) ||
     !/^[0-9a-f]{64}\.[0-9a-f]{64}$/.test(provenance) ||
     trustedOverride?.ref !== imageRef ||
-    trustedOverride.provenance !== provenance
+    imageProvenance !== provenance
   ) {
     throw new SandboxBaseImageResolutionError(
       `${options.label || "Sandbox base image"} local override '${imageRef}' is not backed ` +

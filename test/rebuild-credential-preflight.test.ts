@@ -15,7 +15,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { execTimeout } from "./helpers/timeouts";
+import { execTimeout, testTimeout } from "./helpers/timeouts";
 
 const REPO_ROOT = path.join(import.meta.dirname, "..");
 const NODE_BIN = path.dirname(process.execPath);
@@ -249,14 +249,27 @@ process.exit(0);
   fs.writeFileSync(
     path.join(tmpDir, "docker"),
     `#!/usr/bin/env node
+const fs = require("node:fs");
 const a = process.argv.slice(2);
+const provenancePath = ${JSON.stringify(path.join(tmpDir, "docker-base-provenance"))};
 if (a[0] === "info") { process.stdout.write(JSON.stringify({ServerVersion:"27.0.0", OperatingSystem:"Docker Engine", NCPU:8, MemTotal:17179869184}) + "\\n"); process.exit(0); }
-if (a[0] === "build") process.exit(0);
+if (a[0] === "build") {
+  const labelIndex = a.indexOf("--label");
+  if (labelIndex >= 0) {
+    const label = a[labelIndex + 1] || "";
+    fs.writeFileSync(provenancePath, label.slice(label.indexOf("=") + 1));
+  }
+  process.exit(0);
+}
 if (a[0] === "image" && a[1] === "inspect") {
   const formatIndex = a.indexOf("--format");
   const format = formatIndex >= 0 ? a[formatIndex + 1] : "";
   if (format === "{{.Id}}") process.stdout.write("sha256:${"a".repeat(64)}\\n");
   if (format === "{{json .RepoDigests}}") process.stdout.write("[]\\n");
+  if (format === "{{json .}}") {
+    const provenance = fs.existsSync(provenancePath) ? fs.readFileSync(provenancePath, "utf8") : "";
+    process.stdout.write(JSON.stringify({Id:"sha256:${"a".repeat(64)}", RepoDigests:[], Os:"linux", Architecture:"amd64", Config:{Labels:provenance ? {"com.nvidia.nemoclaw.base-build-provenance":provenance} : {}}}) + "\\n");
+  }
   process.exit(0);
 }
 if (a[0] === "tag" || a[0] === "rmi") process.exit(0);
@@ -419,7 +432,9 @@ describe("atomic rebuild process contracts (#2273)", () => {
     expect(marker.stdout).toContain("dcode-atomicity-marker");
   });
 
-  it("registers an exported Hermes API key without exposing its name or value", () => {
+  it("registers an exported Hermes API key without exposing its name or value", {
+    timeout: testTimeout(60_000),
+  }, () => {
     const fixture = createFixture({
       agent: "hermes",
       provider: "hermes-provider",

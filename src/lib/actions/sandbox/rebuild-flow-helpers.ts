@@ -10,6 +10,7 @@ import {
   ensureAgentBaseImage,
   getAgentSandboxBaseImageEnvVar,
   pinAgentSandboxBaseImageRef,
+  pinTrustedAgentBaseImageOverrideForOperation,
 } from "../../agent/onboard";
 import { CLI_NAME } from "../../cli/branding";
 import { RD as _RD, G, R, YW } from "../../cli/terminal-style";
@@ -51,6 +52,7 @@ export type RebuildAgentBaseImagePreflight = {
   ok: boolean;
   imageRef: string | null;
   overrideEnvVar: string | null;
+  trustedLocalOverride?: import("../../sandbox-base-image").TrustedLocalBaseImageOverride;
 };
 
 /**
@@ -223,7 +225,12 @@ export function ensureRebuildAgentBaseImage(
       hasExplicitOverride && result.imageTag
         ? pinAgentSandboxBaseImageRef(agentDef.name, result.imageTag)
         : result.imageTag;
-    return { ok: true, imageRef, overrideEnvVar };
+    return {
+      ok: true,
+      imageRef,
+      overrideEnvVar,
+      ...(result.trustedLocalOverride ? { trustedLocalOverride: result.trustedLocalOverride } : {}),
+    };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("");
@@ -245,11 +252,15 @@ export function pinRebuildAgentBaseImageForRecreate(
 
   const hadPriorValue = Object.hasOwn(env, overrideEnvVar);
   const priorValue = env[overrideEnvVar];
+  const restoreTrustedOverride = preflight.trustedLocalOverride
+    ? pinTrustedAgentBaseImageOverrideForOperation(overrideEnvVar, preflight.trustedLocalOverride)
+    : () => undefined;
   env[overrideEnvVar] = imageRef;
   let restored = false;
   return () => {
     if (restored) return;
     restored = true;
+    restoreTrustedOverride();
     if (hadPriorValue && priorValue !== undefined) {
       env[overrideEnvVar] = priorValue;
     } else {

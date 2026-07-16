@@ -48,6 +48,13 @@ export function pinAgentSandboxBaseImageRef(agentName: string, imageRef: string)
   return baseImage.pinAgentSandboxBaseImageRef(agentName, imageRef);
 }
 
+export function pinTrustedAgentBaseImageOverrideForOperation(
+  overrideEnvVar: string,
+  override: import("../sandbox-base-image").TrustedLocalBaseImageOverride,
+): () => void {
+  return baseImage.pinTrustedAgentBaseImageOverrideForOperation(overrideEnvVar, override);
+}
+
 export function hermesBaseImageSupportsMcp(imageRef: string): boolean {
   return baseImage.hermesBaseImageSupportsMcp(imageRef);
 }

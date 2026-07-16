@@ -265,7 +265,7 @@ describe("sandbox base-image warm resolution", () => {
     expect(events).toContain("inspect-digest");
   });
 
-  it("accepts only a local override bound to its Docker image ID (#5896)", () => {
+  it("accepts a local override backed by the current build proof (#5896)", () => {
     const options = resolutionOptions();
     const imageId = `sha256:${"c".repeat(64)}`;
     const localRef = `nemoclaw-sandbox-base-local:image-${"c".repeat(64)}`;

@@ -50,12 +50,30 @@ export interface EnsureAgentBaseImageResult {
   imageTag: string | null;
   built: boolean;
   resolutionMetadata?: SandboxBaseImageResolutionMetadata;
+  trustedLocalOverride?: TrustedLocalBaseImageOverride;
 }
 
 export interface CreateAgentSandboxResult {
   buildCtx: string;
   stagedDockerfile: string;
   baseImageResolutionMetadata: SandboxBaseImageResolutionMetadata | null;
+}
+
+const trustedLocalOverrideLeases = new Map<string, TrustedLocalBaseImageOverride>();
+
+export function pinTrustedAgentBaseImageOverrideForOperation(
+  overrideEnvVar: string,
+  override: TrustedLocalBaseImageOverride,
+): () => void {
+  const previous = trustedLocalOverrideLeases.get(overrideEnvVar);
+  trustedLocalOverrideLeases.set(overrideEnvVar, override);
+  let restored = false;
+  return () => {
+    if (restored) return;
+    restored = true;
+    if (previous) trustedLocalOverrideLeases.set(overrideEnvVar, previous);
+    else trustedLocalOverrideLeases.delete(overrideEnvVar);
+  };
 }
 
 export function getAgentSandboxBaseImageEnvVar(agentName: string): string {
@@ -304,6 +322,10 @@ export function ensureAgentBaseImage(
       return {
         imageTag: pinnedBaseImageTag,
         built: true,
+        trustedLocalOverride: {
+          ref: pinnedBaseImageTag,
+          provenance: buildProvenance.provenance,
+        },
         ...(resolutionMetadata ? { resolutionMetadata } : {}),
       };
     } finally {
@@ -313,7 +335,7 @@ export function ensureAgentBaseImage(
 
   const explicitOverride = process.env[overrideEnvVar]?.trim();
   const resolved = explicitOverride
-    ? resolveExactImage(explicitOverride)
+    ? resolveExactImage(explicitOverride, trustedLocalOverrideLeases.get(overrideEnvVar))
     : resolveSandboxBaseImage(resolutionOptions);
   if (resolved) {
     if (!hermesFinalDockerfileAcceptsBase(agent, resolved)) {

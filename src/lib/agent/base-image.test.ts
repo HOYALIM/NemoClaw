@@ -163,6 +163,10 @@ describe("agent base image provisioning", () => {
 
         expect(result.imageTag).toBe(`nemoclaw-hermes-sandbox-base-local:image-${"a".repeat(64)}`);
         expect(result.built).toBe(true);
+        expect(result.trustedLocalOverride).toEqual({
+          ref: result.imageTag,
+          provenance,
+        });
         expect(result.resolutionMetadata).toEqual(
           expect.objectContaining({
             ref: result.imageTag,
