@@ -286,6 +286,7 @@ describe("Fix: safeTarExtract blocks malicious archives and extracts safe ones",
       expect(result.error).toContain(expectedError);
       expect(fs.readdirSync(targetDir)).toEqual([]);
       expect(fs.existsSync(path.join(workDir, "escape.txt"))).toBe(false);
+      expect(fs.existsSync(path.join(workDir, "outside.json"))).toBe(false);
       expect(fs.existsSync(path.join(workDir, "outside.txt"))).toBe(false);
     } finally {
       fs.rmSync(workDir, { recursive: true, force: true });
