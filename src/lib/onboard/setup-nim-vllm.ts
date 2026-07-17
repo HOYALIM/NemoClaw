@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { VLLM_MODELS } from "../inference/vllm-models";
+import { cliName } from "./branding";
 import type { SetupNimSelectionResult, SetupNimSelectionState } from "./setup-nim-flow";
 
 type VllmModelEntry = {
@@ -80,6 +82,24 @@ function classifyModelSize(model: string): ModelSizeClass {
 function reportedModelRoot(entry: VllmModelEntry | null): string | null {
   const root = typeof entry?.root === "string" ? entry.root.trim() : "";
   return root && SAFE_REPORTED_MODEL_ID_PATTERN.test(root) ? root : null;
+}
+
+/** Match an arbitrary served alias to the requested model through vLLM's reported root. */
+function reportedModelMatchesRequest(
+  models: VllmModels,
+  detectedModel: string,
+  requestedModel: string,
+): boolean {
+  if (detectedModel === requestedModel) return true;
+  const root = reportedModelRoot(findVllmModelEntry(models, detectedModel));
+  if (!root) return false;
+  const normalizedRequest = requestedModel.toLowerCase();
+  const registeredModel = VLLM_MODELS.find(
+    (model) =>
+      model.id.toLowerCase() === normalizedRequest ||
+      model.servedModelId?.toLowerCase() === normalizedRequest,
+  );
+  return root.toLowerCase() === (registeredModel?.id ?? requestedModel).toLowerCase();
 }
 
 /** Read a string property from optional nested vLLM model metadata. */
@@ -190,10 +210,22 @@ export function createSetupNimVllmHandler(
       console.error("  Detected vLLM model ID contains invalid characters.");
       deps.exitProcess(1);
     }
-    if (requiredModel && detectedModel !== requiredModel) {
+    if (
+      requiredModel &&
+      detectedModel !== requiredModel &&
+      (options.managedInstall === true ||
+        !reportedModelMatchesRequest(models, detectedModel, requiredModel))
+    ) {
       console.error(
         `  Detected vLLM model '${detectedModel}' does not match the shared gateway route '${requiredModel}'.`,
       );
+      console.error(
+        `  To install '${requiredModel}', stop the existing vLLM server on localhost:${deps.VLLM_PORT}, then rerun the original install/onboard command.`,
+      );
+      console.error(`  To keep '${detectedModel}' instead, start detailed setup:`);
+      console.error("    unset NEMOCLAW_PROVIDER NEMOCLAW_MODEL NEMOCLAW_VLLM_MODEL");
+      console.error(`    ${cliName()} onboard --fresh`);
+      console.error("  Then select Local vLLM when prompted.");
       deps.exitProcess(1);
     }
     state.model = detectedModel;
