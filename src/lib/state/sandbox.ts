@@ -11,12 +11,12 @@
 
 import { createHash } from "node:crypto";
 import {
-  closeSync,
   chmodSync,
+  closeSync,
   existsSync,
   lstatSync,
-  mkdtempSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readdirSync,
   readFileSync,
