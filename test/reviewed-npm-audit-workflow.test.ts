@@ -31,6 +31,8 @@ const BOOTSTRAP_SHA = "57c97bf5dc0bf2489ec494d4637977be3986afb8";
 // the base branch contains the schema-v2 reviewed npm audit action.
 const BOOTSTRAP_IF =
   "${{ steps.trusted-reviewed-npm-audit.outputs.available != 'true' && github.event.pull_request.number == 6830 && github.event.pull_request.head.repo.full_name == 'HOYALIM/NemoClaw' }}";
+const REJECT_UNAVAILABLE_IF =
+  "${{ steps.trusted-reviewed-npm-audit.outputs.available != 'true' && (github.event.pull_request.number != 6830 || github.event.pull_request.head.repo.full_name != 'HOYALIM/NemoClaw') }}";
 
 function requiredStep(job: WorkflowJob, name: string): WorkflowStep {
   const step = job.steps?.find((candidate) => candidate.name === name);
@@ -72,6 +74,9 @@ describe("trusted reviewed npm audit workflow (#5896)", () => {
       path: ".trusted-reviewed-npm-audit-bootstrap",
       "persist-credentials": false,
     });
+    const rejectUnavailable = requiredStep(prJob, "Reject unavailable trusted reviewed npm audit");
+    expect(rejectUnavailable.if).toBe(REJECT_UNAVAILABLE_IF);
+    expect(rejectUnavailable.run).toContain("exit 1");
     expect(requiredStep(prJob, "Audit reviewed production npm graphs")).toMatchObject({
       if: "${{ steps.trusted-reviewed-npm-audit.outputs.available == 'true' }}",
       uses: "./.trusted-reviewed-npm-audit/.github/actions/ci-reviewed-npm-audit",
