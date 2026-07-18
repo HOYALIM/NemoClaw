@@ -17,7 +17,7 @@ import {
   findMissingDirectLegacyManageSandboxRedirects,
   findMissingDirectLegacyReleaseNotesRedirects,
   resolvePublishedRoute,
-} from "../scripts/check-docs-published-routes.ts";
+} from "../scripts/check-docs-published-routes.mts";
 
 const navYaml = `
 navigation:
@@ -90,8 +90,6 @@ description: "Commands."
 description-agent: "Commands."
 keywords: ["commands"]
 ---
-import { AgentOnly } from "../_components/AgentGuide";
-
 ${body}
 `;
 }

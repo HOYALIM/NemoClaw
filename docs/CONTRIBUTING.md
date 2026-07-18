@@ -131,11 +131,20 @@ If the tag does not point to a commit on `main`, the job stops before installing
 
 The canonical coding-agent installation prompt lives in `docs/resources/starter-prompt.md`.
 Edit that Markdown file instead of placing prompt text in a React component.
+Keep conditional platform instructions in focused Markdown files under `docs/resources/prompt-assets/` and link to their raw GitHub URLs from the starter prompt.
+The main prompt should tell the coding agent when to load each asset and should not repeat the asset's detailed instructions.
+Use one shared immutable commit SHA for every platform-asset URL in a starter-prompt revision.
+The contributor who changes any platform asset owns the corresponding pin update.
+First commit the updated assets, starter-prompt behavior, and related tests without changing the existing URLs, `promptAssetRevision`, or pinned SHA-256 values.
+Then use that commit's SHA in every platform-asset URL, update `promptAssetRevision` and every pinned SHA-256 value in `test/starter-prompt-docs.test.ts`, and commit the repin as one atomic follow-up.
+Never mix asset URLs from different revisions or point an asset URL at a commit that predates its content.
+The exact-revision test compares each local asset byte-for-byte with its Git blob at `promptAssetRevision`, so the intermediate content commit intentionally fails until the atomic repin follow-up points every URL, revision, and digest at that content commit.
+Updating only a local digest does not prove what the pinned revision contains.
 Downstream consumers can pin the source with a raw URL such as
 `https://raw.githubusercontent.com/NVIDIA/NemoClaw/<commit-sha>/docs/resources/starter-prompt.md`.
 The Markdown SPDX comment is part of that raw file but does not appear when Markdown is rendered.
 
-The `scripts/generate-starter-prompt.ts` script removes the Markdown SPDX preamble and writes `docs/_build/StarterPrompt.generated.mdx`.
+The `scripts/generate-starter-prompt.mts` script removes the Markdown SPDX preamble and writes `docs/_build/StarterPrompt.generated.mdx`.
 The generated snippet wraps the prompt in Fern's native visible `Prompt` component, which displays the prompt body and supplies the copy button.
 The generated file is ignored by Git and is recreated by the docs build.
 
@@ -157,7 +166,7 @@ The normal `npm run docs`, `npm run docs:live`, agent-variant sync, preview-watc
 ## Agent Variant Generation
 
 Some Fern pages appear in the OpenClaw, Hermes, and Deep Agents guide variants.
-The `scripts/sync-agent-variant-docs.ts` script reads `docs/index.yml` and renders variant-specific copies for every page that appears in multiple guide variants before Fern validates or publishes the site.
+The `scripts/sync-agent-variant-docs.mts` script reads `docs/index.yml` and renders variant-specific copies for every page that appears in multiple guide variants before Fern validates or publishes the site.
 The source pages stay in their normal `docs/` locations, and generated pages are written under `docs/_build/agent-variants/`, which is ignored by Git.
 Navigation in `docs/index.yml` points Fern at generated pages for shared entries so Fern still renders normal fenced code blocks with copy buttons and syntax highlighting.
 OpenClaw-only, Hermes-only, or Deep Agents-only pages stay as source pages in navigation.
@@ -169,6 +178,9 @@ Use literal command names on those single-variant pages rather than `$$nemoclaw`
 Run `npm run docs:sync-agent-variants` after editing shared variant source pages or navigation.
 Run `npm run docs` before opening a PR to verify the generated pages, rewritten relative links, and Fern navigation.
 If content differs by behavior, setup flow, state layout, or agent-specific wording, keep using `<AgentOnly>` blocks for that content.
+Treat `<AgentOnly>` as a build-time directive rather than a React component, and do not import it from `AgentGuide.tsx`.
+Put each opening and closing tag at the first column on its own line, and do not nest the blocks.
+The generated pages must contain only statically resolved content, with no `AgentGuide` imports or runtime agent components.
 
 ## Route-Style Links
 
