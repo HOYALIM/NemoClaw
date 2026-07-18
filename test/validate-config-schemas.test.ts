@@ -257,18 +257,43 @@ describe("config validation target discovery", () => {
 });
 
 describe("network-policy.schema.json", () => {
-  it("compiles as a direct validation target", () => {
-    const validate = compileSchema("schemas/network-policy.schema.json");
+  const validate = compileSchema("schemas/network-policy.schema.json");
 
+  it("accepts a valid policy map as a direct validation target", () => {
     expect(
       validate({
         test_service: {
           name: "Test Service",
           binaries: [{ path: "/usr/bin/node" }],
-          endpoints: [{ host: "api.example.com", port: 443 }],
+          endpoints: [{ host: "api.example.com", port: 443, access: "full" }],
         },
       }),
     ).toBe(true);
+  });
+
+  it.each([
+    ["an empty policy map", {}],
+    ["an unrelated object", { unrelated: true }],
+    [
+      "a policy entry without endpoints",
+      {
+        test_service: {
+          name: "Test Service",
+          binaries: [{ path: "/usr/bin/node" }],
+        },
+      },
+    ],
+    [
+      "a policy entry without binaries",
+      {
+        test_service: {
+          name: "Test Service",
+          endpoints: [{ host: "api.example.com", port: 443 }],
+        },
+      },
+    ],
+  ])("rejects %s", (_label, invalid) => {
+    expect(validate(invalid)).toBe(false);
   });
 });
 
