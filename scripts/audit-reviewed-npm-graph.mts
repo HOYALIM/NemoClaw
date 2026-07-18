@@ -35,10 +35,7 @@ const TRUSTED_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.ur
 const REPO_ROOT = fs.realpathSync(
   path.resolve(process.env.NEMOCLAW_REVIEWED_NPM_AUDIT_TARGET_ROOT ?? TRUSTED_REPO_ROOT),
 );
-const CONFIG_PATH = resolveTargetPath(
-  "ci/reviewed-npm-audit.json",
-  "reviewed npm audit configuration",
-);
+const CONFIG_PATH = resolveTrustedAuditConfigPath(TRUSTED_REPO_ROOT);
 const SEVERITIES: readonly Severity[] = ["info", "low", "moderate", "high", "critical"];
 
 export function resolvePathWithinTargetRoot(
@@ -69,6 +66,14 @@ export function resolvePathWithinTargetRoot(
     }
   }
   return resolved;
+}
+
+export function resolveTrustedAuditConfigPath(trustedRoot: string): string {
+  return resolvePathWithinTargetRoot(
+    trustedRoot,
+    "ci/reviewed-npm-audit.json",
+    "trusted reviewed npm audit configuration",
+  );
 }
 
 function resolveTargetPath(relativePath: string, label: string): string {

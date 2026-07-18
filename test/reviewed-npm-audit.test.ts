@@ -9,6 +9,7 @@ import {
   exceedsAuditThreshold,
   parseAuditReport,
   resolvePathWithinTargetRoot,
+  resolveTrustedAuditConfigPath,
   vulnerabilityCounts,
 } from "../scripts/audit-reviewed-npm-graph.mts";
 
@@ -99,5 +100,31 @@ describe("reviewed npm audit gate", () => {
     expect(() =>
       resolvePathWithinTargetRoot(targetRoot, "artifacts/audit", "audit target"),
     ).toThrow("contains a symbolic-link component");
+  });
+
+  it("loads audit policy from the trusted checkout instead of the PR target", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-reviewed-audit-policy-"));
+    roots.push(root);
+    const trustedRoot = path.join(root, "trusted");
+    const targetRoot = path.join(root, "target");
+    fs.mkdirSync(path.join(trustedRoot, "ci"), { recursive: true });
+    fs.mkdirSync(path.join(targetRoot, "ci"), { recursive: true });
+    fs.writeFileSync(
+      path.join(trustedRoot, "ci", "reviewed-npm-audit.json"),
+      JSON.stringify({ lockedGraphs: [{ label: "required" }], severityThreshold: "high" }),
+    );
+    fs.writeFileSync(
+      path.join(targetRoot, "ci", "reviewed-npm-audit.json"),
+      JSON.stringify({ lockedGraphs: [], severityThreshold: "critical" }),
+    );
+
+    const policyPath = resolveTrustedAuditConfigPath(trustedRoot);
+    expect(policyPath).toBe(
+      path.join(fs.realpathSync(trustedRoot), "ci", "reviewed-npm-audit.json"),
+    );
+    expect(JSON.parse(fs.readFileSync(policyPath, "utf8"))).toMatchObject({
+      lockedGraphs: [{ label: "required" }],
+      severityThreshold: "high",
+    });
   });
 });

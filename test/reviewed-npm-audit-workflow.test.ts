@@ -55,12 +55,14 @@ describe("trusted reviewed npm audit workflow (#5896)", () => {
     });
     const sparseCheckout = String(trustedCheckout.with?.["sparse-checkout"]);
     expect(sparseCheckout).toContain(".github/actions/ci-reviewed-npm-audit");
+    expect(sparseCheckout).toContain("ci/reviewed-npm-audit.json");
     expect(sparseCheckout).toContain("scripts/audit-reviewed-npm-graph.mts");
     expect(sparseCheckout).toContain("scripts/lib/reviewed-npm-archive.mts");
 
     const detection = requiredStep(prJob, "Detect trusted reviewed npm audit schema");
     expect(detection.id).toBe("trusted-reviewed-npm-audit");
-    expect(detection.run).toContain("parsed.schemaVersion !== 2");
+    expect(detection.run).toContain("resolveTrustedAuditConfigPath(TRUSTED_REPO_ROOT)");
+    expect(detection.run).toContain(".trusted-reviewed-npm-audit/ci/reviewed-npm-audit.json");
 
     const bootstrap = requiredStep(prJob, "Checkout pinned bootstrap reviewed npm audit");
     expect(bootstrap.if).toBe(BOOTSTRAP_IF);
@@ -99,6 +101,10 @@ describe("trusted reviewed npm audit workflow (#5896)", () => {
       path.join(REPO_ROOT, ".github", "actions", "ci-reviewed-npm-audit", "action.yaml"),
       "utf8",
     );
+    const driver = fs.readFileSync(
+      path.join(REPO_ROOT, "scripts", "audit-reviewed-npm-graph.mts"),
+      "utf8",
+    );
 
     expect(action).toContain('node-version: "22.22.2"');
     expect(action).toContain("npm install --global npm@10.9.4");
@@ -108,5 +114,7 @@ describe("trusted reviewed npm audit workflow (#5896)", () => {
       'node --experimental-strip-types "$GITHUB_ACTION_PATH/../../../scripts/audit-reviewed-npm-graph.mts"',
     );
     expect(action).not.toContain("run: node --experimental-strip-types scripts/");
+    expect(driver).toContain("resolveTrustedAuditConfigPath(TRUSTED_REPO_ROOT)");
+    expect(driver).not.toContain('resolveTargetPath(\n  "ci/reviewed-npm-audit.json"');
   });
 });

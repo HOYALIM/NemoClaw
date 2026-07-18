@@ -292,6 +292,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             .github/actions/ci-reviewed-npm-audit
+            ci/reviewed-npm-audit.json
             scripts/audit-reviewed-npm-graph.mts
             scripts/lib/reviewed-npm-archive.mts
           sparse-checkout-cone-mode: false
@@ -302,8 +303,9 @@ jobs:
         run: |
           if grep -Fq 'NEMOCLAW_REVIEWED_NPM_AUDIT_TARGET_ROOT' \
               .trusted-reviewed-npm-audit/.github/actions/ci-reviewed-npm-audit/action.yaml \
-            && grep -Fq 'parsed.schemaVersion !== 2' \
-              .trusted-reviewed-npm-audit/scripts/audit-reviewed-npm-graph.mts; then
+            && grep -Fq 'resolveTrustedAuditConfigPath(TRUSTED_REPO_ROOT)' \
+              .trusted-reviewed-npm-audit/scripts/audit-reviewed-npm-graph.mts \
+            && [ -f .trusted-reviewed-npm-audit/ci/reviewed-npm-audit.json ]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
           else
             echo "available=false" >> "$GITHUB_OUTPUT"
@@ -321,6 +323,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             .github/actions/ci-reviewed-npm-audit
+            ci/reviewed-npm-audit.json
             scripts/audit-reviewed-npm-graph.mts
             scripts/lib/reviewed-npm-archive.mts
           sparse-checkout-cone-mode: false
