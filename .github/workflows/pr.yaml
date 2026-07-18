@@ -318,7 +318,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: HOYALIM/NemoClaw
-          ref: f2e670fd059e2032034b8c03ee6d016755c3d2d6
+          ref: 57c97bf5dc0bf2489ec494d4637977be3986afb8
           path: .trusted-reviewed-npm-audit-bootstrap
           persist-credentials: false
           sparse-checkout: |
