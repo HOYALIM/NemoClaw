@@ -16,6 +16,26 @@ import {
 } from "./vllm-models";
 
 describe("vllm model registry", () => {
+  it("records a finite positive Hugging Face file size for every model", () => {
+    for (const model of VLLM_MODELS) {
+      expect(Number.isFinite(model.downloadSizeBytes)).toBe(true);
+      expect(model.downloadSizeBytes).toBeGreaterThan(0);
+    }
+  });
+
+  it("pins the Hugging Face repository file totals used by storage preflight (#6858)", () => {
+    expect(
+      Object.fromEntries(VLLM_MODELS.map((model) => [model.envValue, model.downloadSizeBytes])),
+    ).toEqual({
+      "qwen3.6-27b": 30_900_000_000,
+      "deepseek-r1-distill-70b": 141_000_000_000,
+      "nemotron-3-nano-4b": 5_280_000_000,
+      "deepseek-v4-flash": 352_381_000_000,
+      "nemotron-3-ultra-550b-a55b": 352_381_245_521,
+      "qwen3.6-35b-a3b-nvfp4": 23_500_000_000,
+    });
+  });
+
   it("returns null when NEMOCLAW_VLLM_MODEL is unset so the caller can fall back to the profile default", () => {
     expect(selectVllmModelFromEnv({} as NodeJS.ProcessEnv)).toBeNull();
   });
@@ -223,7 +243,7 @@ describe("vllm model registry", () => {
     expect(cmd).not.toContain("--gpu-memory-utilization 0.7");
   });
 
-  it("builds the Nemotron-3-Nano-4B FP8 serve command with auto tool-choice enabled (#6314)", () => {
+  it("builds the Nemotron-3-Nano-4B FP8 serve command with auto tool-choice and reasoning parser (#6314, #6915)", () => {
     // #6314: the generic-Linux managed-vLLM default (`GENERIC_LINUX_PROFILE.defaultModel`)
     // used to omit `--enable-auto-tool-choice` and `--tool-call-parser`, so every agent
     // request with `tool_choice: "auto"` failed HTTP 400 out of the box on generic Linux.
@@ -239,11 +259,19 @@ describe("vllm model registry", () => {
     expect(cmd).toContain("--load-format fastsafetensors");
     expect(cmd).toContain("--enable-auto-tool-choice");
     expect(cmd).toContain("--tool-call-parser qwen3_coder");
-    // The tool-call flags must appear paired: the parser value comes as a single
-    // shell token immediately after `--tool-call-parser`, and each switch is listed
-    // only once.
+    // #6915: Nemotron-3-Nano is a reasoning model, so the serve command must
+    // also pin the reasoning parser from the model card. Without it, vLLM
+    // leaves the `<think>…</think>` trace (and the orphan `</think>` marker the
+    // chat template does not pair with an opening tag) inline in `content`,
+    // which the agent's streaming parser mishandles into an empty turn that
+    // wedges the session. The Ultra-550B managed profile already pins the same
+    // `nemotron_v3` parser; this asserts the generic-Linux Nano default matches.
+    expect(cmd).toContain("--reasoning-parser nemotron_v3");
+    // The parser flags must appear paired and exactly once each: the value is a
+    // single shell token immediately after its switch.
     expect(cmd.match(/--enable-auto-tool-choice/g)).toHaveLength(1);
     expect(cmd.match(/--tool-call-parser/g)).toHaveLength(1);
+    expect(cmd.match(/--reasoning-parser/g)).toHaveLength(1);
   });
 
   it("registers the Qwen3.6-35B NVFP4 checkpoint for DGX Spark", () => {
