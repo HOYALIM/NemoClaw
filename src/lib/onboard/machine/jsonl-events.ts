@@ -30,10 +30,17 @@ function createStdoutJsonlTransport(disable: () => void): {
   const write = stdout.write.bind(stdout);
   let closeRequested = false;
   let pendingWrites = 0;
+  const pendingWriteErrors = new Set<Error>();
   const removeErrorHandlerWhenIdle = () => {
-    if (closeRequested && pendingWrites === 0) stdout.off("error", onError);
+    if (closeRequested && pendingWrites === 0 && pendingWriteErrors.size === 0) {
+      stdout.off("error", onError);
+    }
   };
-  const onError = () => disable();
+  const onError = (error: Error) => {
+    pendingWriteErrors.delete(error);
+    disable();
+    removeErrorHandlerWhenIdle();
+  };
   stdout.on("error", onError);
   return {
     close: () => {
@@ -45,7 +52,13 @@ function createStdoutJsonlTransport(disable: () => void): {
       try {
         const accepted = write(line, (error) => {
           pendingWrites -= 1;
-          if (error) disable();
+          if (error) {
+            // Node reports an asynchronous stream write failure to this
+            // callback before emitting the paired `error` event. Keep the
+            // listener installed until that event is consumed.
+            pendingWriteErrors.add(error);
+            disable();
+          }
           removeErrorHandlerWhenIdle();
         });
         if (!accepted) disable();

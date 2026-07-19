@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -16,6 +17,53 @@ import {
 } from "./jsonl-events";
 
 const SECRET = "sk-test-1234567890abcdefghijklmnop";
+
+function runJsonlObserverWithClosedStdout(): Promise<{
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  stderr: string;
+}> {
+  const jsonlModuleUrl = new URL("./jsonl-events.ts", import.meta.url).href;
+  const eventsModuleUrl = new URL("./events.ts", import.meta.url).href;
+  const script = `
+const jsonlNamespace = await import(${JSON.stringify(jsonlModuleUrl)});
+const eventsNamespace = await import(${JSON.stringify(eventsModuleUrl)});
+const jsonl = jsonlNamespace.default ?? jsonlNamespace;
+const events = eventsNamespace.default ?? eventsNamespace;
+jsonl.observeOnboardJsonlEvents();
+events.emitOnboardMachineEvent({
+  version: 1,
+  type: "state.entered",
+  occurredAt: new Date().toISOString(),
+  sessionId: "closed-pipe",
+  state: "inference",
+  step: "inference",
+  context: {},
+  error: null,
+  metadata: {},
+});
+process.stderr.write("onboarding-completed\\n");
+setTimeout(() => {
+  process.stderr.write("stdout-error-listeners:" + process.stdout.listenerCount("error") + "\\n");
+}, 50);
+`;
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      ["--no-warnings", "--import", "tsx", "--input-type=module", "-e", script],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let stderr = "";
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.once("error", reject);
+    child.once("close", (code, signal) => resolve({ code, signal, stderr }));
+    child.stdout?.destroy();
+  });
+}
 
 function sampleEvent(overrides: Partial<OnboardMachineEvent> = {}): OnboardMachineEvent {
   return {
@@ -152,6 +200,16 @@ describe("onboard JSONL events", () => {
     expect(result).toBe("onboarding-completed");
     expect(writes).toBe(1);
     expect(canonicalEvents).toEqual(["state.entered", "state.completed"]);
+  });
+
+  it("survives a closed stdout pipe after an asynchronous write failure (#6403)", async () => {
+    const result = await runJsonlObserverWithClosedStdout();
+
+    expect(result).toEqual({
+      code: 0,
+      signal: null,
+      stderr: "onboarding-completed\nstdout-error-listeners:0\n",
+    });
   });
 
   it("disables observation on backpressure without stalling canonical onboarding", () => {
