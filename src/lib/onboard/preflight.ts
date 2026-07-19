@@ -23,7 +23,7 @@ import {
   MIN_RECOMMENDED_DOCKER_CPUS,
   MIN_RECOMMENDED_DOCKER_MEM_GIB,
 } from "./container-runtime-resources";
-import { assessNvidiaCdiHost, getNvidiaCdiSpecPath } from "./docker-cdi";
+import { assessNvidiaCdiHost } from "./docker-cdi";
 import { printUnderProvisionedRuntimeWarning } from "./preflight-messages";
 import { printRemediationActions } from "./remediation";
 import { isWslDockerDesktopRuntime } from "./wsl-docker-desktop-gpu";
