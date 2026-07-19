@@ -10,6 +10,7 @@ import OnboardCliCommand from "../../src/commands/onboard";
 import SetupCliCommand from "../../src/commands/setup";
 import SetupSparkCliCommand from "../../src/commands/setup-spark";
 import { runOnboardAction } from "../../src/lib/actions/global";
+import { emitOnboardMachineEvent } from "../../src/lib/onboard/machine/events";
 
 import { PARSER_EXIT_CODE, run, runWithEnv } from "./helpers";
 
@@ -89,6 +90,7 @@ describe("CLI onboard compatibility", () => {
 
   afterEach(() => {
     process.exitCode = previousExitCode;
+    vi.restoreAllMocks();
   });
 
   it("onboard --help exits 0 and shows usage", () => {
@@ -147,10 +149,50 @@ describe("CLI onboard compatibility", () => {
     );
   });
 
-  it("forwards the read-only JSONL event mode through canonical onboard", async () => {
+  it("keeps canonical JSONL output parseable while routing human progress to stderr (#6403)", async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation(((
+      chunk: unknown,
+      encodingOrCallback?: unknown,
+      callback?: unknown,
+    ) => {
+      stdout.push(String(chunk));
+      const done = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+      if (typeof done === "function") done();
+      return true;
+    }) as typeof process.stdout.write);
+    vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+    vi.mocked(runOnboardAction).mockImplementationOnce(async () => {
+      process.stdout.write("human progress\n");
+      emitOnboardMachineEvent({
+        version: 1,
+        type: "state.entered",
+        occurredAt: "2026-07-19T18:00:00.000Z",
+        sessionId: "cli-jsonl-session",
+        state: "inference",
+        step: "inference",
+        context: {},
+        error: null,
+        metadata: {},
+      });
+    });
+
     await OnboardCliCommand.run(["--events=jsonl"], rootDir);
 
     expect(runOnboardAction).toHaveBeenCalledWith(expect.objectContaining({ events: "jsonl" }));
+    const lines = stdout.join("").trimEnd().split("\n");
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0])).toMatchObject({
+      schemaVersion: 1,
+      session: "cli-jsonl-session",
+      type: "state.entered",
+    });
+    expect(stdout.join("")).not.toContain("human progress");
+    expect(stderr.join("")).toBe("human progress\n");
   });
 
   it("does not expose the canonical event stream on deprecated setup aliases", async () => {
