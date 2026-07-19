@@ -64,7 +64,7 @@ export function toOnboardJsonlEvent(event: OnboardMachineEvent): OnboardJsonlEve
   const payload: JsonObject = {
     state: event.state,
     step: event.step,
-    context: { ...event.context } as JsonObject,
+    context: sanitizeOnboardMachineEventMetadata({ ...event.context }),
     error: redactSensitiveText(event.error),
     metadata: redactForLog(sanitizeOnboardMachineEventMetadata(event.metadata)) as JsonObject,
   };

@@ -48,6 +48,11 @@ describe("onboard JSONL events", () => {
   it("uses the stable versioned envelope and redacts payload secrets", () => {
     const event = toOnboardJsonlEvent(
       sampleEvent({
+        context: {
+          ...sampleEvent().context,
+          model: SECRET,
+          sandboxName: `sandbox-${SECRET}`,
+        },
         error: `provider rejected Bearer ${SECRET}`,
         metadata: {
           apiKey: SECRET,
@@ -71,7 +76,7 @@ describe("onboard JSONL events", () => {
       payload: {
         state: "inference",
         step: "inference",
-        context: { sandboxName: "alpha", credentialEnv: "NVIDIA_API_KEY" },
+        context: { credentialEnv: "NVIDIA_API_KEY" },
       },
     });
     expect(JSON.stringify(event)).not.toContain(SECRET);
