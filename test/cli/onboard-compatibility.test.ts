@@ -158,8 +158,10 @@ describe("CLI onboard compatibility", () => {
       callback?: unknown,
     ) => {
       stdout.push(String(chunk));
-      const done = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
-      if (typeof done === "function") done();
+      const done = (typeof encodingOrCallback === "function" ? encodingOrCallback : callback) as
+        | (() => void)
+        | undefined;
+      done?.();
       return true;
     }) as typeof process.stdout.write);
     vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
