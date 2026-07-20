@@ -67,6 +67,69 @@ setTimeout(() => {
   });
 }
 
+function runJsonlObserverWithInheritedChild(closeStdout: boolean): Promise<{
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+}> {
+  const jsonlModuleUrl = new URL("./jsonl-events.ts", import.meta.url).href;
+  const eventsModuleUrl = new URL("./events.ts", import.meta.url).href;
+  const runnerModuleUrl = new URL("../../runner.ts", import.meta.url).href;
+  const script = `
+const jsonlNamespace = await import(${JSON.stringify(jsonlModuleUrl)});
+const eventsNamespace = await import(${JSON.stringify(eventsModuleUrl)});
+const runnerNamespace = await import(${JSON.stringify(runnerModuleUrl)});
+const jsonl = jsonlNamespace.default ?? jsonlNamespace;
+const events = eventsNamespace.default ?? eventsNamespace;
+const runner = runnerNamespace.default ?? runnerNamespace;
+await jsonl.withOnboardJsonlEventStream(async () => {
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const child = runner.run(
+    [process.execPath, "-e", "console.log('child-human-progress')"],
+    { stdio: "inherit" },
+  );
+  process.stderr.write("child-status:" + child.status + "\\n");
+  events.emitOnboardMachineEvent({
+    version: 1,
+    type: "state.entered",
+    occurredAt: "2026-07-19T00:00:00.000Z",
+    sessionId: ${JSON.stringify(CURRENT_SESSION_ID)},
+    state: "inference",
+    step: "inference",
+    context: {},
+    error: null,
+    metadata: {},
+  });
+});
+process.stderr.write("onboarding-completed\\n");
+`;
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      ["--no-warnings", "--import", "tsx", "--input-type=module", "-e", script],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let stdout = "";
+    let stderr = "";
+    if (closeStdout) {
+      child.stdout?.destroy();
+    } else {
+      child.stdout?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk) => {
+        stdout += chunk;
+      });
+    }
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.once("error", reject);
+    child.once("close", (code, signal) => resolve({ code, signal, stdout, stderr }));
+  });
+}
+
 function sampleEvent(overrides: Partial<OnboardMachineEvent> = {}): OnboardMachineEvent {
   return {
     version: 1,
@@ -248,6 +311,33 @@ describe("onboard JSONL events", () => {
     expect(stdout.join("")).toBe("");
     expect(stderr.join("")).toContain("human progress");
     expect(JSON.parse(jsonl.join(""))).toMatchObject({ type: "state.entered" });
+  });
+
+  it("keeps inherited child progress off JSONL stdout", async () => {
+    const result = await runJsonlObserverWithInheritedChild(false);
+
+    expect(result.code).toBe(0);
+    expect(result.signal).toBeNull();
+    expect(result.stderr).toContain("child-human-progress\nchild-status:0\n");
+    expect(result.stderr).toContain("onboarding-completed\n");
+    const lines = result.stdout.trimEnd().split("\n");
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0])).toMatchObject({
+      schemaVersion: 1,
+      session: CURRENT_SESSION_ID,
+      type: "state.entered",
+    });
+  });
+
+  it("decouples inherited child output from a closed JSONL pipe", async () => {
+    const result = await runJsonlObserverWithInheritedChild(true);
+
+    expect(result).toEqual({
+      code: 0,
+      signal: null,
+      stdout: "",
+      stderr: "child-human-progress\nchild-status:0\nonboarding-completed\n",
+    });
   });
 
   it("ignores a closed event pipe and lets canonical observers and onboarding continue", async () => {
