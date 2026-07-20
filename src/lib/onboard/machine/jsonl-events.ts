@@ -12,6 +12,14 @@ import {
 
 export const ONBOARD_JSONL_SCHEMA_VERSION = 1 as const;
 
+const MAX_JAVASCRIPT_DATE_MILLISECONDS = 8_640_000_000_000_000;
+const MAX_CREDENTIAL_ENV_NAME_LENGTH = 128;
+const CREDENTIAL_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+// Session version 1 used an eight-character base36 suffix before switching to
+// `randomUUID()`. Both remain resumable persisted-session formats.
+const ONBOARD_SESSION_ID_PATTERN =
+  /^((?:0|[1-9]\d{0,15}))-(?:[a-z0-9]{8}|[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
+
 export interface OnboardJsonlEvent {
   schemaVersion: typeof ONBOARD_JSONL_SCHEMA_VERSION;
   session: string | null;
@@ -21,6 +29,30 @@ export interface OnboardJsonlEvent {
 }
 
 type WriteJsonlLine = (line: string) => boolean | void;
+
+function canonicalPersistedSessionId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const match = ONBOARD_SESSION_ID_PATTERN.exec(value);
+  if (!match) return null;
+
+  const timestamp = Number(match[1]);
+  if (!Number.isSafeInteger(timestamp) || timestamp > MAX_JAVASCRIPT_DATE_MILLISECONDS) {
+    return null;
+  }
+  return value;
+}
+
+function canonicalCredentialEnvName(value: unknown): string | null {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > MAX_CREDENTIAL_ENV_NAME_LENGTH ||
+    !CREDENTIAL_ENV_NAME_PATTERN.test(value)
+  ) {
+    return null;
+  }
+  return value;
+}
 
 function createStdoutJsonlTransport(disable: () => void): {
   close: () => void;
@@ -74,17 +106,21 @@ function createStdoutJsonlTransport(disable: () => void): {
 }
 
 export function toOnboardJsonlEvent(event: OnboardMachineEvent): OnboardJsonlEvent {
+  const context = sanitizeOnboardMachineEventMetadata({ ...event.context });
+  if (Object.prototype.hasOwnProperty.call(event.context, "credentialEnv")) {
+    context.credentialEnv = canonicalCredentialEnvName(event.context.credentialEnv);
+  }
   const payload: JsonObject = {
     state: event.state,
     step: event.step,
-    context: sanitizeOnboardMachineEventMetadata({ ...event.context }),
+    context,
     error: redactSensitiveText(event.error),
     metadata: redactForLog(sanitizeOnboardMachineEventMetadata(event.metadata)) as JsonObject,
   };
 
   return {
     schemaVersion: ONBOARD_JSONL_SCHEMA_VERSION,
-    session: event.sessionId,
+    session: canonicalPersistedSessionId(event.sessionId),
     type: event.type,
     timestamp: event.occurredAt,
     payload,

@@ -17,6 +17,8 @@ import {
 } from "./jsonl-events";
 
 const SECRET = "sk-test-1234567890abcdefghijklmnop";
+const CURRENT_SESSION_ID = "1784426400000-123e4567-e89b-42d3-a456-426614174000";
+const LEGACY_SESSION_ID = "1784426400000-ab12cd34";
 
 function runJsonlObserverWithClosedStdout(): Promise<{
   code: number | null;
@@ -70,7 +72,7 @@ function sampleEvent(overrides: Partial<OnboardMachineEvent> = {}): OnboardMachi
     version: 1,
     type: "state.entered",
     occurredAt: "2026-07-13T12:34:56.789Z",
-    sessionId: "session-6403",
+    sessionId: CURRENT_SESSION_ID,
     state: "inference",
     step: "inference",
     context: {
@@ -118,7 +120,7 @@ describe("onboard JSONL events", () => {
     ]);
     expect(event).toMatchObject({
       schemaVersion: 1,
-      session: "session-6403",
+      session: CURRENT_SESSION_ID,
       type: "state.entered",
       timestamp: "2026-07-13T12:34:56.789Z",
       payload: {
@@ -132,6 +134,74 @@ describe("onboard JSONL events", () => {
       apiKey: "<REDACTED>",
       endpoint: "https://example.com/v1?token=<REDACTED>",
     });
+  });
+
+  it.each([
+    CURRENT_SESSION_ID,
+    LEGACY_SESSION_ID,
+  ])("emits a supported persisted session ID (%s)", (sessionId) => {
+    expect(toOnboardJsonlEvent(sampleEvent({ sessionId })).session).toBe(sessionId);
+  });
+
+  it("emits a structurally valid POSIX credential environment name", () => {
+    const credentialEnv = "Compatible_Api_Key";
+    const event = toOnboardJsonlEvent(
+      sampleEvent({ context: { ...sampleEvent().context, credentialEnv } }),
+    );
+
+    expect(event.payload.context).toMatchObject({ credentialEnv });
+  });
+
+  it.each([
+    "01784426400000-123e4567-e89b-42d3-a456-426614174000",
+    "-1784426400000-123e4567-e89b-42d3-a456-426614174000",
+    "1784426400000-123e4567-e89b-12d3-a456-426614174000",
+    "1784426400000-",
+    "1784426400000-abc1234",
+    "8640000000000001-123e4567-e89b-42d3-a456-426614174000",
+  ])("does not emit an unsupported persisted session ID (%s)", (sessionId) => {
+    expect(toOnboardJsonlEvent(sampleEvent({ sessionId })).session).toBeNull();
+  });
+
+  it("does not emit structurally invalid persisted identifiers", () => {
+    const invalidSessionId = "opaque-local-value-42";
+    const invalidCredentialEnv = "opaque local value 43";
+    const event = toOnboardJsonlEvent(
+      sampleEvent({
+        sessionId: invalidSessionId,
+        context: { ...sampleEvent().context, credentialEnv: invalidCredentialEnv },
+      }),
+    );
+
+    expect(event.session).toBeNull();
+    expect(event.payload.context).toMatchObject({ credentialEnv: null });
+    const serialized = JSON.stringify(event);
+    expect(serialized).not.toContain(invalidSessionId);
+    expect(serialized).not.toContain(invalidCredentialEnv);
+  });
+
+  it("does not emit overlong credential environment names", () => {
+    const invalidCredentialEnv = `A${"B".repeat(128)}`;
+    const event = toOnboardJsonlEvent(
+      sampleEvent({
+        context: { ...sampleEvent().context, credentialEnv: invalidCredentialEnv },
+      }),
+    );
+
+    expect(event.payload.context).toMatchObject({ credentialEnv: null });
+    expect(JSON.stringify(event)).not.toContain(invalidCredentialEnv);
+  });
+
+  it.each([
+    "1API_KEY",
+    "API-KEY",
+  ])("does not emit an invalid credential environment name (%s)", (credentialEnv) => {
+    const event = toOnboardJsonlEvent(
+      sampleEvent({ context: { ...sampleEvent().context, credentialEnv } }),
+    );
+
+    expect(event.payload.context).toMatchObject({ credentialEnv: null });
+    expect(JSON.stringify(event)).not.toContain(credentialEnv);
   });
 
   it("writes exactly one parseable JSON object per observed event line", () => {
@@ -148,7 +218,7 @@ describe("onboard JSONL events", () => {
     for (const line of lines) {
       expect(line.endsWith("\n")).toBe(true);
       expect(line.slice(0, -1)).not.toContain("\n");
-      expect(JSON.parse(line)).toMatchObject({ schemaVersion: 1, session: "session-6403" });
+      expect(JSON.parse(line)).toMatchObject({ schemaVersion: 1, session: CURRENT_SESSION_ID });
     }
   });
 

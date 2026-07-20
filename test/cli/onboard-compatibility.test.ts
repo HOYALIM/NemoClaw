@@ -174,7 +174,7 @@ describe("CLI onboard compatibility", () => {
         version: 1,
         type: "state.entered",
         occurredAt: "2026-07-19T18:00:00.000Z",
-        sessionId: "cli-jsonl-session",
+        sessionId: "1784426400000-123e4567-e89b-42d3-a456-426614174000",
         state: "inference",
         step: "inference",
         context: {},
@@ -190,7 +190,7 @@ describe("CLI onboard compatibility", () => {
     expect(lines).toHaveLength(1);
     expect(JSON.parse(lines[0])).toMatchObject({
       schemaVersion: 1,
-      session: "cli-jsonl-session",
+      session: "1784426400000-123e4567-e89b-42d3-a456-426614174000",
       type: "state.entered",
     });
     expect(stdout.join("")).not.toContain("human progress");
