@@ -67,7 +67,24 @@ setTimeout(() => {
   });
 }
 
-function runJsonlObserverWithInheritedChild(closeStdout: boolean): Promise<{
+type ConfigureChildStdout = (
+  stdout: NonNullable<ReturnType<typeof spawn>["stdout"]>,
+  append: (chunk: string) => void,
+) => void;
+
+function collectChildStdout(
+  stdout: NonNullable<ReturnType<typeof spawn>["stdout"]>,
+  append: (chunk: string) => void,
+): void {
+  stdout.setEncoding("utf8");
+  stdout.on("data", append);
+}
+
+function closeChildStdout(stdout: NonNullable<ReturnType<typeof spawn>["stdout"]>): void {
+  stdout.destroy();
+}
+
+function runJsonlObserverWithInheritedChild(configureStdout: ConfigureChildStdout): Promise<{
   code: number | null;
   signal: NodeJS.Signals | null;
   stdout: string;
@@ -113,14 +130,9 @@ process.stderr.write("onboarding-completed\\n");
     );
     let stdout = "";
     let stderr = "";
-    if (closeStdout) {
-      child.stdout?.destroy();
-    } else {
-      child.stdout?.setEncoding("utf8");
-      child.stdout?.on("data", (chunk) => {
-        stdout += chunk;
-      });
-    }
+    configureStdout(child.stdout!, (chunk) => {
+      stdout += chunk;
+    });
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", (chunk) => {
       stderr += chunk;
@@ -314,7 +326,7 @@ describe("onboard JSONL events", () => {
   });
 
   it("keeps inherited child progress off JSONL stdout", async () => {
-    const result = await runJsonlObserverWithInheritedChild(false);
+    const result = await runJsonlObserverWithInheritedChild(collectChildStdout);
 
     expect(result.code).toBe(0);
     expect(result.signal).toBeNull();
@@ -330,7 +342,7 @@ describe("onboard JSONL events", () => {
   });
 
   it("decouples inherited child output from a closed JSONL pipe", async () => {
-    const result = await runJsonlObserverWithInheritedChild(true);
+    const result = await runJsonlObserverWithInheritedChild(closeChildStdout);
 
     expect(result).toEqual({
       code: 0,
