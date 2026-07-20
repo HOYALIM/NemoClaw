@@ -137,7 +137,7 @@ describe("openshell helpers", () => {
     expect(result.status).toBe(0);
   });
 
-  it("redirects inherited stdout while the JSONL stdout guard is active", () => {
+  it("redirects inherited stdout while the JSONL stdout guard is active", async () => {
     const observedStdio: unknown[] = [];
     const spawnSyncImpl: OpenshellSpawnSync = (_command, _args, options) => {
       observedStdio.push(options.stdio);
@@ -145,7 +145,7 @@ describe("openshell helpers", () => {
     };
 
     runOpenshellCommand("openshell", ["status"], { spawnSyncImpl });
-    withStdoutRedirectedToStderr(() => {
+    await withStdoutRedirectedToStderr(async () => {
       runOpenshellCommand("openshell", ["status"], { spawnSyncImpl });
     });
 
