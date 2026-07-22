@@ -6,6 +6,7 @@
 //   - listBackups computes virtual v<N> versions by timestamp-ascending position
 //   - findBackup resolves selectors (v<N>, name, exact timestamp)
 import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -78,6 +79,11 @@ beforeEach(() => {
 });
 function writeExecutable(filePath: string, source: string): void {
   fs.writeFileSync(filePath, source, { mode: 0o755 });
+}
+function restoreEnv(name: string, value: string | undefined): void {
+  value === undefined
+    ? Reflect.deleteProperty(process.env, name)
+    : Reflect.set(process.env, name, value);
 }
 function writeAgentRegistry(
   sandboxName: string,
@@ -458,11 +464,14 @@ describe("sandbox directory backup semantics", () => {
     const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-openclaw-empty-dirs-"));
     const oldPath = process.env.PATH;
     const oldOpenshell = process.env.NEMOCLAW_OPENSHELL_BIN;
+    const oldTmpdir = process.env.TMPDIR;
     try {
       const binDir = path.join(fixture, "bin");
       const openclawDir = path.join(fixture, "sandbox-root", ".openclaw");
+      const stagingRoot = path.join(fixture, "staging");
       const existingDirs = ["agents", "extensions", "workspace", "skills", "hooks", "cron"];
       fs.mkdirSync(binDir, { recursive: true });
+      fs.mkdirSync(stagingRoot);
       for (const dirName of existingDirs) {
         fs.mkdirSync(path.join(openclawDir, dirName), { recursive: true });
       }
@@ -487,6 +496,20 @@ if (cmd.includes("find ")) {
   process.exit(0);
 }
 if (cmd.includes("tar -cf -")) {
+  const stagingDirs = fs.readdirSync(${JSON.stringify(stagingRoot)});
+  const archivePaths = stagingDirs
+    .map((entry) => require("node:path").join(${JSON.stringify(stagingRoot)}, entry, "archive.tar"))
+    .filter((candidate) => fs.existsSync(candidate));
+  const archivePath = archivePaths.length === 1 ? archivePaths[0] : "";
+  if (
+    !fs.fstatSync(1).isFile() ||
+    !archivePath ||
+    !fs.existsSync(archivePath) ||
+    fs.statSync(archivePath).ino !== fs.fstatSync(1).ino
+  ) {
+    process.stderr.write("backup tar stdout must stream to a file\\n");
+    process.exit(64);
+  }
   const r = spawnSync("tar", ["-cf", "-", "-C", ${JSON.stringify(openclawDir)}, ...existingDirs], {
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -503,6 +526,7 @@ process.exit(0);
         openclawImagePluginInstalls: [],
       });
       process.env.NEMOCLAW_OPENSHELL_BIN = openshell;
+      process.env.TMPDIR = stagingRoot;
       process.env.PATH = `${binDir}${path.delimiter}${oldPath || ""}`;
 
       const backup = sandboxState.backupSandboxState("alpha");
@@ -512,12 +536,60 @@ process.exit(0);
       expect(backup.manifest?.backedUpDirs).toEqual(existingDirs);
       expect(backup.manifest?.reconcileOpenClawImagePluginProvenance).toBe(true);
       expect(backup.manifest?.openclawImagePluginInstalls).toEqual([]);
+      expect(fs.readdirSync(stagingRoot)).toEqual([]);
     } finally {
-      if (oldOpenshell === undefined) {
-        delete process.env.NEMOCLAW_OPENSHELL_BIN;
-      } else {
-        process.env.NEMOCLAW_OPENSHELL_BIN = oldOpenshell;
-      }
+      restoreEnv("NEMOCLAW_OPENSHELL_BIN", oldOpenshell);
+      restoreEnv("TMPDIR", oldTmpdir);
+      process.env.PATH = oldPath;
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it("returns a structured failure when the archive staging file cannot be created", () => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-backup-staging-failure-"));
+    const oldPath = process.env.PATH;
+    const oldOpenshell = process.env.NEMOCLAW_OPENSHELL_BIN;
+    const oldTmpdir = process.env.TMPDIR;
+    const originalOpenSync = fs.openSync;
+    try {
+      const binDir = path.join(fixture, "bin");
+      const stagingRoot = path.join(fixture, "staging");
+      fs.mkdirSync(binDir);
+      fs.mkdirSync(stagingRoot);
+      const openshell = writeFakeOpenshell(binDir);
+      writeExecutable(
+        path.join(binDir, "ssh"),
+        `#!/usr/bin/env node
+const cmd = process.argv[process.argv.length - 1] || "";
+if (cmd.includes("[ -d ")) process.stdout.write("workspace\\n");
+if (cmd.includes("openclaw.json") && cmd.includes("cat --")) process.exit(2);
+process.exit(0);
+`,
+      );
+      writeOpenClawRegistry("alpha");
+      process.env.NEMOCLAW_OPENSHELL_BIN = openshell;
+      process.env.TMPDIR = stagingRoot;
+      process.env.PATH = `${binDir}${path.delimiter}${oldPath || ""}`;
+
+      fs.openSync = ((filePath, flags, mode) => {
+        if (String(filePath).endsWith(`${path.sep}archive.tar`)) {
+          const error = new Error("ENOSPC: no space left on device");
+          Object.assign(error, { code: "ENOSPC" });
+          throw error;
+        }
+        return originalOpenSync(filePath, flags, mode);
+      }) as typeof fs.openSync;
+      syncBuiltinESMExports();
+      const backup = sandboxState.backupSandboxState("alpha");
+      expect(backup.success).toBe(false);
+      expect(backup.failedDirs).toEqual(["workspace"]);
+      expect(backup.error).toMatch(/Failed to create backup archive file.*ENOSPC/);
+      expect(fs.readdirSync(stagingRoot)).toEqual([]);
+    } finally {
+      fs.openSync = originalOpenSync;
+      syncBuiltinESMExports();
+      restoreEnv("NEMOCLAW_OPENSHELL_BIN", oldOpenshell);
+      restoreEnv("TMPDIR", oldTmpdir);
       process.env.PATH = oldPath;
       fs.rmSync(fixture, { recursive: true, force: true });
     }
@@ -1251,9 +1323,7 @@ process.exit(0);
       expect(loggedCommands).not.toContain(".env");
       expect(loggedCommands).not.toContain(".mcp.json");
       expect(loggedCommands).not.toContain(".nemoclaw-mcp.json");
-
-      // #5753 is "lost after rebuild" (backup + recreate + restore): restore
-      // must list agent/skills among the dirs it brings back into the sandbox.
+      // #5753: restore must include agent/skills after backup and recreation.
       const restore = sandboxState.restoreSandboxState("deepagents", backup.manifest!.backupPath);
       expect(restore.success).toBe(true);
       expect(restore.restoredDirs).toEqual(
@@ -1270,7 +1340,7 @@ process.exit(0);
 });
 
 describe("Hermes durable state files", () => {
-  it("backs up and restores SOUL.md plus the SQLite state database without credential files", () => {
+  it("restores durable state without overwriting a replacement home's API key (#7175)", () => {
     const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-hermes-snapshot-"));
     const oldPath = process.env.PATH;
     const oldOpenshell = process.env.NEMOCLAW_OPENSHELL_BIN;
@@ -1278,15 +1348,19 @@ describe("Hermes durable state files", () => {
       const binDir = path.join(fixture, "bin");
       const fakeRoot = path.join(fixture, "sandbox-root");
       const hermesDir = path.join(fakeRoot, ".hermes");
+      const envPath = path.join(hermesDir, ".env");
       const runtimeDir = path.join(hermesDir, "runtime");
       const sshLog = path.join(fixture, "ssh-log.jsonl");
+      const readText = (filePath: string) => fs.readFileSync(filePath, "utf-8");
       fs.mkdirSync(binDir, { recursive: true });
       fs.mkdirSync(runtimeDir, { recursive: true });
       fs.writeFileSync(path.join(hermesDir, "SOUL.md"), "original soul\n");
       fs.writeFileSync(path.join(hermesDir, ".hermes_history"), "original history\n");
       fs.writeFileSync(path.join(runtimeDir, "state.db"), "original sqlite backup\n");
       fs.writeFileSync(path.join(hermesDir, "config.yaml"), "token: should-not-copy\n");
-      fs.writeFileSync(path.join(hermesDir, ".env"), "API_TOKEN=should-not-copy\n");
+      const originalEnv = `API_SERVER_KEY=${"a".repeat(64)}\n`;
+      const replacementEnv = `API_SERVER_KEY=${"b".repeat(64)}\n`;
+      fs.writeFileSync(envPath, originalEnv);
       fs.writeFileSync(path.join(hermesDir, "auth.json"), '{"token":"should-not-copy"}\n');
 
       const openshell = path.join(binDir, "openshell");
@@ -1326,6 +1400,7 @@ if (cmd.includes("[ -d ")) {
   process.exit(0);
 }
 if (cmd.includes("nemoclaw-sqlite-backup")) {
+  if (cmd.includes("kanban.db")) process.exit(2);
   process.stdout.write(fs.readFileSync(path.join(hermesDir, "runtime", "state.db")));
   process.exit(0);
 }
@@ -1377,39 +1452,36 @@ process.exit(0);
 
       const backup = sandboxState.backupSandboxState("hermes", { name: "hermes-state" });
       expect(backup.success).toBe(true);
+      expect(backup.manifest).toBeDefined();
+      const backupPath = backup.manifest!.backupPath;
       expect(backup.backedUpFiles).toEqual(["SOUL.md", ".hermes_history", "runtime/state.db"]);
       expect(backup.failedFiles).toEqual([]);
       expect(backup.manifest?.stateFiles).toEqual([
         { path: "SOUL.md", strategy: "copy" },
         { path: ".hermes_history", strategy: "copy" },
         { path: "runtime/state.db", strategy: "sqlite_backup" },
+        { path: "kanban.db", strategy: "sqlite_backup" },
       ]);
-      expect(fs.readFileSync(path.join(backup.manifest!.backupPath, "SOUL.md"), "utf-8")).toBe(
-        "original soul\n",
+      expect(readText(path.join(backupPath, "SOUL.md"))).toBe("original soul\n");
+      expect(readText(path.join(backupPath, ".hermes_history"))).toBe("original history\n");
+      expect(readText(path.join(backupPath, "runtime", "state.db"))).toBe(
+        "original sqlite backup\n",
       );
-      expect(
-        fs.readFileSync(path.join(backup.manifest!.backupPath, ".hermes_history"), "utf-8"),
-      ).toBe("original history\n");
-      expect(
-        fs.readFileSync(path.join(backup.manifest!.backupPath, "runtime", "state.db"), "utf-8"),
-      ).toBe("original sqlite backup\n");
-      expect(fs.existsSync(path.join(backup.manifest!.backupPath, "config.yaml"))).toBe(false);
-      expect(fs.existsSync(path.join(backup.manifest!.backupPath, ".env"))).toBe(false);
-      expect(fs.existsSync(path.join(backup.manifest!.backupPath, "auth.json"))).toBe(false);
+      expect(fs.existsSync(path.join(backupPath, "config.yaml"))).toBe(false);
+      expect(fs.existsSync(path.join(backupPath, ".env"))).toBe(false);
+      expect(fs.existsSync(path.join(backupPath, "auth.json"))).toBe(false);
 
       fs.writeFileSync(path.join(hermesDir, "SOUL.md"), "changed soul\n");
       fs.writeFileSync(path.join(hermesDir, ".hermes_history"), "changed history\n");
       fs.writeFileSync(path.join(runtimeDir, "state.db"), "changed db\n");
+      fs.writeFileSync(envPath, replacementEnv);
       const restore = sandboxState.restoreSandboxState("hermes", backup.manifest!.backupPath);
       expect(restore.success).toBe(true);
       expect(restore.restoredFiles).toEqual(["SOUL.md", ".hermes_history", "runtime/state.db"]);
-      expect(fs.readFileSync(path.join(hermesDir, "SOUL.md"), "utf-8")).toBe("original soul\n");
-      expect(fs.readFileSync(path.join(hermesDir, ".hermes_history"), "utf-8")).toBe(
-        "original history\n",
-      );
-      expect(fs.readFileSync(path.join(runtimeDir, "state.db"), "utf-8")).toBe(
-        "original sqlite backup\n",
-      );
+      expect(readText(path.join(hermesDir, "SOUL.md"))).toBe("original soul\n");
+      expect(readText(path.join(hermesDir, ".hermes_history"))).toBe("original history\n");
+      expect(readText(path.join(runtimeDir, "state.db"))).toBe("original sqlite backup\n");
+      expect(readText(envPath)).toBe(replacementEnv);
 
       const loggedCommands = fs.readFileSync(sshLog, "utf-8");
       expect(loggedCommands).toContain("sqlite3.connect");

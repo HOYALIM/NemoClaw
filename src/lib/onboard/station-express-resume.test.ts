@@ -52,6 +52,23 @@ function receiptText(generation = receiptGeneration, model = "nemotron-3-ultra-5
   return `revision=${receiptRevision}\nmodel=${model}\ngeneration=${generation}\n`;
 }
 
+function currentReceiptText(
+  overrides: Partial<{ agent: string; sandbox: string; policyTier: string }> = {},
+): string {
+  const { agent = "hermes", sandbox = "my-assistant", policyTier = "balanced" } = overrides;
+  return `${receiptText().trimEnd()}\nagent=${agent}\nsandbox=${sandbox}\npolicy_tier=${policyTier}\n`;
+}
+
+function portReceiptText(
+  overrides: Partial<{ gatewayPort: string; dashboardPort: string; vllmPort: string }> = {},
+): string {
+  const { gatewayPort = "18081", dashboardPort = "18790", vllmPort = "18000" } = overrides;
+  return (
+    `${currentReceiptText().trimEnd()}\n` +
+    `gateway_port=${gatewayPort}\ndashboard_port=${dashboardPort}\nvllm_port=${vllmPort}\n`
+  );
+}
+
 function retirementClaims(home: string): string[] {
   const stateDir = path.join(home, ".nemoclaw");
   return fs
@@ -615,6 +632,86 @@ describe("DGX Station Express resume (#7048)", () => {
 
       retireStationExpressInstallerResume(receiptGeneration, { env: { HOME: home } });
       expect(fs.existsSync(receipt)).toBe(false);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts and retires the current installer receipt with complete express intent", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-station-current-receipt-"));
+    const stateDir = path.join(home, ".nemoclaw");
+    const receipt = path.join(stateDir, "station-express-resume");
+    fs.mkdirSync(stateDir, { mode: 0o700 });
+    fs.writeFileSync(receipt, currentReceiptText(), { mode: 0o600 });
+
+    try {
+      expect(() =>
+        assertStationExpressInstallerResumeMatches(receiptGeneration, { HOME: home }),
+      ).not.toThrow();
+      retireStationExpressInstallerResume(receiptGeneration, { env: { HOME: home } });
+      expect(fs.existsSync(receipt)).toBe(false);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts and retires the port-bound installer receipt (#7203)", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-station-port-receipt-"));
+    const stateDir = path.join(home, ".nemoclaw");
+    const receipt = path.join(stateDir, "station-express-resume");
+    fs.mkdirSync(stateDir, { mode: 0o700 });
+    fs.writeFileSync(receipt, portReceiptText(), { mode: 0o600 });
+
+    try {
+      expect(() =>
+        assertStationExpressInstallerResumeMatches(receiptGeneration, { HOME: home }),
+      ).not.toThrow();
+      retireStationExpressInstallerResume(receiptGeneration, { env: { HOME: home } });
+      expect(fs.existsSync(receipt)).toBe(false);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["gateway", { gatewayPort: "invalid" }],
+    ["dashboard", { dashboardPort: "1023" }],
+    ["vLLM", { vllmPort: "65536" }],
+    ["duplicate", { dashboardPort: "18081" }],
+    ["numerically duplicate", { dashboardPort: "018081" }],
+  ])("rejects a port-bound installer receipt with an invalid %s port", (_field, overrides) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-station-port-invalid-"));
+    const stateDir = path.join(home, ".nemoclaw");
+    const receipt = path.join(stateDir, "station-express-resume");
+    fs.mkdirSync(stateDir, { mode: 0o700 });
+    fs.writeFileSync(receipt, portReceiptText(overrides), { mode: 0o600 });
+
+    try {
+      expect(() =>
+        assertStationExpressInstallerResumeMatches(receiptGeneration, { HOME: home }),
+      ).toThrow("installer resume state is malformed");
+      expect(fs.readFileSync(receipt, "utf8")).toBe(portReceiptText(overrides));
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["agent", { agent: "unknown-agent" }],
+    ["sandbox", { sandbox: "Invalid Sandbox" }],
+    ["policy tier", { policyTier: "unrestricted" }],
+  ])("rejects a current installer receipt with an invalid %s", (_field, overrides) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-station-current-invalid-"));
+    const stateDir = path.join(home, ".nemoclaw");
+    const receipt = path.join(stateDir, "station-express-resume");
+    fs.mkdirSync(stateDir, { mode: 0o700 });
+    fs.writeFileSync(receipt, currentReceiptText(overrides), { mode: 0o600 });
+
+    try {
+      expect(() =>
+        assertStationExpressInstallerResumeMatches(receiptGeneration, { HOME: home }),
+      ).toThrow("installer resume state is malformed");
+      expect(fs.readFileSync(receipt, "utf8")).toBe(currentReceiptText(overrides));
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

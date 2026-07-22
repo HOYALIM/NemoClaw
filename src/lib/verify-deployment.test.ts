@@ -466,6 +466,19 @@ describe("verifyDeployment", () => {
     expect(result.verification.gatewayVersion).toBeNull();
   });
 
+  it("rejects gateway versions with extra dotted components (#5896)", async () => {
+    const deps = makeDeps({
+      executeSandboxCommand: (_name: string, script: string) =>
+        script.includes("openclaw --version")
+          ? { status: 0, stdout: "OpenClaw 2026.5.27.1\n", stderr: "" }
+          : { status: 0, stdout: "200", stderr: "" },
+    });
+
+    const result = await verifyDeployment("my-sandbox", chain, deps, NO_RETRY);
+
+    expect(result.verification.gatewayVersion).toBeNull();
+  });
+
   it("rejects version output from a failed OpenClaw command (#5896)", async () => {
     const deps = makeDeps({
       executeSandboxCommand: (_name: string, script: string) =>

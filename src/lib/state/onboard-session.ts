@@ -39,6 +39,8 @@ import {
   type StationExpressResumeIntent,
 } from "../onboard/station-express-resume";
 import { redactSensitiveText, redactUrl } from "../security/redact";
+import { inspectCheckpoint, serializeCheckpoint } from "./onboard-checkpoint";
+import type { OnboardCheckpoint } from "./onboard-checkpoint-types";
 import {
   assignSafeToolDisclosureUpdate,
   normalizeSessionToolDisclosure,
@@ -206,6 +208,7 @@ export interface Session {
   wechatConfig: WechatConfig | null;
   metadata: SessionMetadata;
   machine: OnboardMachineSnapshot;
+  checkpoint: OnboardCheckpoint | null;
   steps: Record<string, StepState>;
 }
 
@@ -530,6 +533,11 @@ function parseMachineSnapshot(
   };
 }
 
+function parseStoredCheckpoint(value: unknown): OnboardCheckpoint | null {
+  const inspected = inspectCheckpoint(value);
+  return inspected.status === "loaded" ? inspected.checkpoint : null;
+}
+
 function parseLockInfo(value: SessionJsonValue | undefined): LockInfo | null {
   if (!isObject(value) || typeof value.pid !== "number") return null;
   return {
@@ -685,6 +693,7 @@ export function createSession(overrides: Partial<Session> = {}): Session {
     machine:
       parseMachineSnapshot(overrides.machine as SessionJsonValue | undefined, sessionId) ??
       createMachineSnapshot("init", startedAt),
+    checkpoint: parseStoredCheckpoint(overrides.checkpoint),
     steps,
   };
   preserveInvalidSessionToolDisclosure(overrides, session);
@@ -750,6 +759,7 @@ export function normalizeSession(data: Session | SessionJsonValue | undefined): 
     lastCompletedStep: readString(data.lastCompletedStep),
     failure: sanitizeFailure(isObject(data.failure) ? data.failure : null),
     metadata: parseSessionMetadata(data.metadata),
+    checkpoint: data.checkpoint as unknown as OnboardCheckpoint | null,
   });
   normalized.resumable = data.resumable !== false;
   normalized.status = readString(data.status) ?? normalized.status;
@@ -821,6 +831,7 @@ function serializeSessionForDisk(session: Session): Record<string, unknown> {
     messagingPlan: session.messagingPlan
       ? compactSandboxMessagingPlanForPersistence(session.messagingPlan)
       : session.messagingPlan,
+    checkpoint: session.checkpoint ? serializeCheckpoint(session.checkpoint) : null,
   };
 }
 
@@ -1579,7 +1590,14 @@ export function finalizeIncompleteOnboardStep(
   return updatedSession;
 }
 
-export function completeSession(updates: SessionUpdates = {}): Session {
+export interface CompleteSessionOptions {
+  emitEvents?: boolean;
+}
+
+export function completeSession(
+  updates: SessionUpdates = {},
+  options: CompleteSessionOptions = {},
+): Session {
   const safeUpdates = filterSafeUpdates(updates);
   let wasComplete = false;
   let receiptGeneration: string | null = null;
@@ -1603,7 +1621,7 @@ export function completeSession(updates: SessionUpdates = {}): Session {
   if (receiptGeneration) {
     updatedSession = reconcileStationExpressReceiptRetirement(receiptGeneration);
   }
-  if (Object.keys(safeUpdates).length > 0) {
+  if (options.emitEvents !== false && Object.keys(safeUpdates).length > 0) {
     emitOnboardMachineEvent(
       createOnboardMachineEvent({
         type: "context.updated",
@@ -1613,7 +1631,7 @@ export function completeSession(updates: SessionUpdates = {}): Session {
       }),
     );
   }
-  if (!wasComplete) {
+  if (options.emitEvents !== false && !wasComplete) {
     emitOnboardMachineEvent(
       createOnboardMachineEvent({
         type: "onboard.completed",

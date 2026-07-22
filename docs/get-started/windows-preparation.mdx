@@ -1,22 +1,23 @@
 ---
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-title: "Prepare Windows for NemoClaw"
-sidebar-title: "(Windows Only) Windows Prerequisites"
+title: "Prepare a Windows Machine to Install NemoClaw"
+sidebar-title: "Additional Setup for Windows Machines"
 description: "Prepare a Windows machine for NemoClaw before running the Quickstart: enable WSL 2, install Ubuntu, and configure Docker Desktop."
 description-agent: "Covers Windows-only preparation steps required before the Quickstart. Use when preparing a Windows machine for NemoClaw, enabling WSL 2, configuring Docker Desktop for Windows, or troubleshooting a Windows-specific install error."
 keywords: ["nemoclaw windows wsl2 setup", "nemoclaw install windows docker desktop"]
 content:
   type: "reference"
 ---
-import { AgentOnly } from "../_components/AgentGuide";
-
 Run NemoClaw inside Windows Subsystem for Linux (WSL 2) on Windows.
 <AgentOnly variant="openclaw">
 Complete these steps before following the [Quickstart](../quickstart).
 </AgentOnly>
 <AgentOnly variant="hermes">
 Complete these steps before following [Quickstart with Hermes](../quickstart).
+</AgentOnly>
+<AgentOnly variant="deepagents">
+Complete these steps before following [Quickstart with Deep Agents](../quickstart).
 </AgentOnly>
 Linux and macOS users do not need this page and can go directly to the Quickstart.
 
@@ -37,6 +38,11 @@ Verify the following before you begin:
 <AgentOnly variant="hermes">
 
 - Hardware requirements are the same as [Quickstart with Hermes](../quickstart).
+
+</AgentOnly>
+<AgentOnly variant="deepagents">
+
+- Hardware requirements are the same as [Quickstart with Deep Agents](../quickstart).
 
 </AgentOnly>
 
@@ -190,6 +196,11 @@ Then continue with the [Quickstart](../quickstart) to install NemoClaw and launc
 If you prepared Windows manually, open a WSL terminal.
 Type `wsl` in PowerShell, or open Ubuntu from Windows Terminal.
 Then continue with [Quickstart with Hermes](../quickstart) to install NemoClaw and launch your first Hermes sandbox.
+</AgentOnly>
+<AgentOnly variant="deepagents">
+If you prepared Windows manually, open a WSL terminal.
+Type `wsl` in PowerShell, or open Ubuntu from Windows Terminal.
+Then continue with [Quickstart with Deep Agents](../quickstart) to install NemoClaw and launch your first sandbox.
 </AgentOnly>
 
 All NemoClaw commands run inside WSL, not in PowerShell.
