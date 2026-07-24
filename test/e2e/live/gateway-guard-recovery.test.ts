@@ -42,7 +42,6 @@
  * #2701 guard-chain assertion.
  */
 
-import { Buffer } from "node:buffer";
 import { containsInteger42Answer } from "../../helpers/e2e-answer-assertions.ts";
 import { buildAvailabilityProbeEnv } from "../fixtures/availability-env.ts";
 import { resultText } from "../fixtures/clients/command.ts";
@@ -106,10 +105,6 @@ uid_line=next(line for line in rows[0][1].splitlines() if line.startswith("Uid:"
 assert uid_line.split()[1:] == [expected_uid] * 4, uid_line
 print("MANAGED_SUPERVISOR=" + rows[0][0] + ":PPID1")`;
 
-const SUPERVISOR_TOPOLOGY_COMMAND = `import base64;exec(base64.b64decode("${Buffer.from(
-  SUPERVISOR_TOPOLOGY_SCRIPT,
-).toString("base64")}"))`;
-
 async function findSandboxContainer(host: HostCliClient, artifactName: string): Promise<string> {
   const result = await host.command(
     "docker",
@@ -144,12 +139,25 @@ async function inspectStartupCommand(
   return result.stdout.trim();
 }
 
-test("gateway recovery restores /tmp guard chain after pod-recreate wipe (#2701)", async ({
+test("gateway recovery restores /tmp guard chain after pod-recreate wipe (#2701)", {
+  meta: {
+    e2ePhases: [
+      "onboard guarded OpenClaw sandbox",
+      "verify initial gateway guard chain",
+      "wipe guard chain and gateway tree",
+      "recover gateway through connect probe",
+      "validate recovered guard and stable PID",
+      "restart legacy Docker sandbox",
+      "recover managed supervisor and inference",
+    ],
+  },
+}, async ({
   artifacts,
   environment,
   onboard,
   host,
   gateway,
+  progress,
   sandbox,
   secrets,
   cleanup,
@@ -181,11 +189,13 @@ test("gateway recovery restores /tmp guard chain after pod-recreate wipe (#2701)
   const ready = await environment.assertReady(ENVIRONMENT);
   const instance = await onboard.from(ready, { sandboxName: SANDBOX_NAME });
 
+  progress.phase("verify initial gateway guard chain");
   // Baseline: a freshly-onboarded sandbox must already have the guard
   // chain wired. If this fails, the bug isn't #2701 — it's a regression of
   // the entrypoint guard install path.
   await gateway.expectGuardChainActive(instance);
 
+  progress.phase("wipe guard chain and gateway tree");
   // ── Disrupt ──────────────────────────────────────────────────────
   // Deterministic pod-recreate-equivalent state: /tmp is empty of the guard
   // chain, and the OpenClaw process tree is gone. This avoids coupling the
@@ -194,6 +204,7 @@ test("gateway recovery restores /tmp guard chain after pod-recreate wipe (#2701)
   await sandbox.wipeGuardChain(instance.sandboxName);
   await sandbox.killGatewayTree(instance.sandboxName);
 
+  progress.phase("recover gateway through connect probe");
   // ── Trigger recovery ─────────────────────────────────────────────
   // `connect --probe-only` invokes checkAndRecoverSandboxProcesses(),
   // which is the production code path that runs every time a user
@@ -247,6 +258,7 @@ test("gateway recovery restores /tmp guard chain after pod-recreate wipe (#2701)
     `connect --probe-only recovery failed\nstdout:\n${recoveryResult.stdout}\nstderr:\n${recoveryResult.stderr}`,
   ).toBe(0);
 
+  progress.phase("validate recovered guard and stable PID");
   // ── Assert #2701 contract ────────────────────────────────────────
   // After recovery completes, the guard chain MUST be restored. Before the
   // fix, recovery emitted a WARNING but launched the gateway naked, leaving
@@ -270,6 +282,7 @@ test("gateway recovery restores /tmp guard chain after pod-recreate wipe (#2701)
 
   expect(stablePid).toBeGreaterThan(0);
 
+  progress.phase("restart legacy Docker sandbox");
   // ── Assert #6635 legacy Docker restart recovery ────────────────
   // Fresh non-GPU OpenClaw containers on this OpenShell floor still carry the
   // legacy keepalive. Restarting the container therefore kills the initial
@@ -291,6 +304,7 @@ test("gateway recovery restores /tmp guard chain after pod-recreate wipe (#2701)
   });
   expect(restart.exitCode, resultText(restart)).toBe(0);
 
+  progress.phase("recover managed supervisor and inference");
   const credentialCanary = "nemoclaw-e2e-recovery-secret-6635";
   const trustedRecovery = await host.nemoclaw([instance.sandboxName, "recover"], {
     artifactName: "legacy-restart-trusted-recover",
@@ -317,10 +331,9 @@ test("gateway recovery restores /tmp guard chain after pod-recreate wipe (#2701)
   expect(recoveredStartupCommand).not.toContain("CUSTOM_PROVIDER_CREDENTIAL");
   expect(recoveredStartupCommand).not.toContain(credentialCanary);
 
-  expect(SUPERVISOR_TOPOLOGY_COMMAND).not.toMatch(/[\r\n]/);
   const topology = await sandbox.exec(
     instance.sandboxName,
-    ["python3", "-c", SUPERVISOR_TOPOLOGY_COMMAND],
+    ["python3", "-c", SUPERVISOR_TOPOLOGY_SCRIPT],
     {
       artifactName: "legacy-restart-managed-supervisor-topology",
       env: buildAvailabilityProbeEnv(),

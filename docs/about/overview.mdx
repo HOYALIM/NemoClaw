@@ -11,8 +11,6 @@ content:
 skill:
   priority: 10
 ---
-import { AgentCli, AgentOnly } from "../_components/AgentGuide";
-
 <AgentOnly variant="openclaw,hermes">
 
 NVIDIA NemoClaw is an open-source reference stack for running always-on AI agents more safely inside OpenShell containers.
@@ -31,7 +29,7 @@ These controls help agents run in clouds, on-premises environments, RTX PCs, and
 NemoClaw pairs hosted inference providers or local model endpoints with a hardened sandbox, routed inference, and declarative egress policy.
 This keeps deployments repeatable and easier to constrain.
 The sandbox runtime comes from [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell).
-NemoClaw adds the blueprint, <AgentCli /> CLI, onboarding, and related tooling as the reference way to run supported agents there.
+NemoClaw adds the blueprint, `$$nemoclaw` CLI, onboarding, and related tooling as the reference way to run supported agents there.
 
 | Capability              | Description                                                                                                                                          |
 |-------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -72,7 +70,7 @@ NemoClaw provides these benefits to mitigate those risks.
 | Sandboxed execution        | Every agent runs inside an OpenShell sandbox with Landlock, seccomp, and network namespace isolation. The sandbox grants no access by default. |
 | Routed inference           | The OpenShell gateway routes model traffic to your selected provider, transparent to the agent. You can switch providers or models. Refer to [Choose an Inference Provider](../inference/learn-and-choose/choose-inference-provider).          |
 | Declarative network policy | YAML defines egress rules. OpenShell blocks unknown hosts and surfaces them to the operator for approval.                 |
-| Single CLI                 | The <AgentCli /> command orchestrates the full stack: gateway, sandbox, inference provider, and network policy.           |
+| Single CLI                 | The `$$nemoclaw` command orchestrates the full stack: gateway, sandbox, inference provider, and network policy.           |
 | Blueprint lifecycle        | Versioned blueprints handle sandbox creation, digest verification, and reproducible setup.                             |
 
 ## Use Cases
@@ -84,7 +82,7 @@ Use NemoClaw for these use cases.
 | Always-on assistant       | Run a sandboxed agent with controlled network access and operator-approved egress.        |
 | Terminal coding harness   | Run `dcode` inside an OpenShell sandbox with host-owned inference credentials and a managed terminal workflow. |
 | Sandboxed testing         | Test agent behavior in a locked-down environment before granting broader permissions.         |
-| Remote GPU deployment     | Deploy a sandboxed agent to a remote GPU instance for persistent operation.                   |
+| Headless server deployment | Run a sandboxed agent on a remote Linux server through SSH. Refer to [Deploy to a Headless Server](../deployment/deploy-to-headless-server). |
 
 ## Next Steps
 

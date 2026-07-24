@@ -71,6 +71,7 @@ export function makeAgent(overrides: Partial<AgentDefinition> = {}): AgentDefini
 export function withMockedDocker<T>(
   run: (deps: {
     ensureAgentBaseImage: AgentOnboardModule["ensureAgentBaseImage"];
+    bindLocalAgentBaseImageToPinnedProvenance: AgentOnboardModule["bindLocalAgentBaseImageToPinnedProvenance"];
     pinAgentSandboxBaseImageRef: AgentOnboardModule["pinAgentSandboxBaseImageRef"];
     dockerBuildMock: ReturnType<typeof vi.fn>;
     dockerCaptureMock: ReturnType<typeof vi.fn>;
@@ -91,14 +92,12 @@ export function withMockedDocker<T>(
   const dockerImageModule = requireSource("../adapters/docker/image.js") as DockerImageModule;
   const dockerInfoModule = requireSource("../adapters/docker/info.js") as DockerInfoModule;
   const dockerInspectModule = requireSource("../adapters/docker/inspect.js") as DockerInspectModule;
-  const sourceIdentityModule = requireSource(
-    "../sandbox-base-image/source-identity.js",
-  ) as SourceIdentityModule;
-  const originalNearestVersionedTags = sourceIdentityModule.getNearestVersionedBaseImageTags;
-  sourceIdentityModule.getNearestVersionedBaseImageTags = vi.fn().mockReturnValue([]);
   const sandboxBaseImageModule = requireSource(
     "../sandbox-base-image.js",
   ) as SandboxBaseImageModule;
+  const sourceIdentityModule = requireSource(
+    "../sandbox-base-image/source-identity.js",
+  ) as SourceIdentityModule;
   const runnerModule = requireSource("../runner.js") as { ROOT: string };
   const originalDockerBuild = dockerImageModule.dockerBuild;
   const originalDockerRmi = dockerImageModule.dockerRmi;
@@ -107,6 +106,10 @@ export function withMockedDocker<T>(
   const originalDockerImageInspectFormat = dockerInspectModule.dockerImageInspectFormat;
   const originalDockerInfoFormat = dockerInfoModule.dockerInfoFormat;
   const originalResolveSandboxBaseImage = sandboxBaseImageModule.resolveSandboxBaseImage;
+  const originalGetVersionedBaseImageTags = sourceIdentityModule.getVersionedBaseImageTags;
+  const originalGetNearestVersionedBaseImageTags =
+    sourceIdentityModule.getNearestVersionedBaseImageTags;
+  const originalGetSourceShortShaTags = sourceIdentityModule.getSourceShortShaTags;
   const agentOnboardModulePath = requireSource.resolve("./onboard.js");
   delete require.cache[agentOnboardModulePath];
 
@@ -135,11 +138,16 @@ export function withMockedDocker<T>(
   dockerInfoModule.dockerInfoFormat = dockerInfoFormatMock as DockerInfoModule["dockerInfoFormat"];
   sandboxBaseImageModule.resolveSandboxBaseImage =
     resolveSandboxBaseImageMock as SandboxBaseImageModule["resolveSandboxBaseImage"];
+  sourceIdentityModule.getVersionedBaseImageTags = () => [];
+  sourceIdentityModule.getNearestVersionedBaseImageTags = () => [];
+  sourceIdentityModule.getSourceShortShaTags = () => [];
 
   try {
     const agentOnboardModule = requireSource("./onboard.js") as AgentOnboardModule;
     return run({
       ensureAgentBaseImage: agentOnboardModule.ensureAgentBaseImage,
+      bindLocalAgentBaseImageToPinnedProvenance:
+        agentOnboardModule.bindLocalAgentBaseImageToPinnedProvenance,
       pinAgentSandboxBaseImageRef: agentOnboardModule.pinAgentSandboxBaseImageRef,
       dockerBuildMock,
       dockerCaptureMock,
@@ -159,8 +167,11 @@ export function withMockedDocker<T>(
     dockerInspectModule.dockerImageInspect = originalDockerImageInspect;
     dockerInspectModule.dockerImageInspectFormat = originalDockerImageInspectFormat;
     dockerInfoModule.dockerInfoFormat = originalDockerInfoFormat;
-    sourceIdentityModule.getNearestVersionedBaseImageTags = originalNearestVersionedTags;
     sandboxBaseImageModule.resolveSandboxBaseImage = originalResolveSandboxBaseImage;
+    sourceIdentityModule.getVersionedBaseImageTags = originalGetVersionedBaseImageTags;
+    sourceIdentityModule.getNearestVersionedBaseImageTags =
+      originalGetNearestVersionedBaseImageTags;
+    sourceIdentityModule.getSourceShortShaTags = originalGetSourceShortShaTags;
     delete require.cache[agentOnboardModulePath];
   }
 }

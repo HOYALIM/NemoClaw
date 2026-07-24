@@ -53,7 +53,9 @@ function main(): void {
   const generatedVariantPages = renderGeneratedAgentVariantPages();
 
   if (checkOnly) {
-    writeGeneratedFiles(generatedVariantPages);
+    if (!checkGeneratedFiles(generatedVariantPages)) {
+      process.exitCode = 1;
+    }
     return;
   }
 
@@ -100,7 +102,9 @@ function stripAgentOnlyBlocksForVariant(body: string, activeVariant: AgentVarian
         throw new Error(`nested AgentOnly block at body line ${index + 1}`);
       }
       if (line.match(/^<\/AgentOnly>\s*$/)) {
-        if (openBlock.include) renderedLines.push(...openBlock.lines);
+        if (openBlock.include) {
+          renderedLines.push(...trimAgentOnlyListBoundaryBlankLines(openBlock.lines));
+        }
         openBlock = undefined;
         continue;
       }
@@ -132,11 +136,47 @@ function stripAgentOnlyBlocksForVariant(body: string, activeVariant: AgentVarian
   return renderedLines.join("\n");
 }
 
+function trimAgentOnlyListBoundaryBlankLines(lines: string[]): string[] {
+  const firstContentLine = lines.find((line) => line.trim() !== "");
+  if (!firstContentLine?.match(/^\s*(?:[-+*]|\d{1,9}[.)])\s+/)) return lines;
+
+  let start = 0;
+  let end = lines.length;
+
+  while (start < end && lines[start].trim() === "") start += 1;
+  while (end > start && lines[end - 1].trim() === "") end -= 1;
+
+  return lines.slice(start, end);
+}
+
 function agentOnlyVariantMatches(variant: string, activeVariant: AgentVariant): boolean {
   return variant
     .split(",")
     .map((item) => item.trim())
     .includes(activeVariant);
+}
+
+function assertStaticallyResolvedVariantPage(
+  body: string,
+  activeVariant: AgentVariant,
+  sourcePath?: string,
+): void {
+  const unresolved: string[] = [];
+  if (/^\s*import\s+.*AgentGuide["'];?\s*$/m.test(body)) {
+    unresolved.push("AgentGuide import");
+  }
+  if (/^\s*<\/?AgentOnly\b/m.test(body)) {
+    unresolved.push("AgentOnly directive");
+  }
+  if (/<(?:AgentCli|AgentProductName|GuideLink)\b/m.test(body)) {
+    unresolved.push("runtime agent component");
+  }
+  if (unresolved.length === 0) return;
+
+  const source = sourcePath ? path.relative(repoRoot, sourcePath) : "agent variant source";
+  throw new Error(
+    `${source} left unresolved ${unresolved.join(", ")} in the ${activeVariant} generated variant`,
+  );
 }
 
 export function renderAgentVariantPage(
@@ -147,10 +187,7 @@ export function renderAgentVariantPage(
   const { frontmatter, body } = splitFrontmatter(source);
   const commandsReference = isCommandsReferenceSource(options.sourcePath);
   const renderedFrontmatter = renderFrontmatter(frontmatter, variant, commandsReference);
-  let renderedBody = stripAgentOnlyBlocksForVariant(
-    body.replace(/^import \{ AgentOnly \} from "\.\.\/_components\/AgentGuide";\n\n?/m, ""),
-    variant,
-  );
+  let renderedBody = stripAgentOnlyBlocksForVariant(body, variant);
   if (commandsReference) {
     renderedBody = transformNemoclawCliInvocations(renderedBody, variant);
   }
@@ -158,6 +195,7 @@ export function renderAgentVariantPage(
     .replaceAll(CLI_SENTINEL, cliForVariant(variant))
     .replace(/\n{3,}/g, "\n\n")
     .trimStart();
+  assertStaticallyResolvedVariantPage(renderedBody, variant, options.sourcePath);
 
   if (options.sourcePath && options.outputPath) {
     renderedBody = rewriteRelativePaths(renderedBody, options.sourcePath, options.outputPath);
@@ -436,6 +474,37 @@ function writeGeneratedFiles(files: RenderedFile[]): void {
     writeFileSync(file.path, file.contents);
     console.log(`Wrote ${path.relative(repoRoot, file.path)}`);
   }
+}
+
+function checkGeneratedFiles(files: RenderedFile[]): boolean {
+  const expectedPaths = new Set(files.map((file) => file.path));
+  let upToDate = true;
+
+  for (const file of files) {
+    const currentContents = readOptionalFile(file.path);
+    const relativePath = path.relative(repoRoot, file.path);
+    if (currentContents === file.contents) {
+      console.log(`${relativePath} is already up to date`);
+      continue;
+    }
+
+    upToDate = false;
+    const status = currentContents === null ? "Missing" : "Out of sync";
+    console.error(`${status} ${relativePath}`);
+  }
+
+  for (const filePath of listGeneratedFiles(generatedDocsRoot)) {
+    if (expectedPaths.has(filePath)) continue;
+    upToDate = false;
+    console.error(`Stale ${path.relative(repoRoot, filePath)}`);
+  }
+
+  if (!upToDate) {
+    console.error(
+      "Generated agent variant docs are out of sync. Run `npm run docs:sync-agent-variants`.",
+    );
+  }
+  return upToDate;
 }
 
 function pruneStaleGeneratedFiles(expectedPaths: Set<string>): void {

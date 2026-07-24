@@ -23,6 +23,7 @@ Treat `docs/` as the source of truth for published content and AI-agent Markdown
 
 ## Writing Rules
 
+- Follow the [NemoClaw Writing Guide](../WRITING.md) for changed prose.
 - Use active voice, second person, present tense, and direct language.
 - Keep one sentence per line in Markdown and MDX source files.
 - End every sentence with a period.
@@ -36,6 +37,7 @@ Treat `docs/` as the source of truth for published content and AI-agent Markdown
 - Use `$$nemoclaw` for host CLI command examples on shared OpenClaw, Hermes, and Deep Agents pages.
 - Use literal command names on pages that have only one agent variant.
 - Use `<AgentOnly>` blocks only when content differs by behavior, setup flow, state layout, or agent-specific wording.
+- Treat `<AgentOnly>` as a non-nested build-time directive with opening and closing tags at the first column on their own lines; do not import a runtime component for it.
 - Use route-style links without `.mdx` extensions for links between docs pages.
 - Update `docs/index.yml` when navigation, slugs, or page placement changes.
 

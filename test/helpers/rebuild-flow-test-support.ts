@@ -35,8 +35,18 @@ export type RebuildFlowOverrides = {
     ok: boolean;
     imageRef: string | null;
     overrideEnvVar: string | null;
+    disposeImageRef?: () => boolean;
   };
   executeSandboxCommand?: () => { status: number; stdout: string; stderr: string } | null;
+  checkAndRecoverSandboxProcesses?: () => {
+    checked: boolean;
+    wasRunning: boolean | null;
+    recovered: boolean;
+    forwardRecovered: boolean;
+    forwardRecoveryFailed?: boolean;
+    secretBoundaryRefused?: boolean;
+    mcpReconciliationRefused?: boolean;
+  };
   onboard?: (
     session: RebuildFlowSession,
     options: RebuildRecreateOnboardOpts,
@@ -97,6 +107,7 @@ export type RebuildFlowHarness = {
   rebuildSandbox: RebuildSandbox;
   applyPresetSpy: MockInstance;
   backupSandboxStateSpy: MockInstance;
+  checkAndRecoverSandboxProcessesSpy: MockInstance;
   errorSpy: MockInstance;
   executeSandboxCommandSpy: MockInstance;
   ensureMessagingHostForwardAfterRebuildSpy: MockInstance;

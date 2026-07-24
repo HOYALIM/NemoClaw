@@ -131,6 +131,15 @@ If the tag does not point to a commit on `main`, the job stops before installing
 
 The canonical coding-agent installation prompt lives in `docs/resources/starter-prompt.md`.
 Edit that Markdown file instead of placing prompt text in a React component.
+Keep conditional platform instructions in focused Markdown files under `docs/resources/prompt-assets/` and link to their raw GitHub URLs from the starter prompt.
+The main prompt should tell the coding agent when to load each asset and should not repeat the asset's detailed instructions.
+Use one shared immutable commit SHA for every platform-asset URL in a starter-prompt revision.
+The contributor who changes any platform asset owns the corresponding pin update.
+First commit the updated assets, starter-prompt behavior, and related tests without changing the existing URLs, `promptAssetRevision`, or pinned SHA-256 values.
+Then use that commit's SHA in every platform-asset URL, update `promptAssetRevision` and every pinned SHA-256 value in `test/starter-prompt-docs.test.ts`, and commit the repin as one atomic follow-up.
+Never mix asset URLs from different revisions or point an asset URL at a commit that predates its content.
+The asset test compares each local file byte-for-byte with its Git blob at `promptAssetRevision`, so the intermediate content commit intentionally fails until the atomic repin follow-up points every URL, revision, and digest at that content commit.
+Updating only a local digest does not prove what the pinned revision contains.
 Downstream consumers can pin the source with a raw URL such as
 `https://raw.githubusercontent.com/NVIDIA/NemoClaw/<commit-sha>/docs/resources/starter-prompt.md`.
 The Markdown SPDX comment is part of that raw file but does not appear when Markdown is rendered.
@@ -169,6 +178,9 @@ Use literal command names on those single-variant pages rather than `$$nemoclaw`
 Run `npm run docs:sync-agent-variants` after editing shared variant source pages or navigation.
 Run `npm run docs` before opening a PR to verify the generated pages, rewritten relative links, and Fern navigation.
 If content differs by behavior, setup flow, state layout, or agent-specific wording, keep using `<AgentOnly>` blocks for that content.
+Treat `<AgentOnly>` as a build-time directive rather than a React component, and do not import it from `AgentGuide.tsx`.
+Put each opening and closing tag at the first column on its own line, and do not nest the blocks.
+The generated pages must contain only statically resolved content, with no `AgentGuide` imports or runtime agent components.
 
 ## Route-Style Links
 
@@ -190,6 +202,16 @@ Commit and push normally so the Git hooks run, then run:
 ```bash
 npm run docs
 ```
+
+After the documentation changes and build are complete, run a documentation writer subagent.
+Give it the changed pages, the documentation intent, and the build evidence.
+Ask it to verify the changes against this guide and `WRITING.md`.
+The review must cover terminology, structure, voice, and code-sample presentation.
+Apply any required corrections.
+Rerun the applicable documentation validation.
+Commit the reviewed changes.
+Then complete the pull-request template's Documentation Writer Review receipt with the reviewed head SHA.
+Rerun the review after any later commit because the receipt is tied to the exact pull-request head.
 
 Leave the broad-gate verification item unchecked unless you actually ran the applicable command.
 If normal `pre-commit`, `commit-msg`, or `pre-push` hooks were skipped or unavailable, run `npm run check:diff` once to reproduce those checks before opening the PR.
@@ -242,6 +264,9 @@ position: 1
 ## Style Guide
 
 Write like you are explaining something to a colleague. Be direct, specific, and concise.
+Follow the [NemoClaw Writing Guide](../WRITING.md) for changed prose.
+The guide defines shared terms, sentence rules, rewrite examples, and review policy.
+The rules below add documentation-specific voice, formatting, and product-name conventions.
 
 ### Voice and Tone
 

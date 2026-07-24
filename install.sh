@@ -91,6 +91,10 @@ exec_installer_from_ref() {
   legacy_script="${source_root}/install.sh"
 
   if has_payload_marker "$payload_script"; then
+    # The public curl|bash boundary deliberately executes from the complete
+    # selected-ref checkout, not from a standalone payload file. Installer
+    # helpers beside scripts/install.sh (including DGX Station preparation)
+    # are therefore staged from the same ref before payload execution.
     verify_downloaded_script "$payload_script" "versioned installer"
     NEMOCLAW_INSTALL_REF="$ref" NEMOCLAW_INSTALL_TAG="$ref" NEMOCLAW_BOOTSTRAP_PAYLOAD=1 \
       bash "$payload_script" "$@"
@@ -99,6 +103,17 @@ exec_installer_from_ref() {
 
   verify_downloaded_script "$legacy_script" "legacy installer"
   NEMOCLAW_INSTALL_TAG="$ref" bash "$legacy_script" "$@"
+}
+
+require_supported_platform() {
+  # macOS ships only an Apple Silicon (aarch64) OpenShell gateway build, so an
+  # Intel Mac (x86_64 Darwin) install always fails once that binary is fetched.
+  # Reject it here, before any ref resolution or clone, so the user gets an
+  # actionable message instead of a mid-install failure and needless downloads.
+  if [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "x86_64" ]]; then
+    printf "[ERROR] Apple Silicon (aarch64) is required on macOS. Intel Mac (x86_64) is not supported.\n" >&2
+    exit 1
+  fi
 }
 
 bootstrap_version() {
@@ -128,6 +143,9 @@ bootstrap_usage() {
   printf "    NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1 Same as --yes-i-accept-third-party-software\n"
   printf "    NEMOCLAW_NO_EXPRESS=1        Skip express install prompt on supported platforms\n"
   printf "    NEMOCLAW_SANDBOX_NAME        Sandbox name to create/use\n"
+  printf "    HF_TOKEN                     Optional Hugging Face read token for managed-vLLM downloads\n"
+  printf "                                 Create one at https://huggingface.co/settings/tokens and export it before curl | bash.\n"
+  printf "    HUGGING_FACE_HUB_TOKEN       Compatibility alias for HF_TOKEN\n"
   printf "    NEMOCLAW_ACCEPT_EXPERIMENTAL_OPENSHELL_UPGRADE=1\n"
   printf "                                 Allow automatic pre-0.0.37 OpenShell gateway upgrade\n"
   printf "    NEMOCLAW_OPENSHELL_UPGRADE_PREPARED=1\n"
@@ -155,6 +173,8 @@ bootstrap_main() {
         ;;
     esac
   done
+
+  require_supported_platform
 
   local ref
   ref="$(resolve_release_tag)"

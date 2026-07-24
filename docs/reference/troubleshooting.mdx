@@ -9,8 +9,6 @@ keywords: ["nemoclaw troubleshooting", "nemoclaw debug sandbox issues", "opencla
 content:
   type: "reference"
 ---
-import { AgentOnly } from "../_components/AgentGuide";
-
 {/* markdownlint-disable MD014 */}
 
 This page covers common installation, onboarding, and runtime issues, along with resolution steps.
@@ -304,7 +302,7 @@ NEMOCLAW_DASHBOARD_BIND=0.0.0.0 NEMOCLAW_GATEWAY_PORT=8990 $$nemoclaw onboard
 Use `NEMOCLAW_DASHBOARD_BIND=0.0.0.0` again on later `$$nemoclaw <sandbox> connect` calls.
 If the sandbox was originally created without remote bind, recreate it with the same onboard command plus `--recreate-sandbox` before connecting remotely.
 
-Docker-driver gateways on OpenShell 0.0.72 reject `NEMOCLAW_GATEWAY_BIND_ADDRESS=0.0.0.0` while gateway JWT auth is active.
+Docker-driver gateways on OpenShell 0.0.85 reject `NEMOCLAW_GATEWAY_BIND_ADDRESS=0.0.0.0` while gateway JWT auth is active.
 
 Use `NEMOCLAW_GATEWAY_BIND_ADDRESS=0.0.0.0` only on supported gateway modes and only when other hosts on the network should be able to reach the gateway.
 
@@ -312,14 +310,14 @@ Use `NEMOCLAW_GATEWAY_BIND_ADDRESS=0.0.0.0` only on supported gateway modes and 
 
 ### Older-glibc gateway compatibility container
 
-OpenShell 0.0.72 directly supports Linux hosts with glibc 2.28 or newer.
+OpenShell 0.0.85 directly supports Linux hosts with glibc 2.28 or newer.
 On an older trusted host, `NEMOCLAW_OPENSHELL_GATEWAY_CONTAINER_PATCH=1` explicitly opts into NemoClaw's compatibility container.
 Leave it unset on supported hosts.
 
 The compatibility container uses host networking and mounts the host Docker socket read-only.
 A read-only socket mount still permits privileged Docker API operations and can control the host, so do not enable this mode on an untrusted or shared host.
 The gateway remains loopback-bound, and startup fails closed unless the configured Unix socket answers as a Docker daemon.
-See the [OpenShell 0.0.72 compatibility review](../security/openshell-0.0.72-compatibility-review#source-of-truth-boundaries) for the accepted boundary and removal conditions.
+See the [OpenShell gateway compatibility review](../security/openshell-0.0.72-compatibility-review#source-of-truth-boundaries) for the unchanged container boundary and removal conditions.
 
 Refer to [Environment Variables](commands#environment-variables) for the full list of port overrides.
 
@@ -1765,7 +1763,7 @@ Do not probe with `su -s /bin/sh gateway ...`: `su` does not initialize the gate
 A NemoClaw sandbox has two intentional permission states for `/sandbox/.openclaw`; `700/600` is not one of them:
 
 - **Mutable default:** `/sandbox/.openclaw` is `2770 sandbox:sandbox` and `openclaw.json` is `660 sandbox:sandbox`. Both the sandbox user and the gateway (same `sandbox` group, different UID) can write config, so control-UI toggles persist.
-- **Host-locked state:** `openclaw.json` is read-only for in-sandbox writers and the config dir is owned by `root`, with the immutable bit set where available. No in-sandbox writes are expected; use the host-side `nemoclaw <sandbox> config set` flow described in [`openclaw config set` fails with a permission error on Brev](#openclaw-config-set-fails-with-a-permission-error-on-brev).
+- **Host-locked state:** `openclaw.json` is read-only for in-sandbox writers and the config dir is owned by `root`, with the immutable bit set where available. No in-sandbox writes are expected; use the host-side `$$nemoclaw <sandbox> config set` flow described in [`openclaw config set` or `unset` is blocked inside the sandbox](#openclaw-config-set-or-unset-is-blocked-inside-the-sandbox).
 - **`700/600` (drift):** the layout that upstream `openclaw doctor --fix` imposes inside a mutable sandbox. It is not a supported NemoClaw state; recover with `$$nemoclaw <sandbox> doctor --fix` or a sandbox restart.
 
 ### Discord bot logs in, but the channel still does not work
@@ -2271,7 +2269,10 @@ When shared gateway cleanup would be unsafe, follow the targeted destroy or gate
 
 Recent NVIDIA Container Toolkit installs configure the Docker daemon for Container Device Interface (CDI) device injection, which OpenShell's `gateway start --gpu` then auto-selects.
 If no `nvidia.com/gpu` CDI spec has been generated on the host yet, gateway start fails with `Docker responded with status code 500: CDI device injection failed: unresolvable CDI devices nvidia.com/gpu=all`.
-The standard NemoClaw installer detects this gap before onboarding, first tries to enable the NVIDIA CDI refresh systemd units, and falls back to generating the spec directly with `nvidia-ctk`.
+Outside Station Express, the standard NemoClaw installer detects this gap before onboarding, first tries to enable the NVIDIA CDI refresh systemd units, and can fall back to generating the spec directly with `nvidia-ctk`.
+Station Express never falls back to direct CDI generation.
+The generic Ubuntu, Colossus BaseOS, and exact AI Developer Tools paths require the packaged refresh lifecycle to work; if it fails or omits `nvidia.com/gpu=all`, inspect `nvidia-cdi-refresh.service`, repair it, and rerun the printed exact-commit install command.
+Other factory-runtime profiles stop when the CDI device is missing without enabling or restarting the refresh units.
 If you run `$$nemoclaw onboard` directly, preflight prints the manual remediation instead.
 The native Linux fix is the same on Docker hosts whose `docker info` advertises a non-empty `CDISpecDirs`.
 On WSL with Docker Desktop, Docker may advertise CDI directories even though `--device nvidia.com/gpu=all` is not usable from the WSL distro.
@@ -2286,7 +2287,7 @@ nvidia-ctk cdi list
 $$nemoclaw onboard
 ```
 
-If the refresh units are unavailable or do not generate CDI devices, generate the spec directly:
+For other native Linux installations, if the refresh units are unavailable or do not generate CDI devices, generate the spec directly:
 
 ```bash
 sudo mkdir -p /etc/cdi
@@ -2313,6 +2314,11 @@ Identify the matching path before applying the recovery guidance.
 | `Cleanup could not be proven safe` | Native-to-compatibility handoff | Run the printed sandbox deletion command, verify both the gateway row and OpenShell-managed Docker containers labeled for that sandbox are absent, then rerun onboarding. |
 | The patched container exits or the compatibility attempt fails | Compatibility recreation | Inspect the saved diagnostics, repair the NVIDIA Container Toolkit/CDI configuration, clean up the failed sandbox, and rerun onboarding. |
 | A recreated container inherits only a loopback DNS stub and no usable upstream | Compatibility DNS fallback | Repair the host's `systemd-resolved` upstream configuration, then rerun onboarding. |
+
+For bridge-networked compatibility recreation without an explicit container DNS setting, NemoClaw selects a usable IPv4 upstream from `systemd-resolved` and probes that exact `--dns` path before it stops the original container.
+If the probe confirms that the resolver is unreachable, recreation stops and leaves the original container in place.
+An IPv6-only upstream list does not become a compatibility override; NemoClaw preserves Docker's default resolver path instead.
+Containers with explicit DNS settings or host networking keep their existing DNS path and do not use the fallback probe.
 
 #### Ordinary native Linux bounded fallback
 
@@ -2400,7 +2406,7 @@ If you run other services on Spark that expect port 3000, bind them to a differe
 <a id="windows-wsl-2"></a>
 ## Windows Subsystem for Linux
 
-For environment setup steps, refer to [Windows Prerequisites](../get-started/prerequisites/windows-preparation).
+For environment setup steps, refer to [Windows Prerequisites](../get-started/additional-setup/windows-preparation).
 
 ### `wsl --install --no-distribution` returns Forbidden (403)
 
@@ -2536,7 +2542,7 @@ OLLAMA_CONTEXT_LENGTH=64000 ollama serve
 
 </AgentOnly>
 
-For additional troubleshooting, refer to the [Windows Setup](../get-started/prerequisites/windows-preparation) page.
+For additional troubleshooting, refer to the [Windows Setup](../get-started/additional-setup/windows-preparation) page.
 <AgentOnly variant="openclaw">
 For first-time OpenClaw setup, refer to the [Quickstart](../get-started/quickstart).
 </AgentOnly>
@@ -2549,93 +2555,6 @@ For first-time Hermes setup, refer to [Quickstart with Hermes](../get-started/qu
 Podman is not a tested runtime.
 OpenShell officially documents Docker-based runtimes only.
 If you encounter issues with Podman, switch to a tested runtime (Docker Engine, Docker Desktop, or Colima) and rerun onboarding.
-
-<AgentOnly variant="openclaw">
-
-## Brev
-
-For Brev setup instructions, refer to [Brev Web UI](../deployment/brev-web-ui).
-
-### Most OpenClaw skills show as blocked
-
-After deploying NemoClaw on Brev, the Skills page in the OpenClaw gateway dashboard shows most bundled skills with a `blocked` status.
-Only three skills are available by default: `healthcheck`, `skill-creator`, and `weather`.
-
-Skills are blocked for one of three reasons.
-
-- The skill requires a macOS-only binary (`memo`, `remindctl`, `grizzly`, and similar) that is not available on the Linux (GCP) instance Brev provisions.
-- The skill requires a CLI binary that is not pre-installed in the sandbox image, such as `gh` for the GitHub skill.
-- The skill requires API credentials that have not been configured, such as a Notion API key or Discord bot token.
-
-Skills that require macOS-only binaries cannot be enabled on Brev.
-Skills that require additional CLI binaries require a custom sandbox image rebuild.
-
-For credentials, use the supported host-side setup flow.
-Rerun onboarding for inference or web search credentials, or use `$$nemoclaw <name> channels add <telegram|discord|slack|wechat|whatsapp>` for messaging channels.
-To add a binary to the sandbox image, update the sandbox `Dockerfile.base` to install the required package, then rebuild:
-
-```bash
-$$nemoclaw <name> rebuild
-```
-
-After the rebuild completes, return to the Skills page to confirm the skill status has changed from `blocked` to `ready`.
-
-### `openclaw config set` fails with a permission error on Brev
-
-When the sandbox config has been locked from the host, `openclaw.json` is owned by root and mounted read-only inside the sandbox.
-Running `openclaw config set` inside the sandbox then returns:
-
-```text
-EACCES: permission denied, open '/sandbox/.openclaw/openclaw.json'
-```
-
-In the default sandbox state, `openclaw.json` is writable by the sandbox user.
-If you see this error, use the host-side config command instead:
-
-```bash
-$$nemoclaw <name> config set --key <dotpath> --value '<json-or-string>' --restart
-```
-
-Refer to [Commands](commands) for the full list of supported configuration keys.
-
-### OpenClaw dashboard is unreachable after extended uptime on Brev
-
-After leaving NemoClaw running for an extended period on Brev, the OpenClaw dashboard may return `ERR_CONNECTION_RESET` or fail to load in the browser.
-The agent may still respond on messaging channels such as Telegram or Slack while the dashboard is unreachable.
-
-<Warning title="Back up your workspace first">
-
-Take a snapshot before running onboard to protect your workspace files.
-
-```bash
-$$nemoclaw <name> snapshot create
-```
-
-</Warning>
-
-Re-run onboarding to restore dashboard connectivity:
-
-```bash
-$$nemoclaw onboard
-```
-
-Depending on current sandbox state, onboarding may prompt before recreating resources.
-
-### Skill install buttons do not work on Brev
-
-Clicking **Install** on a skill in the OpenClaw gateway dashboard on Brev shows no response or fails silently.
-
-Skill installation runs against the sandbox environment.
-Installing packages on the Brev host does not make them available inside the sandbox.
-To install a skill dependency, add it to the sandbox image and rebuild:
-
-```bash
-$$nemoclaw <name> rebuild
-```
-
-After the rebuild completes, return to the Skills page to confirm the skill is ready.
-
-</AgentOnly>
 
 <AgentOnly variant="hermes">
 

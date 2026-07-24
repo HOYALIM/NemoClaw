@@ -38,6 +38,7 @@ function createFixture(opts: {
   savedCredential?: { key: string; value: string };
   hermesAuthMethod?: string | null;
   providerRegistered?: boolean;
+  sandboxDeleteExitCode?: number;
   activeSessionCount?: number | null;
   inferenceProbeHttpStatus?: number | null;
 }) {
@@ -48,6 +49,7 @@ function createFixture(opts: {
     savedCredential,
     hermesAuthMethod = null,
     providerRegistered = true,
+    sandboxDeleteExitCode = 0,
     activeSessionCount = 0,
     inferenceProbeHttpStatus = null,
   } = opts;
@@ -166,10 +168,15 @@ const fs = require("fs");
 const a = process.argv.slice(2);
 const hermesProviderStatePath = ${JSON.stringify(hermesProviderStatePath)};
 const requiredFeatures = "request-body-credential-rewrite websocket-credential-rewrite allow_all_known_mcp_methods";
-if (a[0] === "-V" || a[0] === "--version") { process.stdout.write("openshell 0.0.72\\n"); process.exit(0); }
+if (a[0] === "-V" || a[0] === "--version") { process.stdout.write("openshell 0.0.85\\n"); process.exit(0); }
 if (a[0] === "sandbox" && a[1] === "list") { process.stdout.write("${sandboxName} Ready\\n"); process.exit(0); }
 if (a[0] === "sandbox" && a[1] === "ssh-config") { process.stdout.write("${sshConfig}\\n"); process.exit(0); }
-if (a[0] === "sandbox" && a[1] === "delete") { fs.writeFileSync(${JSON.stringify(deleteMarker)}, "deleted\\n"); process.exit(0); }
+if (a[0] === "sandbox" && a[1] === "delete") { fs.writeFileSync(${JSON.stringify(deleteMarker)}, "deleted\\n"); process.exit(${sandboxDeleteExitCode}); }
+if (a[0] === "sandbox" && a[1] === "get") {
+  if (fs.existsSync(${JSON.stringify(deleteMarker)})) { process.stderr.write("sandbox ${sandboxName} not found\\n"); process.exit(1); }
+  process.stdout.write("${sandboxName} Ready\\n");
+  process.exit(0);
+}
 if (a[0] === "sandbox" && a[1] === "exec") {
   const command = a.join(" ");
   if (command.includes("rebuild-atomicity-marker.txt")) {
@@ -225,7 +232,7 @@ process.exit(0);
       path.join(tmpDir, component),
       `#!/usr/bin/env node
 const requiredFeatures = "request-body-credential-rewrite websocket-credential-rewrite allow_all_known_mcp_methods";
-if (process.argv[2] === "-V" || process.argv[2] === "--version") process.stdout.write("${component} 0.0.72\\n");
+if (process.argv[2] === "-V" || process.argv[2] === "--version") process.stdout.write("${component} 0.0.85\\n");
 process.exit(0);
 `,
       { mode: 0o755 },
@@ -252,13 +259,25 @@ process.exit(0);
 const fs = require("node:fs");
 const a = process.argv.slice(2);
 const provenancePath = ${JSON.stringify(path.join(tmpDir, "docker-base-provenance"))};
+const readProvenance = () => fs.existsSync(provenancePath) ? JSON.parse(fs.readFileSync(provenancePath, "utf8")) : {};
 if (a[0] === "info") { process.stdout.write(JSON.stringify({ServerVersion:"27.0.0", OperatingSystem:"Docker Engine", NCPU:8, MemTotal:17179869184}) + "\\n"); process.exit(0); }
 if (a[0] === "build") {
   const labelIndex = a.indexOf("--label");
-  if (labelIndex >= 0) {
+  const tagIndex = a.indexOf("-t");
+  if (labelIndex >= 0 && tagIndex >= 0) {
     const label = a[labelIndex + 1] || "";
-    fs.writeFileSync(provenancePath, label.slice(label.indexOf("=") + 1));
+    const provenance = readProvenance();
+    const value = label.slice(label.indexOf("=") + 1);
+    provenance[a[tagIndex + 1]] = value;
+    provenance["sha256:${"a".repeat(64)}"] = value;
+    fs.writeFileSync(provenancePath, JSON.stringify(provenance));
   }
+  process.exit(0);
+}
+if (a[0] === "tag") {
+  const provenance = readProvenance();
+  if (provenance[a[1]]) provenance[a[2]] = provenance[a[1]];
+  fs.writeFileSync(provenancePath, JSON.stringify(provenance));
   process.exit(0);
 }
 if (a[0] === "image" && a[1] === "inspect") {
@@ -267,12 +286,12 @@ if (a[0] === "image" && a[1] === "inspect") {
   if (format === "{{.Id}}") process.stdout.write("sha256:${"a".repeat(64)}\\n");
   if (format === "{{json .RepoDigests}}") process.stdout.write("[]\\n");
   if (format === "{{json .}}") {
-    const provenance = fs.existsSync(provenancePath) ? fs.readFileSync(provenancePath, "utf8") : "";
+    const provenance = readProvenance()[a[formatIndex + 2]] || "";
     process.stdout.write(JSON.stringify({Id:"sha256:${"a".repeat(64)}", RepoDigests:[], Os:"linux", Architecture:"amd64", Config:{Labels:provenance ? {"com.nvidia.nemoclaw.base-build-provenance":provenance} : {}}}) + "\\n");
   }
   process.exit(0);
 }
-if (a[0] === "tag" || a[0] === "rmi") process.exit(0);
+if (a[0] === "rmi") process.exit(0);
 if (a[0] === "run") {
   if (a.includes("nslookup")) process.stdout.write("Server: 127.0.0.11\\n** server can't find nemoclaw.invalid: NXDOMAIN\\n");
   else if (a.includes("/usr/bin/ldd")) process.stdout.write("ldd (GNU libc) 2.41\\n");
@@ -293,6 +312,7 @@ process.exit(1);
 const { spawnSync } = require("child_process");
 const cmd = process.argv[process.argv.length - 1] || "";
 if (cmd.includes("[ -d")) { process.stdout.write("workspace\\n"); process.exit(0); }
+if (cmd.startsWith("src=")) { process.exit(2); }
 if (cmd.includes("tar")) {
   const result = spawnSync("tar", ["-cf", "-", "-C", ${JSON.stringify(fakeRoot)}, "workspace"], { stdio: ["ignore", "pipe", "pipe"] });
   if (result.stdout) process.stdout.write(result.stdout);
@@ -441,6 +461,7 @@ describe("atomic rebuild process contracts (#2273)", () => {
       credentialEnv: "NOUS_API_KEY",
       hermesAuthMethod: "api_key",
       providerRegistered: false,
+      sandboxDeleteExitCode: 1,
     });
 
     const result = runRebuild(fixture, { NOUS_API_KEY: "nous-key-from-env" });

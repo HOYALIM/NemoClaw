@@ -5,6 +5,7 @@ import type {
   DockerContainerInspect,
   DockerGpuCloneRunOptions,
   DockerGpuPatchMode,
+  DockerUlimit,
 } from "./docker-gpu-patch-types";
 import { openshellSandboxCommandEnvValue } from "./docker-startup-command-env";
 
@@ -15,6 +16,10 @@ const GPU_ENV_KEYS = new Set([
   "NVIDIA_REQUIRE_CUDA",
   "NVIDIA_DISABLE_REQUIRE",
 ]);
+const DOCKER_DEFAULT_TMPFS_OPTIONS = new Set(["noexec", "nosuid", "nodev"]);
+type DockerStructuredMount = NonNullable<
+  NonNullable<DockerContainerInspect["HostConfig"]>["Mounts"]
+>[number];
 
 export const DOCKER_GPU_PATCH_NETWORK_ENV = "NEMOCLAW_DOCKER_GPU_PATCH_NETWORK";
 
@@ -64,6 +69,173 @@ function pushStringFlag(args: string[], flag: string, value: unknown): void {
   if (normalized) args.push(flag, normalized);
 }
 
+function normalizeRequiredUlimit(ulimit: DockerUlimit): DockerUlimit {
+  const name = String(ulimit.name).trim();
+  if (!/^[a-z][a-z0-9_]*$/u.test(name)) {
+    throw new Error(`Invalid Docker ulimit name '${name}'.`);
+  }
+  if (
+    !Number.isSafeInteger(ulimit.soft) ||
+    ulimit.soft < 0 ||
+    !Number.isSafeInteger(ulimit.hard) ||
+    ulimit.hard < ulimit.soft
+  ) {
+    throw new Error(`Invalid Docker ulimit values for '${name}'.`);
+  }
+  return { name, soft: ulimit.soft, hard: ulimit.hard };
+}
+
+export function validateRequiredDockerUlimits(
+  required: readonly DockerUlimit[] | null | undefined,
+): void {
+  for (const ulimit of required ?? []) normalizeRequiredUlimit(ulimit);
+}
+
+function dockerUlimits(
+  inspect: DockerContainerInspect,
+  required: readonly DockerUlimit[] | null | undefined,
+): DockerUlimit[] {
+  const merged = new Map<string, DockerUlimit>();
+  for (const ulimit of inspect.HostConfig?.Ulimits ?? []) {
+    const name = String(ulimit.Name ?? "").trim();
+    const soft = ulimit.Soft;
+    const hard = ulimit.Hard;
+    if (
+      !name ||
+      !Number.isSafeInteger(soft) ||
+      (soft as number) < -1 ||
+      !Number.isSafeInteger(hard) ||
+      (hard as number) < -1 ||
+      ((hard as number) !== -1 && (soft as number) > (hard as number))
+    ) {
+      continue;
+    }
+    merged.set(name, { name, soft: soft as number, hard: hard as number });
+  }
+  for (const ulimit of required ?? []) {
+    const normalized = normalizeRequiredUlimit(ulimit);
+    merged.set(normalized.name, normalized);
+  }
+  return [...merged.values()];
+}
+
+function mountValue(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length === 0 || value !== value.trim()) {
+    throw new Error(`Docker structured mount ${label} must be a non-empty trimmed string.`);
+  }
+  if (/[\0,:]/u.test(value)) {
+    throw new Error(`Docker structured mount ${label} contains an unsupported delimiter.`);
+  }
+  return value;
+}
+
+function optionalMountBoolean(value: unknown, label: string): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value !== "boolean") {
+    throw new Error(`Docker structured mount ${label} must be a boolean.`);
+  }
+  return value;
+}
+
+function assertUnusedMountOption(value: unknown, label: string): void {
+  if (value !== undefined && value !== null) {
+    throw new Error(`Docker structured mount has unexpected ${label}.`);
+  }
+}
+
+function dockerTmpfsMountValue(mount: DockerStructuredMount): string {
+  if (String(mount.Source ?? "") !== "") {
+    throw new Error("Docker tmpfs mount must not include a source.");
+  }
+  if (String(mount.Consistency ?? "") !== "") {
+    throw new Error("Docker tmpfs mount consistency is not supported during recreation.");
+  }
+  assertUnusedMountOption(mount.BindOptions, "BindOptions for a tmpfs mount");
+  assertUnusedMountOption(mount.VolumeOptions, "VolumeOptions for a tmpfs mount");
+
+  const target = mountValue(mount.Target, "target");
+  if (!target.startsWith("/")) {
+    throw new Error("Docker structured mount target must be an absolute container path.");
+  }
+  const values = [`type=tmpfs`, `dst=${target}`];
+  if (optionalMountBoolean(mount.ReadOnly, "ReadOnly")) values.push("readonly");
+  for (const parts of mount.TmpfsOptions?.Options ?? []) {
+    if (!Array.isArray(parts) || parts.length !== 1) {
+      throw new Error("Docker structured tmpfs options must contain exactly one value.");
+    }
+    const option = mountValue(parts[0], "tmpfs option");
+    if (!DOCKER_DEFAULT_TMPFS_OPTIONS.has(option)) {
+      throw new Error(
+        `Docker structured tmpfs option '${option}' cannot be preserved during recreation.`,
+      );
+    }
+  }
+
+  const sizeBytes = mount.TmpfsOptions?.SizeBytes;
+  if (sizeBytes !== undefined && sizeBytes !== null) {
+    if (!Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) {
+      throw new Error("Docker tmpfs mount size must be a positive safe integer.");
+    }
+    values.push(`tmpfs-size=${sizeBytes}`);
+  }
+  const mode = mount.TmpfsOptions?.Mode;
+  if (mode !== undefined && mode !== null) {
+    if (!Number.isSafeInteger(mode) || mode < 0 || mode > 0o7777) {
+      throw new Error("Docker tmpfs mount mode must be a valid non-negative file mode.");
+    }
+    values.push(`tmpfs-mode=${mode.toString(8)}`);
+  }
+  return values.join(",");
+}
+
+function dockerVolumeMountValue(mount: DockerStructuredMount): string {
+  if (String(mount.Consistency ?? "") !== "") {
+    throw new Error("Docker volume mount consistency is not supported during recreation.");
+  }
+  assertUnusedMountOption(mount.BindOptions, "BindOptions for a volume mount");
+  assertUnusedMountOption(mount.TmpfsOptions, "TmpfsOptions for a volume mount");
+
+  const source = mountValue(mount.Source, "volume source");
+  const target = mountValue(mount.Target, "target");
+  if (!target.startsWith("/")) {
+    throw new Error("Docker structured mount target must be an absolute container path.");
+  }
+  const values = [`type=volume`, `src=${source}`, `dst=${target}`];
+  if (optionalMountBoolean(mount.ReadOnly, "ReadOnly")) values.push("readonly");
+  const volumeOptions = mount.VolumeOptions;
+  if (optionalMountBoolean(volumeOptions?.NoCopy, "VolumeOptions.NoCopy")) {
+    values.push("volume-nocopy");
+  }
+  if (volumeOptions?.Subpath) {
+    values.push(`volume-subpath=${mountValue(volumeOptions.Subpath, "volume subpath")}`);
+  }
+  if (volumeOptions?.Labels && Object.keys(volumeOptions.Labels).length > 0) {
+    throw new Error("Docker volume mount labels are not supported during recreation.");
+  }
+  assertUnusedMountOption(volumeOptions?.DriverConfig, "VolumeOptions.DriverConfig");
+  return values.join(",");
+}
+
+function dockerStructuredMountArgs(inspect: DockerContainerInspect): string[] {
+  const args: string[] = [];
+  for (const mount of inspect.HostConfig?.Mounts ?? []) {
+    switch (mount.Type) {
+      case "tmpfs":
+        // Docker applies noexec, nosuid, and nodev to tmpfs mounts by default.
+        // Keep the structured representation so Docker inspect and later
+        // recreation retain size and mode alongside that security posture.
+        args.push("--mount", dockerTmpfsMountValue(mount));
+        break;
+      case "volume":
+        args.push("--mount", dockerVolumeMountValue(mount));
+        break;
+      default:
+        throw new Error(`Unsupported Docker structured mount type '${String(mount.Type)}'.`);
+    }
+  }
+  return args;
+}
+
 function pushNumberFlag(args: string[], flag: string, value: unknown): void {
   if (typeof value === "number" && Number.isFinite(value) && value > 0) {
     args.push(flag, String(value));
@@ -101,6 +273,22 @@ export function getDockerGpuPatchNetworkMode(
     .trim()
     .toLowerCase();
   return networkOverride === "host" ? "host" : "preserve";
+}
+
+/**
+ * Return the compatibility resolver that clone construction will inject.
+ * Keep this decision shared with the pre-mutation DNS probe so explicit DNS
+ * and host networking cannot be tested against an override they will not use.
+ */
+export function getDockerGpuCloneFallbackDns(
+  inspect: DockerContainerInspect,
+  options: DockerGpuCloneRunOptions = {},
+): string | null {
+  const host = inspect.HostConfig || {};
+  const networkMode = options.networkMode ?? host.NetworkMode;
+  if (networkMode === "host" || stringArray(host.Dns).length > 0) return null;
+  const fallback = String(options.sandboxFallbackDns ?? "").trim();
+  return fallback || null;
 }
 
 export function sameContainerId(
@@ -184,6 +372,7 @@ export function buildDockerGpuCloneRunArgs(
     if (value !== undefined && value !== null) args.push("--label", `${key}=${value}`);
   }
   for (const bind of stringArray(host.Binds)) args.push("--volume", bind);
+  args.push(...dockerStructuredMountArgs(inspect));
   const networkMode = options.networkMode ?? host.NetworkMode;
   pushStringFlag(args, "--network", networkMode);
   for (const alias of dockerNetworkAliases(inspect, networkMode))
@@ -217,13 +406,15 @@ export function buildDockerGpuCloneRunArgs(
       args.push("--group-add", normalized);
     }
   }
+  for (const ulimit of dockerUlimits(inspect, options.requiredUlimits)) {
+    args.push("--ulimit", `${ulimit.name}=${ulimit.soft}:${ulimit.hard}`);
+  }
   if (networkMode !== "host") {
     const dnsServers = stringArray(host.Dns);
     for (const dns of dnsServers) args.push("--dns", dns);
     for (const dnsSearch of stringArray(host.DnsSearch)) args.push("--dns-search", dnsSearch);
-    if (dnsServers.length === 0 && options.sandboxFallbackDns) {
-      args.push("--dns", options.sandboxFallbackDns);
-    }
+    const fallbackDns = getDockerGpuCloneFallbackDns(inspect, options);
+    if (fallbackDns) args.push("--dns", fallbackDns);
   }
 
   pushNumberFlag(args, "--memory", host.Memory);

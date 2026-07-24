@@ -12,13 +12,17 @@
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  closeSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   readlinkSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -56,7 +60,7 @@ import * as registry from "./registry.js";
 import { isSshTransportFailure } from "./ssh-transport.js";
 import { restoreStateFile } from "./state-file-restore.js";
 import { nemoclawStateRoot } from "./state-root.js";
-import { runTarListing } from "./tar-listing.js";
+import { runTarListing, type TarArchiveSource } from "./tar-listing.js";
 
 const HOME_DIR = path.resolve(process.env.HOME || os.homedir());
 const REBUILD_BACKUPS_DIR = path.join(nemoclawStateRoot(HOME_DIR, GATEWAY_PORT), "rebuild-backups");
@@ -85,6 +89,8 @@ export interface RebuildManifest {
   stateDirs: string[];
   /** Directories verified as safe to restore. Absent on older manifests. */
   backedUpDirs?: string[];
+  /** Declared directories that could not be backed up. Absent on older manifests. */
+  failedBackupDirs?: string[];
   stateFiles?: StateFileSpec[];
   /** Single config/state directory */
   dir: string;
@@ -266,6 +272,8 @@ function isRebuildManifest(value: unknown): value is RebuildManifest {
     (value.agentVersion === null || typeof value.agentVersion === "string") &&
     (value.expectedVersion === null || typeof value.expectedVersion === "string") &&
     (value.backedUpDirs === undefined || isBackedUpDirArray(value.backedUpDirs, value.stateDirs)) &&
+    (value.failedBackupDirs === undefined ||
+      isBackedUpDirArray(value.failedBackupDirs, value.stateDirs)) &&
     typeof dir === "string" &&
     (value.openclawImagePluginInstalls === undefined ||
       parseOpenClawImagePluginInstalls(value.openclawImagePluginInstalls, dir).ok) &&
@@ -349,9 +357,12 @@ function rejectSymlinksOnPath(targetPath: string): void {
  * List tar entries and validate every path is within targetDir.
  * Rejects absolute paths, path traversal (..), and null bytes.
  */
-export function validateTarEntries(tarBuffer: Buffer, targetDir: string): TarValidationResult {
+export function validateTarEntries(
+  tarArchive: TarArchiveSource,
+  targetDir: string,
+): TarValidationResult {
   const entries: string[] = [];
-  const listingFailure = runTarListing(tarBuffer, ["-tf", "-"], "tar listing", (line) => {
+  const listingFailure = runTarListing(tarArchive, ["-tf", "-"], "tar listing", (line) => {
     entries.push(line);
   });
   if (listingFailure) {
@@ -472,9 +483,9 @@ function auditExtractedSymlinks(dirPath: string, allowedRoots: string[]): string
  * legitimate reason to contain them, and they can be used to reference
  * files outside the extraction root.
  */
-export function rejectHardLinks(tarBuffer: Buffer): string[] {
+export function rejectHardLinks(tarArchive: TarArchiveSource): string[] {
   const violations: string[] = [];
-  const listingFailure = runTarListing(tarBuffer, ["-tvf", "-"], "tar verbose listing", (line) => {
+  const listingFailure = runTarListing(tarArchive, ["-tvf", "-"], "tar verbose listing", (line) => {
     // Both GNU tar and bsdtar prefix hard-link entries with 'h' in verbose mode
     // and include " link to " in the line.
     if (line.startsWith("h") || / link to /.test(line)) {
@@ -490,9 +501,9 @@ export function rejectHardLinks(tarBuffer: Buffer): string[] {
  * SECURITY: Validate tar contents, extract with safety flags, then
  * audit for symlink escapes. Nukes the extraction on any violation.
  */
-export function safeTarExtract(tarBuffer: Buffer, targetDir: string): SafeExtractResult {
+export function safeTarExtract(tarArchive: TarArchiveSource, targetDir: string): SafeExtractResult {
   // Phase 1a: Validate entry paths before extraction
-  const validation = validateTarEntries(tarBuffer, targetDir);
+  const validation = validateTarEntries(tarArchive, targetDir);
   if (!validation.safe) {
     return {
       success: false,
@@ -501,7 +512,7 @@ export function safeTarExtract(tarBuffer: Buffer, targetDir: string): SafeExtrac
   }
 
   // Phase 1b: Reject hard links (not detectable via tar -tf, require verbose listing)
-  const hardLinkViolations = rejectHardLinks(tarBuffer);
+  const hardLinkViolations = rejectHardLinks(tarArchive);
   if (hardLinkViolations.length > 0) {
     return {
       success: false,
@@ -510,11 +521,25 @@ export function safeTarExtract(tarBuffer: Buffer, targetDir: string): SafeExtrac
   }
 
   // Phase 2: Extract with --no-same-owner to prevent ownership manipulation
-  const extractResult = spawnSync("tar", ["-xf", "-", "--no-same-owner", "-C", targetDir], {
-    input: tarBuffer,
-    stdio: ["pipe", "pipe", "pipe"],
-    timeout: 60000,
-  });
+  let archiveFd: number | null = null;
+  let extractResult: ReturnType<typeof spawnSync>;
+  try {
+    extractResult = Buffer.isBuffer(tarArchive)
+      ? spawnSync("tar", ["-xf", "-", "--no-same-owner", "-C", targetDir], {
+          input: tarArchive,
+          stdio: ["pipe", "pipe", "pipe"],
+          timeout: 60000,
+        })
+      : (() => {
+          archiveFd = openSync(tarArchive.filePath, "r");
+          return spawnSync("tar", ["-xf", "-", "--no-same-owner", "-C", targetDir], {
+            stdio: [archiveFd, "pipe", "pipe"],
+            timeout: 60000,
+          });
+        })();
+  } finally {
+    if (archiveFd !== null) closeSync(archiveFd);
+  }
 
   if (extractResult.status !== 0) {
     return {
@@ -766,7 +791,7 @@ const SQLITE_BACKUP_PY = [
   "    src_conn.close()",
 ].join("\n");
 
-function buildStateFileBackupCommand(dir: string, spec: StateFileSpec): string {
+export function buildStateFileBackupCommand(dir: string, spec: StateFileSpec): string {
   const remotePath = stateFileRemotePath(dir, spec.path);
   const quotedRemotePath = shellQuote(remotePath);
   if (spec.strategy === "sqlite_backup") {
@@ -778,8 +803,7 @@ function buildStateFileBackupCommand(dir: string, spec: StateFileSpec): string {
       '[ "${hardlink_count:-0}" = "0" ] || { echo "hard-linked sqlite state file rejected: $src" >&2; exit 11; }',
       'tmp="$(mktemp /tmp/nemoclaw-sqlite-backup.XXXXXX)"',
       "trap 'rm -f \"$tmp\"' EXIT",
-      `python3 -c ${shellQuote(SQLITE_BACKUP_PY)} "$src" "$tmp"`,
-      'cat -- "$tmp"',
+      `/usr/bin/python3 -I -S -c ${shellQuote(SQLITE_BACKUP_PY)} "$src" "$tmp" && cat -- "$tmp"`,
     ].join("; ");
   }
 
@@ -821,11 +845,16 @@ function backupStateFile(
   });
 
   if (result.status === 2) return { outcome: "missing", unreachable: false };
-  if (result.status !== 0 || result.error || result.signal || !result.stdout) {
+  const emptySqliteBackup = spec.strategy === "sqlite_backup" && result.stdout?.length === 0;
+  if (result.status !== 0 || result.error || result.signal || !result.stdout || emptySqliteBackup) {
     const detail =
       (result.stderr?.toString() || "").trim() ||
       result.error?.message ||
-      (result.signal ? `signal ${result.signal}` : `exit ${String(result.status)}`);
+      (result.signal
+        ? `signal ${result.signal}`
+        : emptySqliteBackup
+          ? "empty output"
+          : `exit ${String(result.status)}`);
     _log(`FAILED: state file backup ${spec.path}: ${detail.substring(0, 200)}`);
     return { outcome: "failed", unreachable: isSshTransportFailure(result) };
   }
@@ -958,6 +987,7 @@ export function backupSandboxState(sandboxName: string, options: BackupOptions =
       ? { reconcileOpenClawImagePluginProvenance: true }
       : {}),
     stateDirs,
+    failedBackupDirs: [],
     stateFiles,
     dir,
     backupPath,
@@ -1146,13 +1176,42 @@ export function backupSandboxState(sandboxName: string, options: BackupOptions =
         // could create symlinks to exfiltrate config contents via backup.
         const tarCmd = `tar -cf - -C ${shellQuote(dir)} -- ${existingDirs.map(shellQuote).join(" ")}`;
         _log(`Downloading via SSH+tar: ${tarCmd}`);
-        const result = spawnSync("ssh", [...sshArgs(configFile, sandboxName), tarCmd], {
-          stdio: ["ignore", "pipe", "pipe"],
-          timeout: 120000,
-          maxBuffer: 256 * 1024 * 1024,
-        });
+        let downloadedTarDir: string | undefined;
+        let downloadedTarPath: string;
+        let downloadedTarFd: number;
+        try {
+          downloadedTarDir = mkdtempSync(path.join(os.tmpdir(), "nemoclaw-state-download-"));
+          downloadedTarPath = path.join(downloadedTarDir, "archive.tar");
+          downloadedTarFd = openSync(downloadedTarPath, "wx", 0o600);
+        } catch (error) {
+          if (downloadedTarDir) {
+            rmSync(downloadedTarDir, { recursive: true, force: true });
+          }
+          const detail = error instanceof Error ? error.message : String(error);
+          _log(`FAILED: Could not create local backup archive staging file — ${detail}`);
+          return {
+            success: false,
+            manifest,
+            backedUpDirs,
+            failedDirs: [...existingDirs],
+            backedUpFiles,
+            failedFiles: stateFiles.map((f) => f.path),
+            error: `Failed to create backup archive file: ${detail}`,
+          };
+        }
+        let result: ReturnType<typeof spawnSync>;
+        try {
+          result = spawnSync("ssh", [...sshArgs(configFile, sandboxName), tarCmd], {
+            stdio: ["ignore", downloadedTarFd, "pipe"],
+            timeout: 120000,
+            maxBuffer: 256 * 1024 * 1024,
+          });
+        } finally {
+          closeSync(downloadedTarFd);
+        }
+        const downloadedBytes = statSync(downloadedTarPath).size;
         _log(
-          `SSH+tar download: exit=${result.status}, stdout=${result.stdout ? result.stdout.length + " bytes" : "null"}, stderr=${(result.stderr?.toString() || "").substring(0, 200)}`,
+          `SSH+tar download: exit=${result.status}, stdout=${downloadedBytes} bytes, stderr=${(result.stderr?.toString() || "").substring(0, 200)}`,
         );
         if (isSshTransportFailure(result)) unreachable = true;
 
@@ -1161,20 +1220,27 @@ export function backupSandboxState(sandboxName: string, options: BackupOptions =
         // Accept exit 0, 1, or 2 when stdout has data — extract what tar produced
         // and determine per-dir success from tar's reported read errors.
         const tarExitedWithData =
-          result.stdout &&
-          result.stdout.length > 0 &&
+          downloadedBytes > 0 &&
           (result.status === 0 || result.status === 1 || result.status === 2);
 
-        if (result.status !== 0 && result.stdout && result.stdout.length > 0) {
+        if (result.status !== 0 && downloadedBytes > 0) {
           _log(
-            `tar exited ${result.status} but produced ${result.stdout.length} bytes — attempting partial extraction`,
+            `tar exited ${result.status} but produced ${downloadedBytes} bytes — attempting partial extraction`,
           );
         }
 
+        let extractResult: SafeExtractResult | null = null;
+        try {
+          if (tarExitedWithData) {
+            // SECURITY: Validate tar entries, extract safely, audit symlinks.
+            extractResult = safeTarExtract({ filePath: downloadedTarPath }, backupPath);
+          }
+        } finally {
+          rmSync(downloadedTarDir, { recursive: true, force: true });
+        }
+
         if (tarExitedWithData) {
-          // SECURITY: Validate tar entries, extract safely, audit symlinks
-          const extractResult = safeTarExtract(result.stdout, backupPath);
-          if (extractResult.success) {
+          if (extractResult?.success) {
             const extractedDirs = new Set(existingBackupDirs(backupPath, existingDirs));
             if (result.status === 0) {
               for (const d of existingDirs) {
@@ -1213,7 +1279,7 @@ export function backupSandboxState(sandboxName: string, options: BackupOptions =
                 }
               }
             }
-          } else {
+          } else if (extractResult) {
             _log(`SECURITY: tar extraction blocked: ${extractResult.error}`);
             failedDirs.push(...existingDirs);
           }
@@ -1261,6 +1327,9 @@ export function backupSandboxState(sandboxName: string, options: BackupOptions =
     );
   }
   manifest.backedUpDirs = backedUpDirs;
+  manifest.failedBackupDirs = failedDirs.filter((failedDir) =>
+    manifest.stateDirs.includes(failedDir),
+  );
 
   writeManifest(backupPath, manifest);
   manifest.backupPath = backupPath;
@@ -1414,6 +1483,21 @@ function restoreSandboxStateInternal(
       localDirs.splice(localDirs.indexOf(d), 1);
     }
   }
+  // Only manifests that distinguish failed backups from absent directories can
+  // authorize cleanup without deleting data that a failed backup did not capture.
+  // Older manifests leave this field absent, so preserve their historical restore behavior.
+  const failedBackupDirs = new Set(manifest.failedBackupDirs ?? []);
+  const localDirSet = new Set(localDirs);
+  const staleContentDirs =
+    manifest.failedBackupDirs === undefined
+      ? []
+      : manifest.stateDirs.filter(
+          (stateDir) =>
+            !targetRuntimeAuthDirs.has(stateDir) &&
+            !localDirSet.has(stateDir) &&
+            !failedBackupDirs.has(stateDir),
+        );
+  const cleanupStateDirs = [...new Set([...localDirs, ...staleContentDirs])];
   const targetStateFiles = new Map<string, AgentStateFile>();
   for (const targetFile of targetAgent.stateFiles) {
     const normalized = normalizeStateFilePath(targetFile.path);
@@ -1473,7 +1557,7 @@ function restoreSandboxStateInternal(
     freshOpenClawImagePluginInstalls = discovery.pluginInstalls;
   }
 
-  if (localDirs.length === 0 && localFiles.length === 0) {
+  if (cleanupStateDirs.length === 0 && localFiles.length === 0) {
     _log("No dirs or files to restore");
     return { success: true, restoredDirs, failedDirs, restoredFiles, failedFiles };
   }
@@ -1485,7 +1569,7 @@ function restoreSandboxStateInternal(
     return {
       success: false,
       restoredDirs,
-      failedDirs: [...localDirs],
+      failedDirs: [...cleanupStateDirs],
       restoredFiles,
       failedFiles: localFiles.map((f) => f.path),
     };
@@ -1510,7 +1594,7 @@ function restoreSandboxStateInternal(
     const pluginRestorePlan = planOpenClawPluginRestore({
       agentType: manifest.agentType,
       dir,
-      localDirs,
+      localDirs: cleanupStateDirs,
       freshImagePluginInstalls: freshOpenClawImagePluginInstalls,
       previousImagePluginInstalls: previousOpenClawImagePluginInstalls,
     });
@@ -1518,7 +1602,7 @@ function restoreSandboxStateInternal(
       return {
         success: false,
         restoredDirs,
-        failedDirs: [...localDirs],
+        failedDirs: [...cleanupStateDirs],
         restoredFiles,
         failedFiles: localFiles.map((f) => f.path),
         error:
@@ -1539,6 +1623,7 @@ function restoreSandboxStateInternal(
       );
     }
 
+    let restoreTar: Buffer | undefined;
     if (localDirs.length > 0) {
       // Upload via tar pipe
       // NC-2227-04: Removed -h flag from restore as well — no symlink following.
@@ -1556,22 +1641,26 @@ function restoreSandboxStateInternal(
         return {
           success: false,
           restoredDirs,
-          failedDirs: [...localDirs],
+          failedDirs: [...cleanupStateDirs],
           restoredFiles,
           failedFiles: localFiles.map((f) => f.path),
         };
       }
+      restoreTar = tarResult.stdout;
+    }
 
-      // Remove existing state dirs before extracting so stale files from later
-      // snapshots don't persist after restoring an earlier one. OpenClaw's
-      // image-managed extensions are preserved from the freshly built image and
-      // excluded from the restore tar; only user/non-managed extension entries
-      // are cleared and restored from the backup.
+    // Remove existing state dirs before extracting so stale files from later
+    // snapshots don't persist after restoring an earlier one. OpenClaw's
+    // image-managed extensions are preserved from the freshly built image and
+    // excluded from the restore tar; only user/non-managed extension entries
+    // are cleared and restored from the backup.
+    if (cleanupStateDirs.length > 0) {
       const rmCmd = buildRestoreCleanupCommand(
         dir,
         localDirs,
         pluginRestorePlan.preservedExtensionDirs,
         new Set(pluginRestorePlan.requiredFreshExtensionDirs),
+        staleContentDirs,
       );
       _log(`Cleaning target dirs before restore: ${rmCmd}`);
       const rmResult = spawnSync("ssh", [...sshArgs(configFile, sandboxName), rmCmd], {
@@ -1588,15 +1677,17 @@ function restoreSandboxStateInternal(
         return {
           success: false,
           restoredDirs,
-          failedDirs: [...localDirs],
+          failedDirs: [...cleanupStateDirs],
           restoredFiles,
           failedFiles: localFiles.map((f) => f.path),
         };
       }
+    }
 
+    if (restoreTar !== undefined) {
       const extractCmd = `tar --no-same-owner -xf - -C ${shellQuote(dir)}`;
       const sshResult = spawnSync("ssh", [...sshArgs(configFile, sandboxName), extractCmd], {
-        input: tarResult.stdout,
+        input: restoreTar,
         stdio: ["pipe", "pipe", "pipe"],
         timeout: 120000,
       });

@@ -61,10 +61,6 @@ const HOP_BY_HOP_HEADERS = new Set([
   "transfer-encoding",
   "upgrade",
 ]);
-function nodeEvalArg(source: string): string {
-  const encoded = Buffer.from(source, "utf8").toString("base64");
-  return `eval(Buffer.from(${JSON.stringify(encoded)}, "base64").toString("utf8"))`;
-}
 
 interface MockRequestLog {
   method: string;
@@ -413,15 +409,11 @@ console.log(JSON.stringify({
 }));
 process.exit(errors.length ? 1 : 0);
 `;
-  const result = await sandbox.exec(
-    SANDBOX_NAME,
-    ["node", "-e", nodeEvalArg(script), COMPAT_MODEL],
-    {
-      artifactName: "openclaw-config-compatible-endpoint",
-      env: commandEnv(),
-      timeoutMs: 60_000,
-    },
-  );
+  const result = await sandbox.exec(SANDBOX_NAME, ["node", "-e", script, COMPAT_MODEL], {
+    artifactName: "openclaw-config-compatible-endpoint",
+    env: commandEnv(),
+    timeoutMs: 60_000,
+  });
   expect(result.exitCode, resultText(result)).toBe(0);
 }
 
@@ -443,7 +435,7 @@ sock.setTimeout(1000, () => finish("TIMEOUT", 1));
 `;
   let last: ShellProbeResult | undefined;
   for (let attempt = 1; attempt <= 30; attempt += 1) {
-    last = await sandbox.exec(SANDBOX_NAME, ["node", "-e", nodeEvalArg(script)], {
+    last = await sandbox.exec(SANDBOX_NAME, ["node", "-e", script], {
       artifactName: `gateway-ready-compatible-endpoint-${attempt}`,
       env: commandEnv(),
       timeoutMs: 5_000,
@@ -535,7 +527,18 @@ async function assertOpenClawAgentTurn(
 
 test("messaging compatible endpoint routes Telegram-enabled OpenClaw through inference.local", {
   timeout: TEST_TIMEOUT_MS,
-}, async ({ artifacts, cleanup, host, sandbox, skip }) => {
+  meta: {
+    e2ePhases: [
+      "confirm Docker and register messaging cleanup",
+      "clear prior messaging state and start the compatible endpoint",
+      "confirm host reachability to the compatible endpoint",
+      "onboard Telegram-enabled OpenClaw",
+      "inspect the provider route and OpenClaw configuration",
+      "prove inference.local and agent traffic",
+      "record authenticated traffic and proxy-header results",
+    ],
+  },
+}, async ({ artifacts, cleanup, host, progress, sandbox, skip }) => {
   const docker = await host.command("docker", ["info"], {
     artifactName: "prereq-docker-info-messaging-compatible-endpoint",
     env: commandEnv(),
@@ -593,6 +596,7 @@ test("messaging compatible endpoint routes Telegram-enabled OpenClaw through inf
     env: cleanupEnv,
     timeoutMs: 120_000,
   });
+  progress.phase("clear prior messaging state and start the compatible endpoint");
   await cleanupMessagingState(host, SANDBOX_NAME);
 
   const compatibleMock = await startCompatibleMock(MOCK_PORT, COMPAT_MODEL, COMPATIBLE_KEY);
@@ -602,6 +606,7 @@ test("messaging compatible endpoint routes Telegram-enabled OpenClaw through inf
   });
 
   const endpointUrl = `http://host.openshell.internal:${new URL(compatibleMock.localBaseUrl).port}/v1`;
+  progress.phase("confirm host reachability to the compatible endpoint");
   const hostReachability = await host.command(
     "curl",
     [
@@ -619,10 +624,12 @@ test("messaging compatible endpoint routes Telegram-enabled OpenClaw through inf
   );
   expect(hostReachability.exitCode, resultText(hostReachability)).toBe(0);
 
+  progress.phase("onboard Telegram-enabled OpenClaw");
   const { result: onboard, runner } = await runCompatibleOnboard(host, endpointUrl);
   expect(onboard.exitCode, resultText(onboard)).toBe(0);
   expect(resultText(onboard)).toContain("Compatible endpoint responds through inference.local");
 
+  progress.phase("inspect the provider route and OpenClaw configuration");
   const provider = await host.command("openshell", ["provider", "get", "compatible-endpoint"], {
     artifactName: "openshell-provider-get-compatible-endpoint",
     env: commandEnv(),
@@ -631,10 +638,12 @@ test("messaging compatible endpoint routes Telegram-enabled OpenClaw through inf
   expect(provider.exitCode, resultText(provider)).toBe(0);
 
   await assertOpenClawConfigShape(sandbox);
+  progress.phase("prove inference.local and agent traffic");
   await assertGatewayReady(sandbox);
   await assertSandboxInference(sandbox);
   await assertOpenClawAgentTurn(sandbox, compatibleMock);
 
+  progress.phase("record authenticated traffic and proxy-header results");
   expect(
     compatibleMock.requests.some(
       (request) => request.path === "/v1/chat/completions" && request.auth === "ok",

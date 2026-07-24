@@ -10,6 +10,19 @@ import { parseArgs } from "../advisors/io.mts";
 const COORDINATION_CHECK_NAME = "E2E / PR Gate Coordination";
 const LEGACY_COORDINATION_CHECK_NAME = "E2E / PR Gate";
 const EXTERNAL_ID_PREFIX = "nemoclaw-pr-e2e:v2";
+const RETRYABLE_FAILURE_MARKER_PREFIX = "<!-- nemoclaw-pr-e2e-retry:v1:";
+const RETRYABLE_FAILURE_MARKER_SUFFIX = " -->";
+const RETRYABLE_FAILURE_REASONS = new Set([
+  "prerequisite-ci",
+  "child-cancelled",
+  "evidence-download",
+]);
+const NEVER_RETRY_FAILURE_TITLES = new Set([
+  "Authorized E2E run requires reconciliation",
+  "PR base changed",
+  "Controller stopped early",
+  "Run could not start",
+]);
 const GITHUB_ACTIONS_APP_ID = 15368;
 const USER_AGENT = "nemoclaw-pr-e2e-required";
 const SHA_PATTERN = /^[a-f0-9]{40}$/u;
@@ -133,7 +146,7 @@ function validatePullRequest(value: unknown, identity: RequiredGateIdentity): Pu
     !isObjectRecord(value.base) ||
     value.base.sha !== identity.baseSha
   ) {
-    throw new Error("PR no longer matches the exact head and base revision observed by this job");
+    throw new Error("PR is not the expected open PR with the observed PR SHA and base SHA");
   }
   return value as PullRequest;
 }
@@ -147,6 +160,49 @@ async function requireExactPullRequest(identity: RequiredGateIdentity): Promise<
     ),
     identity,
   );
+}
+
+function hasRetryableFailureMarker(check: CoordinationCheckRun): boolean {
+  if (check.status !== "completed" || check.conclusion !== "failure") return false;
+  if (NEVER_RETRY_FAILURE_TITLES.has(check.output?.title ?? "")) return false;
+  const summary = check.output?.summary;
+  if (typeof summary !== "string") return false;
+  const markerBoundary = `\n\n${RETRYABLE_FAILURE_MARKER_PREFIX}`;
+  const markerStart = summary.lastIndexOf(markerBoundary);
+  if (markerStart < 0) return false;
+  const marker = summary.slice(markerStart + 2);
+  if (!marker.endsWith(RETRYABLE_FAILURE_MARKER_SUFFIX)) return false;
+  const reason = marker.slice(
+    RETRYABLE_FAILURE_MARKER_PREFIX.length,
+    -RETRYABLE_FAILURE_MARKER_SUFFIX.length,
+  );
+  return (
+    RETRYABLE_FAILURE_REASONS.has(reason) &&
+    marker === `${RETRYABLE_FAILURE_MARKER_PREFIX}${reason}${RETRYABLE_FAILURE_MARKER_SUFFIX}`
+  );
+}
+
+function currentCoordinationCheck(
+  checks: CoordinationCheckRun[],
+): CoordinationCheckRun | undefined {
+  if (checks.length === 0) return undefined;
+  const ordered = [...checks].sort((left, right) => left.id - right.id);
+  if (new Set(ordered.map((check) => check.id)).size !== ordered.length) {
+    throw new Error("Duplicate coordination check IDs exist for one PR/base SHA pair");
+  }
+  const active = ordered.filter((check) => check.status !== "completed");
+  if (active.length > 1)
+    throw new Error("Multiple active coordination checks exist for one PR/base SHA pair");
+  if (ordered.slice(0, -1).some((check) => !hasRetryableFailureMarker(check))) {
+    throw new Error(
+      "Coordination history contains a non-retryable older check for one PR/base SHA pair",
+    );
+  }
+  const current = ordered.at(-1)!;
+  if (active[0] && active[0].id !== current.id) {
+    throw new Error("Coordination history for one PR/base SHA pair contains an older active check");
+  }
+  return current;
 }
 
 async function matchingChecks(
@@ -168,9 +224,14 @@ async function matchingChecks(
       check.external_id === externalId,
   );
   if (claimed.some((check) => check.app?.id !== GITHUB_ACTIONS_APP_ID)) {
-    throw new Error("The exact-diff coordination identity was claimed by an unexpected GitHub App");
+    throw new Error(
+      "The PR/base SHA coordination identity was claimed by an unexpected GitHub App",
+    );
   }
-  return claimed.filter((check) => check.app?.id === GITHUB_ACTIONS_APP_ID);
+  const current = currentCoordinationCheck(
+    claimed.filter((check) => check.app?.id === GITHUB_ACTIONS_APP_ID),
+  );
+  return current ? [current] : [];
 }
 
 export async function findCoordinationCheck(
@@ -178,13 +239,15 @@ export async function findCoordinationCheck(
 ): Promise<CoordinationCheckRun | undefined> {
   assertIdentity(identity);
   const current = await matchingChecks(identity, COORDINATION_CHECK_NAME);
-  if (current.length > 1) throw new Error("Multiple exact-diff coordination checks exist");
+  if (current.length > 1)
+    throw new Error("Multiple coordination checks exist for one PR/base SHA pair");
   if (current[0]) return current[0];
 
   // Migration bridge for PRs whose base-branch controller still publishes the
   // old name. Remove after this workflow is on main and open PRs resynchronize.
   const legacy = await matchingChecks(identity, LEGACY_COORDINATION_CHECK_NAME);
-  if (legacy.length > 1) throw new Error("Multiple legacy exact-diff coordination checks exist");
+  if (legacy.length > 1)
+    throw new Error("Multiple legacy coordination checks exist for one PR/base SHA pair");
   return legacy[0];
 }
 
@@ -258,7 +321,10 @@ export function classifyCoordinationCheck(
   if (check.status !== "completed") {
     return { state: "waiting", description: title, ...links };
   }
-  if (check.conclusion === "failure" && AUTHORIZATION_TITLES.has(title)) {
+  if (
+    check.conclusion === "failure" &&
+    (AUTHORIZATION_TITLES.has(title) || hasRetryableFailureMarker(check))
+  ) {
     return { state: "waiting", description: title, ...links };
   }
   if (
@@ -355,7 +421,7 @@ async function main(): Promise<void> {
     baseSha: requiredArgument(args.base, "base"),
   };
   const timeoutSeconds = parsePositiveInteger(args.timeoutSeconds, "timeout-seconds");
-  if (timeoutSeconds > 10_200) throw new Error("--timeout-seconds must not exceed 10200");
+  if (timeoutSeconds > 21_480) throw new Error("--timeout-seconds must not exceed 21480");
   const result = await waitForRequiredGate(identity, { timeoutMs: timeoutSeconds * 1000 });
   appendJobSummary();
   console.log(`E2E / PR Gate completed: ${formatRequiredGateOutcome(result)}`);

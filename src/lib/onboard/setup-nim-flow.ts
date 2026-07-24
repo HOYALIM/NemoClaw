@@ -257,6 +257,7 @@ export function createSetupNim(
     let reuseGatewayCredential = false;
     let endpointPinnedAddresses: string[] | undefined;
     let endpointTrustedPrivateCapability: TrustedPrivateEndpointCapability | undefined;
+    let vllmModelIdentity: string | undefined;
     const inferenceCapabilityCache = new OnboardInferenceCapabilityCache();
     const nvidiaFeaturedModels = deps.createNvidiaFeaturedModelSession({
       defaultModel: resolveAgentDefaultCloudModel(agent),
@@ -402,6 +403,7 @@ export function createSetupNim(
             isWindowsHostOllama,
             windowsHostOllamaSupported: windowsHostOllamaDockerRequirement.supported,
             hermesProviderAvailable,
+            preferManagedVllmDefault: gpu?.platform === "spark",
             ...recordedProviderReaders,
           });
           if (providerSelection.kind === "failure") {
@@ -615,6 +617,7 @@ export function createSetupNim(
             nimContainer,
             allowToolsIncompatible,
           } = state);
+          vllmModelIdentity = state.vllmModelIdentity;
           if (result === "retry-selection") continue selectionLoop;
           break;
         } else if (selected.key === "routed") {
@@ -641,11 +644,20 @@ export function createSetupNim(
       deps,
     );
     const selectedModel = isBackToSelection(model) ? null : model;
+    const recoveredRegistryRouteMatches =
+      recoveredRegistryRoute?.provider === provider &&
+      recoveredRegistryRoute.endpointUrl === endpointUrl;
+    const endpointSource = recoveredRegistryRouteMatches
+      ? (recoveredRegistryRoute.endpointSource ?? null)
+      : endpointPinnedAddresses || endpointTrustedPrivateCapability
+        ? "onboard"
+        : null;
     await deps.maybePromptForInferenceInputCapability(selectedModel);
     return {
       model: selectedModel,
       provider,
       endpointUrl,
+      endpointSource,
       credentialEnv,
       hermesAuthMethod,
       hermesToolGateways,
@@ -662,6 +674,7 @@ export function createSetupNim(
       ...(recoveredFromSandbox ? { recoveredFromSandbox: true } : {}),
       ...(endpointPinnedAddresses ? { endpointPinnedAddresses } : {}),
       ...(endpointTrustedPrivateCapability ? { endpointTrustedPrivateCapability } : {}),
+      ...(provider === "vllm-local" && vllmModelIdentity ? { vllmModelIdentity } : {}),
       inferenceCapabilityCache,
     };
   };

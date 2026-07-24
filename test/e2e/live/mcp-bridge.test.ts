@@ -28,6 +28,8 @@ import {
   assertHermesInspectionRejectsUnmanagedFields,
   assertHermesRemovalSurvivesGatewayRestart,
 } from "./mcp-bridge-hermes-lifecycle.ts";
+import { buildMcpBridgeExactMainEnv, buildMcpBridgeOnboardEnv } from "./mcp-bridge-onboard-env.ts";
+import { MCP_BRIDGE_PHASES } from "./mcp-bridge-phases.ts";
 import { retryAfterHermesRestartTransportFailure } from "./mcp-bridge-reliability.ts";
 import {
   buildMcpDnsRebindingProbeScript,
@@ -44,7 +46,9 @@ import {
   startFakeMcpHttpsServer,
   startPublicMcpHttpsTunnel,
 } from "./mcp-bridge-servers.ts";
+import { MCP_PROVIDER_REWRITE_PROBE_SOURCE } from "./mcp-provider-rewrite-probe.ts";
 import { assertRawOpenShellAllowedIpsRebindingDenied } from "./openshell-allowed-ips-rebinding.ts";
+import { prepareExactMainMcpProof } from "./openshell-exact-main-mcp-proof.ts";
 
 const OPENCLAW_SANDBOX_NAME = process.env.NEMOCLAW_SANDBOX_NAME ?? "e2e-mcp-bridge";
 const HERMES_SANDBOX_NAME = process.env.NEMOCLAW_MCP_HERMES_SANDBOX_NAME ?? "e2e-mcp-hermes";
@@ -115,7 +119,12 @@ async function onboardAgent(
   host: HostCliClient,
   cleanup: CleanupRegistry,
   endpointUrl: string,
-  options: { agent: McpAgent; sandboxName: string; artifactName: string },
+  options: {
+    agent: McpAgent;
+    sandboxName: string;
+    artifactName: string;
+    envOverlay?: NodeJS.ProcessEnv;
+  },
 ): Promise<void> {
   cleanup.trackSandbox(host, options.sandboxName, {
     artifactName: "cleanup-destroy-sandbox",
@@ -129,19 +138,14 @@ async function onboardAgent(
     ["onboard", "--non-interactive", "--yes", "--yes-i-accept-third-party-software"],
     {
       artifactName: options.artifactName,
-      env: {
-        ...buildAvailabilityProbeEnv(),
-        COMPATIBLE_API_KEY: COMPATIBLE_KEY,
-        NVIDIA_INFERENCE_API_KEY: COMPATIBLE_KEY,
-        NEMOCLAW_AGENT: options.agent,
-        NEMOCLAW_ENDPOINT_URL: endpointUrl,
-        NEMOCLAW_MODEL: COMPATIBLE_MODEL,
-        NEMOCLAW_COMPAT_MODEL: COMPATIBLE_MODEL,
-        NEMOCLAW_PREFERRED_API: "openai-completions",
-        NEMOCLAW_PROVIDER: "custom",
-        NEMOCLAW_SANDBOX_NAME: options.sandboxName,
-        NEMOCLAW_RECREATE_SANDBOX: "1",
-      },
+      env: buildMcpBridgeOnboardEnv({
+        agent: options.agent,
+        compatibleKey: COMPATIBLE_KEY,
+        compatibleModel: COMPATIBLE_MODEL,
+        endpointUrl,
+        envOverlay: options.envOverlay,
+        sandboxName: options.sandboxName,
+      }),
       redactionValues: [COMPATIBLE_KEY],
       timeoutMs: 20 * 60_000,
     },
@@ -441,11 +445,8 @@ async function assertConcurrentAddSerialized(
         artifactName: `${options.artifactPrefix}-mcp-concurrent-add-${attempt}`,
         env,
         redactionValues: [HOST_SECRET],
-        // Hermes may need one host-authenticated managed restart (210s), a
-        // fresh helper-readiness window (90s), and its acknowledged config
-        // reload (300s). Keep both concurrent clients alive through that
-        // bounded recovery; the loser then acquires the lifecycle lock and
-        // rejects the committed duplicate.
+        // Keep both clients alive through Hermes' bounded restart and config
+        // reload; the loser then acquires the lock and rejects the duplicate.
         timeoutMs: MCP_MUTATION_TIMEOUT_MS[options.expectedAdapter],
       }),
     ),
@@ -824,11 +825,12 @@ async function rebuildWithoutMcpHostSecret(
   host: HostCliClient,
   sandboxName: string,
   artifactPrefix: string,
+  envOverlay: NodeJS.ProcessEnv = {},
 ): Promise<void> {
   const rebuild = await host.nemoclaw([sandboxName, "rebuild", "--yes"], {
     artifactName: `${artifactPrefix}-rebuild-with-provider-backed-mcp`,
     env: {
-      ...buildAvailabilityProbeEnv(),
+      ...buildMcpBridgeExactMainEnv({ envOverlay }),
       COMPATIBLE_API_KEY: COMPATIBLE_KEY,
       NVIDIA_INFERENCE_API_KEY: COMPATIBLE_KEY,
     },
@@ -838,7 +840,10 @@ async function rebuildWithoutMcpHostSecret(
   expectExitZero(rebuild, `${artifactPrefix} rebuild without MCP host secret`);
 }
 
-test("mcp-bridge", { timeout: 45 * 60_000 }, async ({ artifacts, cleanup, host, sandbox }) => {
+test("mcp-bridge", {
+  timeout: 45 * 60_000,
+  meta: { e2ePhases: MCP_BRIDGE_PHASES.openclaw },
+}, async ({ artifacts, cleanup, host, progress, sandbox }) => {
   await artifacts.writeJson("scenario.json", {
     id: "mcp-bridge",
     sandbox: OPENCLAW_SANDBOX_NAME,
@@ -854,6 +859,7 @@ test("mcp-bridge", { timeout: 45 * 60_000 }, async ({ artifacts, cleanup, host, 
   const fakeMcpTunnel = await startPublicMcpHttpsTunnel({
     cleanup,
     label: "fake MCP HTTPS server",
+    progress,
     server: fakeMcp,
   });
   const decoyMcp = await startFakeMcpHttpsServer({ secret: HOST_SECRET });
@@ -861,12 +867,14 @@ test("mcp-bridge", { timeout: 45 * 60_000 }, async ({ artifacts, cleanup, host, 
   const decoyMcpTunnel = await startPublicMcpHttpsTunnel({
     cleanup,
     label: "unconfigured decoy MCP HTTPS server",
+    progress,
     server: decoyMcp,
   });
   const hostAddress = await hostAddressForSandbox(host);
   const endpointUrl = `http://${hostAddress}:${compatibleMock.port}/v1`;
   const mcpUrl = fakeMcpTunnel.url;
   const decoyMcpUrl = decoyMcpTunnel.url;
+  progress.phase("onboard OpenClaw and prove base policy");
   await onboardAgent(host, cleanup, endpointUrl, {
     agent: "openclaw",
     sandboxName: OPENCLAW_SANDBOX_NAME,
@@ -929,6 +937,7 @@ test("mcp-bridge", { timeout: 45 * 60_000 }, async ({ artifacts, cleanup, host, 
     "mcp-negative-missing-secret",
   );
 
+  progress.phase("configure bridge and enforce endpoint boundaries");
   await assertConcurrentAddSerialized(host, cleanup, {
     sandboxName: OPENCLAW_SANDBOX_NAME,
     mcpUrl,
@@ -978,43 +987,8 @@ test("mcp-bridge", { timeout: 45 * 60_000 }, async ({ artifacts, cleanup, host, 
     true,
   );
 
-  const mcpCallScript = `const https = require("node:https");
-const url = new URL(process.argv[2]);
-const method = process.argv[3];
-const expectation = process.argv[4];
-const credentialKey = process.argv[5] || "FAKE_MCP_SECRET";
-const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method });
-const req = https.request({
-  hostname: url.hostname,
-  port: url.port,
-  path: url.pathname,
-  method: "POST",
-  headers: {
-    "content-type": "application/json",
-    "content-length": Buffer.byteLength(body),
-    "authorization": "Bearer openshell:resolve:env:" + credentialKey
-  }
-}, (res) => {
-  let data = "";
-  res.setEncoding("utf8");
-  res.on("data", (chunk) => { data += chunk; });
-  res.on("end", () => {
-    console.log(JSON.stringify({ status: res.statusCode, body: data }));
-    const allowed = res.statusCode === 200 && data.includes("fake_echo");
-    const denied = res.statusCode === 403;
-    process.exit(expectation === "allow" ? (allowed ? 0 : 1) : (denied ? 0 : 1));
-  });
-});
-req.on("error", (error) => {
-  console.error(error.message);
-  const strictDenied = expectation === "deny-strict" && /HTTP\\/1\\.[01] 403 Forbidden/.test(error.message);
-  strictDenied && console.log(JSON.stringify({ status: 403, error: error.message }));
-  process.exit(expectation === "deny" || strictDenied ? 0 : 1);
-});
-req.end(body);
-`;
+  const mcpCallScript = MCP_PROVIDER_REWRITE_PROBE_SOURCE;
   await artifacts.writeText("mcp-provider-rewrite-proof.cjs", mcpCallScript);
-  const mcpCallScriptB64 = Buffer.from(mcpCallScript, "utf8").toString("base64");
   const runNodeMcpProbe = async (
     targetUrl: string,
     method: string,
@@ -1027,8 +1001,9 @@ req.end(body);
       trustedSandboxShellScript(
         [
           "set -eu",
-          `printf '%s' ${JSON.stringify(mcpCallScriptB64)} | base64 -d > /tmp/nemoclaw-mcp-provider-rewrite-proof.cjs`,
-          `nemoclaw-start node /tmp/nemoclaw-mcp-provider-rewrite-proof.cjs ${JSON.stringify(targetUrl)} ${JSON.stringify(method)} ${expectation} ${JSON.stringify(credentialKey)}`,
+          `nemoclaw-start node - ${shellQuote(targetUrl)} ${shellQuote(method)} ${shellQuote(expectation)} ${shellQuote(credentialKey)} <<'NEMOCLAW_MCP_PROVIDER_REWRITE_PROBE'`,
+          mcpCallScript,
+          "NEMOCLAW_MCP_PROVIDER_REWRITE_PROBE",
         ].join("\n"),
       ),
       {
@@ -1143,6 +1118,7 @@ req.end(body);
     "/sandbox/.mcp.json",
   ]);
 
+  progress.phase("exercise lifecycle and confirm OpenClaw bridge removal");
   const openClawResult = `MCP_AUTH_REWRITE_OK::${TOOL_CHALLENGE}`;
   await assertRealAdapterToolCall(sandbox, fakeMcp, {
     agent: "openclaw",
@@ -1207,8 +1183,11 @@ req.end(body);
 
 mcpBridgeShardTest("hermes")(
   "mcp-bridge-hermes",
-  { timeout: 45 * 60_000 },
-  async ({ artifacts, cleanup, host, sandbox }) => {
+  {
+    timeout: 45 * 60_000,
+    meta: { e2ePhases: MCP_BRIDGE_PHASES.hermes },
+  },
+  async ({ artifacts, cleanup, host, progress, sandbox }) => {
     await artifacts.writeJson("scenario.json", {
       id: "mcp-bridge-hermes",
       sandbox: HERMES_SANDBOX_NAME,
@@ -1233,11 +1212,13 @@ mcpBridgeShardTest("hermes")(
     const fakeMcpTunnel = await startPublicMcpHttpsTunnel({
       cleanup,
       label: "fake Hermes MCP HTTPS server",
+      progress,
       server: fakeMcp,
     });
     const hostAddress = await hostAddressForSandbox(host);
     const endpointUrl = `http://${hostAddress}:${compatibleMock.port}/v1`;
     const mcpUrl = fakeMcpTunnel.url;
+    progress.phase("onboard the Hermes MCP sandbox");
     await onboardAgent(host, cleanup, endpointUrl, {
       agent: "hermes",
       sandboxName: HERMES_SANDBOX_NAME,
@@ -1247,6 +1228,7 @@ mcpBridgeShardTest("hermes")(
       cleanupMcpBridge(host, HERMES_SANDBOX_NAME, SERVER_NAME, "hermes-config"),
     );
 
+    progress.phase("configure and inspect the Hermes MCP bridge");
     await assertConcurrentAddSerialized(host, cleanup, {
       sandboxName: HERMES_SANDBOX_NAME,
       mcpUrl,
@@ -1281,6 +1263,7 @@ mcpBridgeShardTest("hermes")(
       sandboxName: HERMES_SANDBOX_NAME,
       secretPaths: ["/sandbox/.hermes"],
     });
+    progress.phase("exercise lifecycle and confirm Hermes bridge removal");
     await assertRealAdapterToolCall(sandbox, fakeMcp, {
       agent: "hermes",
       sandboxName: HERMES_SANDBOX_NAME,
@@ -1365,8 +1348,11 @@ mcpBridgeShardTest("hermes")(
 
 mcpBridgeShardTest("deepagents")(
   "mcp-bridge-deepagents",
-  { timeout: 45 * 60_000 },
-  async ({ artifacts, cleanup, host, sandbox }) => {
+  {
+    timeout: 45 * 60_000,
+    meta: { e2ePhases: MCP_BRIDGE_PHASES.deepagents },
+  },
+  async ({ artifacts, cleanup, host, lifecycle, progress, sandbox }) => {
     await artifacts.writeJson("scenario.json", {
       id: "mcp-bridge-deepagents",
       sandbox: DEEPAGENTS_SANDBOX_NAME,
@@ -1392,20 +1378,30 @@ mcpBridgeShardTest("deepagents")(
     const fakeMcpTunnel = await startPublicMcpHttpsTunnel({
       cleanup,
       label: "fake Deep Agents MCP HTTPS server",
+      progress,
       server: fakeMcp,
     });
     const hostAddress = await hostAddressForSandbox(host);
     const endpointUrl = `http://${hostAddress}:${compatibleMock.port}/v1`;
     const mcpUrl = fakeMcpTunnel.url;
+    const exactMainProof = prepareExactMainMcpProof(
+      { artifacts, cleanup, host, lifecycle, sandbox },
+      DEEPAGENTS_SANDBOX_NAME,
+      mcpUrl,
+    );
+    progress.phase("onboard the Deep Agents MCP sandbox");
     await onboardAgent(host, cleanup, endpointUrl, {
       agent: "langchain-deepagents-code",
       sandboxName: DEEPAGENTS_SANDBOX_NAME,
       artifactName: "onboard-deepagents-mcp-bridge",
+      envOverlay: exactMainProof.envOverlay,
     });
+    await exactMainProof.afterOnboard();
     cleanup.add("remove Deep Agents MCP bridge", () =>
       cleanupMcpBridge(host, DEEPAGENTS_SANDBOX_NAME, SERVER_NAME, "deepagents-config"),
     );
 
+    progress.phase("configure and inspect the Deep Agents MCP bridge");
     await assertConcurrentAddSerialized(host, cleanup, {
       sandboxName: DEEPAGENTS_SANDBOX_NAME,
       mcpUrl,
@@ -1433,12 +1429,14 @@ mcpBridgeShardTest("deepagents")(
       sandboxName: DEEPAGENTS_SANDBOX_NAME,
       secretPaths: ["/sandbox/.deepagents"],
     });
+    progress.phase("exercise lifecycle and confirm Deep Agents bridge removal");
     await assertRealAdapterToolCall(sandbox, fakeMcp, {
       agent: "langchain-deepagents-code",
       sandboxName: DEEPAGENTS_SANDBOX_NAME,
       resultToken: deepAgentsResult,
       artifactName: "deepagents-real-mcp-tool-call-initial",
     });
+    await exactMainProof.assertLogPrivacy([TOOL_CHALLENGE, deepAgentsResult], "fake_echo");
     await restartBridgeWithoutHostSecret(host, DEEPAGENTS_SANDBOX_NAME, "deepagents");
     await assertRealAdapterToolCall(sandbox, fakeMcp, {
       agent: "langchain-deepagents-code",
@@ -1462,7 +1460,13 @@ mcpBridgeShardTest("deepagents")(
       [HOST_SECRET, ROTATED_HOST_SECRET],
       "deepagents-assert-secrets-absent-after-rotation",
     );
-    await rebuildWithoutMcpHostSecret(host, DEEPAGENTS_SANDBOX_NAME, "deepagents");
+    await rebuildWithoutMcpHostSecret(
+      host,
+      DEEPAGENTS_SANDBOX_NAME,
+      "deepagents",
+      exactMainProof.envOverlay,
+    );
+    await exactMainProof.afterRebuild();
     await assertDeepAgentsConfig(sandbox, DEEPAGENTS_SANDBOX_NAME, mcpUrl);
     await assertSecretAbsentFromSandbox(
       sandbox,

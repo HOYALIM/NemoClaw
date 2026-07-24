@@ -13,7 +13,8 @@ I do not know how to use a terminal.
 
 - Ask exactly one question at a time.
 - Use clickable choices when supported; otherwise show one short numbered list and wait.
-- Start by asking: "What computer are you using?" Choices: macOS, Windows, Linux.
+- Detect the operating system and whether it is WSL using read-only checks.
+- Ask which computer I am using only if the environment cannot be determined reliably.
 - Next ask which agent I want: OpenClaw, Hermes, or LangChain Deep Agents Code.
 - Never ask me to run commands myself, except the one workstation-side `ssh -N -L` command needed to open a remote credential form securely.
 - Explain each command in plain language, ask permission, then run it for me.
@@ -39,15 +40,17 @@ Choices:
 2. Hermes.
 3. LangChain Deep Agents Code.
 
-Use `NEMOCLAW_AGENT=hermes` or `nemohermes onboard` for Hermes.
-Use `NEMOCLAW_AGENT=langchain-deepagents-code` or `nemo-deepagents onboard` for Deep Agents.
+Set `NEMOCLAW_AGENT=openclaw` for OpenClaw.
+Set `NEMOCLAW_AGENT=hermes` for Hermes, or use `nemohermes onboard`.
+Set `NEMOCLAW_AGENT=langchain-deepagents-code` for Deep Agents, or use `nemo-deepagents onboard`.
 
 ## Hardware and Readiness
 
 - On Linux, ask permission to run a read-only readiness check before provider selection.
 - Check distribution, architecture, product and firmware identity, GPU and memory, NVIDIA driver, Container Toolkit, Docker, Node.js, disk space, existing NemoClaw, Ollama, vLLM, relevant ports, and administrator access.
 - Classify the computer as DGX Spark, DGX Station, NVIDIA GB300, another NVIDIA computer, ordinary macOS/Linux, or unknown.
-- Do not identify DGX Spark or DGX Station from the GPU name alone; combine product, firmware, architecture, and GPU evidence.
+- Do not identify DGX Spark from the GPU name alone; combine product, firmware, architecture, and GPU evidence.
+- Classify a system as DGX Station when its firmware identifies a Station GB300 platform, or when its exact OEM model is documented by NVIDIA or the manufacturer as based on DGX Station architecture.
 - A confirmed NVIDIA GB300 can independently qualify for expanded local-runtime choices.
 - If uncertain, explain that and let NemoClaw's official preflight make the final platform decision.
 
@@ -62,53 +65,30 @@ Use `NEMOCLAW_AGENT=langchain-deepagents-code` or `nemo-deepagents onboard` for 
 - Offer a user-local alternative only when official documentation supports it for that exact operation.
 - Do not silently use user-local Ollama for a system Ollama upgrade when the old system service would remain active.
 
-## DGX Express Install
+## Execution Sandbox
 
-If DGX Spark or DGX Station is detected, ask: "Do you want the recommended Express Install?"
-Choices:
+- If the coding agent's execution sandbox blocks a Docker command, use its command-scoped approval flow, if available.
+- Request permission to rerun only that exact command outside the sandbox.
+- Before requesting approval, explain that Docker daemon access can modify containers, images, and host files.
+- Do not change Docker socket permissions or request broad host access only to bypass the execution sandbox.
+- If the user or managed policy denies approval, stop before the command.
+- Explain that `NEMOCLAW_NON_INTERACTIVE=1` removes NemoClaw prompts.
+- Explain that `NEMOCLAW_NON_INTERACTIVE=1` does not bypass execution-sandbox permissions.
 
-1. Yes, use the platform's Express model and required Balanced policy.
-2. No, let me choose the runtime and model.
+## Platform-Specific Instructions
 
-If DGX Spark Express is selected:
+After the readiness check, load exactly one matching instruction asset before provider selection:
 
-- Use managed vLLM and set `NEMOCLAW_PROVIDER=install-vllm`.
-- Leave `NEMOCLAW_VLLM_MODEL` unset so the installed maintained release selects its current Spark Express model.
-- Explain container and model download sizes before asking permission.
-- Report the model selected by the installed release.
+- Confirmed DGX Spark: [DGX Spark Express instructions](https://raw.githubusercontent.com/NVIDIA/NemoClaw/ebf29b024c7a24e69ab8386b68e426d31a4c6821/docs/resources/prompt-assets/dgx-spark.md).
+- Confirmed DGX Station: [DGX Station installation instructions](https://raw.githubusercontent.com/NVIDIA/NemoClaw/ebf29b024c7a24e69ab8386b68e426d31a4c6821/docs/resources/prompt-assets/dgx-station.md).
+- Officially detected Windows WSL: [Windows WSL Express instructions](https://raw.githubusercontent.com/NVIDIA/NemoClaw/ebf29b024c7a24e69ab8386b68e426d31a4c6821/docs/resources/prompt-assets/windows-wsl.md).
 
-If DGX Station Express is selected:
-
-- Use managed vLLM.
-- Explicitly select `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4`.
-- Do not leave the model unset; the ordinary managed-vLLM default can select DeepSeek and would not reproduce Express.
-- Set `NEMOCLAW_PROVIDER=install-vllm`.
-- Set `NEMOCLAW_VLLM_MODEL=nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4`.
-- Disclose that the model download is approximately 352 GB, in addition to the vLLM container and temporary download space.
-- Verify the model-cache filesystem and Docker storage have sufficient capacity.
-- Warn that DGX Station managed deployment has deferred end-to-end physical-hardware validation.
-- Describe it as an evaluation path, not a validated production deployment.
-- Explain that startup may fail despite passing initial checks.
-- Ask separately for approval of the approximately 352 GB download.
-
-For both Express paths:
-
-- Balanced policy is required for Express; set `NEMOCLAW_POLICY_TIER=balanced`, `NEMOCLAW_NON_INTERACTIVE=1`, and the selected `NEMOCLAW_AGENT`.
-- Set `NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1` only after explaining the notice and receiving approval.
-- Set `NEMOCLAW_YES=1` only after both the separate download approval and final install approval.
-- Set `NEMOCLAW_NON_INTERACTIVE_SUDO_MODE=prompt` only when required and a secure sudo prompt is available.
-- Ask separately for sandbox name, web search, messaging when the selected agent supports it, download approval, and final install approval.
-
-## Windows WSL Express Install
-
-If official detection identifies Windows WSL, offer the maintained Windows Express path before the normal provider menu.
-Explain that it uses Windows-host Ollama through Docker Desktop WSL integration.
-If selected, set `NEMOCLAW_PROVIDER=install-windows-ollama`, collect the same separate approvals, and let the installed release choose its maintained Ollama model.
-Do not start a second Ollama service on the same port.
+Read the matching raw Markdown file completely and follow it before continuing.
+Do not load a platform asset for any other computer.
 
 ## Runtime and Provider Selection
 
-If Express is declined on DGX Spark, DGX Station, or GB300, ask: "Which inference runtime or provider would you like?"
+If no platform asset applies, or its offered install path is declined, ask: "Which inference runtime or provider would you like?"
 Choices:
 
 1. Existing vLLM, only when a ready server is detected on `localhost:8000`.
@@ -133,6 +113,7 @@ On ordinary supported macOS or Linux:
 - Do not hide Ollama merely because the computer is not DGX or GB300.
 - Omit managed vLLM unless current official support permits it for the detected hardware.
 
+When a platform asset applies, follow its local-runtime eligibility and model instructions.
 On other platforms, show every provider supported by the selected agent and platform.
 Renumber choices after filtering and do not hide hosted providers behind another menu.
 Ask required model, endpoint, credential, and download questions one at a time.
@@ -141,7 +122,6 @@ Ask required model, endpoint, credential, and download questions one at a time.
 
 - Fetch current model choices from the selected agent's official Markdown documentation.
 - The selected maintained NemoClaw release is authoritative for supported slugs and arguments.
-- Managed-vLLM examples include `qwen3.6-27b`, `qwen3.6-35b-a3b-nvfp4`, `nemotron-3-nano-4b`, `deepseek-v4-flash`, and gated `deepseek-r1-distill-70b`.
 - For Ollama, ask permission to inspect installed models and offer NemoClaw's memory-aware recommendation first.
 - Current Ollama starter examples include `qwen3.6:35b`, `nemotron-3-nano:30b`, and `qwen3.5:9b`.
 - Explain download size and storage requirements, then ask separately for permission.
@@ -150,10 +130,14 @@ Ask required model, endpoint, credential, and download questions one at a time.
 ## Avoid Interactive Menus
 
 - Collect every choice before running the installer.
-- Ask one question at a time for model, endpoint, sandbox name, web search, messaging when the selected agent supports it, policy when Express is not selected, credentials, administrator access, and downloads.
+- Ask one question at a time for model, endpoint, sandbox name, web search, messaging when the selected agent supports it, policy when no platform-asset install path is selected, credentials, administrator access, and downloads.
 - Use non-interactive environment variables whenever supported.
+- For installation outside an accepted platform-asset path, set `NEMOCLAW_AGENT` and `NEMOCLAW_PROVIDER` from my selections.
+- Use the maintained release unless I request a specific version.
+- For a specific version, clear any inherited `NEMOCLAW_INSTALL_REF`, then set `NEMOCLAW_INSTALL_TAG=vX.Y.Z` to its versioned release tag.
 - Never leave a command waiting at `Choose [1]:`.
 - If a choice cannot be supplied non-interactively, stop before starting and explain the supported alternative.
+- The DGX Station asset is the exception for the official third-party-software notice and Express confirmation. Keep those installer prompts visible, wait for the user's response, and do not pre-answer them.
 
 ## Handle Tokens Securely and Visually
 
@@ -200,8 +184,7 @@ Use this provider mapping for non-interactive setup:
 - Anthropic-compatible: `NEMOCLAW_PROVIDER=anthropicCompatible`, endpoint, model, `COMPATIBLE_ANTHROPIC_API_KEY`.
 - Ollama: `NEMOCLAW_PROVIDER=ollama`, optional `NEMOCLAW_MODEL`.
 - Existing vLLM: `NEMOCLAW_PROVIDER=vllm`.
-- Managed vLLM: `NEMOCLAW_PROVIDER=install-vllm`; leave `NEMOCLAW_VLLM_MODEL` unset for DGX Spark Express, set it to `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4` for DGX Station Express, or use an approved optional override for non-Express setup.
-- Windows WSL Express: `NEMOCLAW_PROVIDER=install-windows-ollama`.
+- Managed vLLM: `NEMOCLAW_PROVIDER=install-vllm`; use an approved optional model override only when the selected platform supports it.
 
 Do not offer Hermes Provider for OpenClaw or Deep Agents.
 
@@ -247,11 +230,13 @@ Use `channels add` and rebuild only for channels omitted from initial onboarding
 
 ## Policy, Approval, and Verification
 
-- For Express, state that Balanced policy is required, keep `NEMOCLAW_POLICY_TIER=balanced`, and skip the policy-tier question.
-- For non-Express installation, ask for Balanced, Restricted, or Open policy.
+- If a loaded platform asset selects its approved install path, follow its policy requirement and skip the policy-tier question.
+- For installation outside an accepted platform-asset path, ask for Balanced, Restricted, or Open policy.
 - Explain that messaging and web-search selections add required endpoints.
-- Before installation, summarize platform, administrator access, agent, Express choice, provider, exact model, validation warning, downloads, storage, sandbox, web search, messaging, policy, credential names without their values, and system changes.
-- Ask for final permission.
+- Before installation outside an accepted platform-asset path, summarize platform, administrator access, agent, provider, exact model, validation warning, downloads, storage, sandbox, web search, messaging, policy, credential names without their values, and system changes.
+- Ask for final permission before installation outside an accepted platform-asset path.
+- When a platform asset delegates consent to the official installer, let the installer present its notice and final Express confirmation instead of pre-accepting them.
+- For other accepted platform-asset install paths, treat the asset's confirmation as final permission and do not ask again.
 - Set `NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1` and `NEMOCLAW_YES=1` only after their approvals.
 - Keep credentials in the approved environment and never display them.
 - Verify the command and version, sandbox status, provider, model, `inference.local`, GPU access when applicable, messaging bridges when configured, and dashboard route when available.

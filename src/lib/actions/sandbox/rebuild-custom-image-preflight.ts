@@ -12,7 +12,12 @@ import { stageCreateSandboxBuildContext } from "../../onboard/build-context-stag
 import { prepareSandboxDockerfilePatch } from "../../onboard/sandbox-dockerfile-patch-flow";
 import type { SandboxGpuConfig } from "../../onboard/sandbox-gpu-mode";
 import { ROOT } from "../../runner";
-import { OPENCLAW_SANDBOX_BASE_IMAGE, SANDBOX_BASE_TAG } from "../../sandbox-base-image";
+import {
+  formatBuildFailureDiagnostics,
+  OPENCLAW_SANDBOX_BASE_IMAGE,
+  SANDBOX_BASE_TAG,
+  type SandboxBaseImageResolutionMetadata,
+} from "../../sandbox-base-image";
 import type { ToolDisclosure } from "../../tool-disclosure";
 import {
   createBuildContextVerifier,
@@ -33,6 +38,7 @@ type PreflightInput = {
   sandboxGpuConfig: SandboxGpuConfig;
   gatewayPort: number;
   chatUiUrl: string;
+  preResolvedBaseImageMetadata?: SandboxBaseImageResolutionMetadata | null;
 };
 
 type PreflightDeps = {
@@ -53,11 +59,15 @@ export type RebuildImagePreflightResult =
   | { ok: true; imageTag: string; prepared: PreparedRebuildImage }
   | { ok: false; detail: string };
 
-function resultDetail(result: { stderr?: unknown; stdout?: unknown; status?: unknown }): string {
+function resultDetail(result: {
+  error?: unknown;
+  stderr?: unknown;
+  stdout?: unknown;
+  status?: unknown;
+}): string {
   return (
-    [result.stderr, result.stdout]
-      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-      .join("; ") || `docker build exited with status ${String(result.status ?? "unknown")}`
+    formatBuildFailureDiagnostics(result) ||
+    `docker build exited with status ${String(result.status ?? "unknown")}`
   );
 }
 
@@ -107,6 +117,7 @@ export async function preflightRebuildImage(
       toolDisclosure: input.toolDisclosure,
       hermesToolGateways: input.hermesToolGateways,
       sandboxGpuConfig: input.sandboxGpuConfig,
+      preResolvedBaseImageMetadata: input.preResolvedBaseImageMetadata ?? null,
       gatewayPort: input.gatewayPort,
       log: () => {},
       warn: () => {},

@@ -183,17 +183,6 @@ function parseProbeJson(output: string): CronPreflightProbeJson | undefined {
   return JSON.parse(line) as CronPreflightProbeJson;
 }
 
-function probeShell(): string {
-  const encoded = Buffer.from(PROBE_SOURCE, "utf8").toString("base64");
-  return (
-    [
-      ". /tmp/nemoclaw-proxy-env.sh",
-      '__probe="$(mktemp /tmp/nemoclaw-preflight-probe.XXXXXX.cjs)"',
-      `printf %s '${encoded}' | base64 -d > "$__probe"`,
-    ].join(" && ") + '; node "$__probe"; __rc=$?; rm -f "$__probe"; exit "$__rc"'
-  );
-}
-
 async function preCleanCronSandbox(sandbox: SandboxClient): Promise<void> {
   await preCleanBestEffort(() =>
     sandbox.cleanupSandbox(SANDBOX_NAME, {
@@ -206,7 +195,15 @@ async function preCleanCronSandbox(sandbox: SandboxClient): Promise<void> {
 
 test("cron preflight reaches managed inference.local provider without EAI_AGAIN", {
   timeout: LIVE_TIMEOUT_MS,
-}, async ({ artifacts, cleanup, host, sandbox, secrets, skip }) => {
+  meta: {
+    e2ePhases: [
+      "check cron preflight prerequisites",
+      "install hosted-inference OpenClaw sandbox",
+      "run in-sandbox cron provider preflight",
+      "validate managed route availability",
+    ],
+  },
+}, async ({ artifacts, cleanup, host, progress, sandbox, secrets, skip }) => {
   const hosted = requireHostedInferenceConfig(secrets, process.env, { model: MODEL });
   const apiKey = hosted.apiKey;
 
@@ -259,6 +256,7 @@ test("cron preflight reaches managed inference.local provider without EAI_AGAIN"
   );
   await preCleanCronSandbox(sandbox);
 
+  progress.phase("install hosted-inference OpenClaw sandbox");
   let install: ShellProbeResult | undefined;
   for (let attempt = 1; attempt <= INSTALL_ATTEMPTS; attempt += 1) {
     install = await host.command(
@@ -285,7 +283,8 @@ test("cron preflight reaches managed inference.local provider without EAI_AGAIN"
   expect(install, "install command must run").toBeDefined();
   expect(install?.exitCode, resultText(install as ShellProbeResult)).toBe(0);
 
-  const probe = await host.nemoclaw([SANDBOX_NAME, "exec", "--", "sh", "-c", probeShell()], {
+  progress.phase("run in-sandbox cron provider preflight");
+  const probe = await host.nemoclaw([SANDBOX_NAME, "exec", "--", "node", "-e", PROBE_SOURCE], {
     artifactName: "phase-2-cron-preflight-probe",
     env: commandEnv(hosted.env),
     redactionValues: [apiKey],
@@ -294,6 +293,7 @@ test("cron preflight reaches managed inference.local provider without EAI_AGAIN"
   const output = resultText(probe);
   await artifacts.writeText("cron-preflight-probe-output.txt", output);
 
+  progress.phase("validate managed route availability");
   const parsed = parseProbeJson(output);
   expect(parsed, output).toBeDefined();
   const reason = typeof parsed?.result?.reason === "string" ? parsed.result.reason : "";

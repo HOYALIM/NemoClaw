@@ -16,13 +16,15 @@ import {
 } from "../../../tools/e2e/workflow-boundary.mts";
 import {
   currentGatewayUpgradeInstallerArgs,
+  currentNemoclawUpgradeRef,
+  expectedLegacyRegistryMetadata,
   oldGatewayUpgradeInstallerArgs,
   upgradeGatewayCleanupScript,
   validateLegacyGatewayUpgradeFixture,
 } from "../live/openshell-gateway-upgrade-helpers.ts";
 
 describe("OpenShell gateway upgrade workflow boundary", () => {
-  it("pins the v0.0.55 x86_64 and arm64 fixtures to the canonical live test (#6114)", () => {
+  it("pins architecture and immediate-predecessor fixtures to the canonical live test (#6114)", () => {
     const workflow = readOpenShellGatewayUpgradeWorkflow();
     expect(validateOpenShellGatewayUpgradeWorkflow(workflow)).toEqual([]);
     expect(validateE2eWorkflowBoundary()).toEqual([]);
@@ -32,10 +34,16 @@ describe("OpenShell gateway upgrade workflow boundary", () => {
     ];
     job["runs-on"] = "ubuntu-latest";
     const strategy = job.strategy as Record<string, Record<string, unknown>>;
-    const legacy = strategy.matrix.legacy as Array<Record<string, unknown>>;
-    legacy.find((fixture) => fixture.id === "v0.0.55-x86_64")!.sandbox_base_image_ref =
+    const fixtures = strategy.matrix.include as Array<Record<string, unknown>>;
+    fixtures.find((fixture) => fixture.id === "v0.0.55-x86_64")!.sandbox_base_image_ref =
       "ghcr.io/nvidia/nemoclaw/sandbox-base@sha256:104151ffadc2ff0b6c815e3c95c2783ced61aee0d0f83fc327cc02be9b7e14e6";
-    legacy.find((fixture) => fixture.id === "v0.0.55-aarch64")!.runner = "ubuntu-latest";
+    fixtures.find((fixture) => fixture.id === "v0.0.55-aarch64")!.runner = "ubuntu-latest";
+    fixtures.find((fixture) => fixture.id === "v0.0.74-x86_64")!.openclaw_version = "latest";
+    fixtures.find((fixture) => fixture.id === "v0.0.89-x86_64")!.openclaw_state_upgrade = "0";
+    const env = job.env as Record<string, unknown>;
+    env.NEMOCLAW_E2E_SHARD = "default";
+    env.NEMOCLAW_CURRENT_OPENCLAW_VERSION = "latest";
+    env.NEMOCLAW_OPENCLAW_STATE_UPGRADE_PROOF = "0";
     const run = (job.steps as Array<Record<string, unknown>>).find(
       (step) => step.name === "Run OpenShell gateway upgrade live Vitest test",
     )!;
@@ -43,8 +51,13 @@ describe("OpenShell gateway upgrade workflow boundary", () => {
 
     expect(validateE2eWorkflow(workflow)).toEqual(
       expect.arrayContaining([
-        "openshell-gateway-upgrade must run on ${{ matrix.legacy.runner }}",
+        "openshell-gateway-upgrade must run on ${{ matrix.runner }}",
         "openshell-gateway-upgrade v0.0.55 matrix must pin x86_64 and arm64 upgrade fixtures",
+        "openshell-gateway-upgrade matrix must pin the immediate v0.0.74 x86_64 upgrade fixture",
+        "openshell-gateway-upgrade matrix must pin the v0.0.89 OpenClaw state-upgrade fixture",
+        "openshell-gateway-upgrade must publish one risk-signal shard per legacy fixture",
+        "openshell-gateway-upgrade must bind the current OpenClaw version from its fixture",
+        "openshell-gateway-upgrade must bind the OpenClaw state-upgrade proof flag from its fixture",
         "openshell-gateway-upgrade step 'Run OpenShell gateway upgrade live Vitest test' must run: npx tsx tools/e2e/live-vitest-invocation.mts run --test-path test/e2e/live/openshell-gateway-upgrade.test.ts",
       ]),
     );
@@ -67,6 +80,44 @@ describe("OpenShell gateway upgrade workflow boundary", () => {
     );
   });
 
+  it("installs the selected E2E checkout instead of the trusted workflow SHA", () => {
+    expect(
+      currentNemoclawUpgradeRef({
+        NEMOCLAW_E2E_EXPECTED_SHA: "candidate-sha",
+        GITHUB_SHA: "trusted-main-sha",
+      }),
+    ).toBe("candidate-sha");
+    expect(
+      currentNemoclawUpgradeRef({
+        NEMOCLAW_CURRENT_NEMOCLAW_REF: "explicit-ref",
+        NEMOCLAW_E2E_EXPECTED_SHA: "candidate-sha",
+        GITHUB_SHA: "trusted-main-sha",
+      }),
+    ).toBe("explicit-ref");
+    expect(currentNemoclawUpgradeRef({ GITHUB_SHA: "workflow-sha" })).toBe("workflow-sha");
+    expect(
+      currentNemoclawUpgradeRef({ NEMOCLAW_E2E_EXPECTED_SHA: "", GITHUB_SHA: "workflow-sha" }),
+    ).toBe("workflow-sha");
+    expect(currentNemoclawUpgradeRef({})).toBe("HEAD");
+  });
+
+  it("pins the registry metadata written by each historical release fixture", () => {
+    const absentMetadata = { nemoclawVersion: undefined, fromDockerfile: undefined };
+    expect(expectedLegacyRegistryMetadata("v0.0.36")).toEqual(absentMetadata);
+    expect(expectedLegacyRegistryMetadata("v0.0.55")).toEqual(absentMetadata);
+    expect(expectedLegacyRegistryMetadata("v0.0.74")).toEqual({
+      nemoclawVersion: "0.0.74",
+      fromDockerfile: null,
+    });
+    expect(expectedLegacyRegistryMetadata("v0.0.89")).toEqual({
+      nemoclawVersion: "0.0.89",
+      fromDockerfile: null,
+    });
+    expect(() => expectedLegacyRegistryMetadata("v0.0.90")).toThrow(
+      /Unsupported gateway-upgrade registry fixture/,
+    );
+  });
+
   it("rejects mutable or injectable historical fixture inputs before use (#6114)", () => {
     const fixture = {
       nemoclawRef: "v0.0.55",
@@ -80,6 +131,36 @@ describe("OpenShell gateway upgrade workflow boundary", () => {
     expect(validateLegacyGatewayUpgradeFixture(fixture)).toEqual({
       sandboxBaseDigest: "10433a8cd2f2b809dd0fdf983514679e04c0f8aa1ff5bbff675029046033b108",
     });
+    expect(
+      validateLegacyGatewayUpgradeFixture({
+        nemoclawRef: "v0.0.89",
+        nemoclawCommit: "1143aa5cce77f3bad1b3b5588bd7fddbe438237e",
+        installerSha256: "00f24959e5ca68104fe91221c0a015dab6a4154618497fa36b969b661f418cc2",
+        openclawVersion: "2026.6.10",
+        sandboxBaseImageRef:
+          "ghcr.io/nvidia/nemoclaw/sandbox-base@sha256:3265d482f67c9d81ee3a59b0bbad5eb5ea6c705fea81ece8ae888ed12794f7f1",
+      }),
+    ).toEqual({
+      sandboxBaseDigest: "3265d482f67c9d81ee3a59b0bbad5eb5ea6c705fea81ece8ae888ed12794f7f1",
+    });
+    expect(() =>
+      validateLegacyGatewayUpgradeFixture({
+        ...fixture,
+        nemoclawCommit: "3351fbdd4eb7d9b80ec471545083956327da2b10",
+      }),
+    ).toThrow(/exact reviewed ref\/commit\/OpenClaw profile/);
+    expect(() =>
+      validateLegacyGatewayUpgradeFixture({
+        ...fixture,
+        openclawVersion: "2026.4.24",
+      }),
+    ).toThrow(/exact reviewed ref\/commit\/OpenClaw profile/);
+    expect(() =>
+      validateLegacyGatewayUpgradeFixture({
+        ...fixture,
+        nemoclawRef: "v0.0.36",
+      }),
+    ).toThrow(/exact reviewed ref\/commit\/OpenClaw profile/);
     expect(() =>
       validateLegacyGatewayUpgradeFixture({
         ...fixture,

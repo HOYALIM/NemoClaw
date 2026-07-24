@@ -16,6 +16,7 @@ import {
   detectOllamaModel,
   ensureOllama,
   env,
+  hasExactReadyPhase,
   ollamaProxyTokenFile,
   openClawModelConfigProjectionScript,
   PROXY_PORT,
@@ -100,7 +101,17 @@ function loadedOllamaModels(raw: string): string[] {
 
 test("GPU Ollama onboard enables CUDA, auth proxy, and sandbox inference", {
   timeout: TIMEOUT_MS,
-}, async ({ artifacts, cleanup, host, sandbox, skip }) => {
+  meta: {
+    e2ePhases: [
+      "prepare clean GPU runtime",
+      "install Ollama and GPU sandbox",
+      "validate CUDA sandbox configuration",
+      "validate Ollama proxy credential boundary",
+      "run sandbox inference.local chat",
+      "restart Ollama and recover agent inference",
+    ],
+  },
+}, async ({ artifacts, cleanup, host, progress, sandbox, skip }) => {
   await artifacts.target.declare({
     id: "gpu-e2e",
     boundary:
@@ -156,6 +167,7 @@ test("GPU Ollama onboard enables CUDA, auth proxy, and sandbox inference", {
   await ensureOllama(host);
   await cleanupOllama(host, "pre-cleanup-ollama");
 
+  progress.phase("install Ollama and GPU sandbox");
   const install = await host.command("bash", ["install.sh", "--non-interactive"], {
     artifactName: "install-gpu-ollama",
     cwd: REPO_ROOT,
@@ -165,6 +177,7 @@ test("GPU Ollama onboard enables CUDA, auth proxy, and sandbox inference", {
   expect(install.exitCode, resultText(install)).toBe(0);
   await artifacts.writeText("install-gpu-ollama.log", resultText(install));
 
+  progress.phase("validate CUDA sandbox configuration");
   const config = await sandbox.execShell(
     SANDBOX_NAME,
     trustedSandboxShellScript(openClawModelConfigProjectionScript()),
@@ -184,7 +197,54 @@ test("GPU Ollama onboard enables CUDA, auth proxy, and sandbox inference", {
   expect(resultText(status)).toMatch(/CUDA verified|CUDA unverified|last CUDA proof failed/i);
   expect(resultText(status)).not.toMatch(/last CUDA proof failed|CUDA unverified/i);
 
-  assertGpuInstallProofs(resultText(install));
+  const installLog = resultText(install);
+  assertGpuInstallProofs(installLog);
+  expect(installLog).toContain(
+    "Direct sandbox GPU enabled; allowing OpenShell GPU policy enrichment.",
+  );
+  expect(installLog).not.toContain(
+    "Recreating OpenShell Docker sandbox container with NVIDIA GPU access",
+  );
+  expect(installLog).not.toContain("Docker GPU mode selected");
+
+  const sandboxContainers = await host.command(
+    "docker",
+    [
+      "ps",
+      "-a",
+      "--filter",
+      `label=openshell.ai/sandbox-name=${SANDBOX_NAME}`,
+      "--format",
+      "{{json .}}",
+    ],
+    {
+      artifactName: "gpu-native-route-sandbox-containers",
+      env: buildAvailabilityProbeEnv(),
+      timeoutMs: 30_000,
+    },
+  );
+  expect(sandboxContainers.exitCode, resultText(sandboxContainers)).toBe(0);
+  const sandboxContainerInventory = sandboxContainers.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map(
+      (line) =>
+        JSON.parse(line) as {
+          Names?: string;
+          State?: string;
+          Status?: string;
+        },
+    );
+  expect(
+    sandboxContainerInventory,
+    `native GPU route must retain exactly one sandbox container; got ${sandboxContainers.stdout}`,
+  ).toHaveLength(1);
+  const retainedSandboxContainer = sandboxContainerInventory[0];
+  expect(retainedSandboxContainer.Names).not.toContain("-nemoclaw-gpu-backup-");
+  expect(retainedSandboxContainer.State).toBe("running");
+  expect(retainedSandboxContainer.Status).toMatch(/\(healthy\)/i);
+
   const route = await sandbox.openshell(["inference", "get"], {
     artifactName: "openshell-inference-route",
     env: env(),
@@ -193,6 +253,7 @@ test("GPU Ollama onboard enables CUDA, auth proxy, and sandbox inference", {
   expect(route.exitCode, resultText(route)).toBe(0);
   expect(resultText(route)).toMatch(/ollama/i);
 
+  progress.phase("validate Ollama proxy credential boundary");
   const tokenRecord = readTokenFileChecked(ollamaProxyTokenFile());
   expect(tokenRecord.mode).toBe("600");
   const token = tokenRecord.token;
@@ -236,6 +297,7 @@ test("GPU Ollama onboard enables CUDA, auth proxy, and sandbox inference", {
     "OpenShell owns proxy authentication; the host proxy token must not enter sandbox env",
   ).toBe("");
 
+  progress.phase("run sandbox inference.local chat");
   const model = await detectOllamaModel(host);
   const chat = await sandbox.execShell(
     SANDBOX_NAME,
@@ -255,6 +317,18 @@ test("GPU Ollama onboard enables CUDA, auth proxy, and sandbox inference", {
   expect(chat.exitCode, resultText(chat)).toBe(0);
   expect(chatContent(chat.stdout)).toMatch(/pong/i);
 
+  const readySandbox = await sandbox.openshell(["sandbox", "get", SANDBOX_NAME], {
+    artifactName: "openshell-sandbox-ready-after-inference",
+    env: buildAvailabilityProbeEnv(),
+    timeoutMs: 30_000,
+  });
+  expect(readySandbox.exitCode, resultText(readySandbox)).toBe(0);
+  expect(
+    hasExactReadyPhase(readySandbox.stdout),
+    `OpenShell sandbox must be exactly Ready after routed inference; got ${resultText(readySandbox)}`,
+  ).toBe(true);
+
+  progress.phase("restart Ollama and recover agent inference");
   const restart = await host.command(
     "bash",
     [

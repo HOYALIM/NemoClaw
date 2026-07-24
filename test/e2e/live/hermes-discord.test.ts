@@ -20,9 +20,9 @@ import {
   expectExitZero,
   phase6Env,
   resultText,
-  sandboxEncodedSh,
   sandboxNode,
   sandboxSh,
+  sandboxShWithArgs,
   shellQuote,
   trackPreinstallSandboxCleanup,
 } from "./phase6-messaging-helpers.ts";
@@ -305,7 +305,7 @@ async function runHermesPythonDiscordGatewayProof(
   port: string,
   redactionValues: string[],
 ): Promise<ShellProbeResult> {
-  return sandboxEncodedSh(
+  return sandboxShWithArgs(
     sandbox,
     SANDBOX_NAME,
     `FAKE_DISCORD_GATEWAY_CLIENT_HOST=${shellQuote(FAKE_DISCORD_HOST)} FAKE_DISCORD_GATEWAY_CLIENT_PORT=${shellQuote(port)} /opt/hermes/.venv/bin/python - <<'PY'\n${HERMES_DISCORD_PYTHON_GATEWAY_PROOF}\nPY\n`,
@@ -324,7 +324,7 @@ async function assertRawTokenAbsentFromFiles(
   redactionValues: string[],
 ): Promise<void> {
   const tokenB64 = Buffer.from(token, "utf8").toString("base64");
-  const probe = await sandboxEncodedSh(
+  const probe = await sandboxShWithArgs(
     sandbox,
     SANDBOX_NAME,
     `token="$(printf %s ${shellQuote(tokenB64)} | base64 -d)"\nif grep -Fq "$token" /sandbox/.hermes/config.yaml /sandbox/.hermes/.env 2>/dev/null; then echo LEAK; else echo OK; fi`,
@@ -349,7 +349,7 @@ async function rawTokenSurfaceProbe(
       : surface === "process"
         ? buildProcessTokenProbe(token)
         : `token="$(printf %s ${shellQuote(tokenB64)} | base64 -d)"\nhit="$(grep -rFlm1 -F "$token" /sandbox /home /etc /tmp /var 2>/dev/null | head -1 || true)"\nif [ -n "$hit" ]; then printf 'FOUND_TOKEN %s\\n' "$hit"; else echo ABSENT; fi`;
-  return sandboxEncodedSh(sandbox, SANDBOX_NAME, script, [], {
+  return sandboxShWithArgs(sandbox, SANDBOX_NAME, script, [], {
     artifactName,
     redactionValues,
     timeoutMs: surface === "filesystem" ? 120_000 : 60_000,
@@ -358,7 +358,19 @@ async function rawTokenSurfaceProbe(
 
 test("hermes-discord: Hermes Discord schema, credential isolation, native gateway rewrite, and rebuild credential reuse", {
   timeout: LIVE_TIMEOUT_MS,
-}, async ({ artifacts, cleanup, host, sandbox, secrets }) => {
+  meta: {
+    e2ePhases: [
+      "prepare clean Hermes Discord runner",
+      "install Hermes Discord sandbox",
+      "validate Discord provider and Hermes health",
+      "validate Discord config and placeholders",
+      "exercise native Discord gateway rewrite",
+      "verify Discord token isolation and REST boundary",
+      "rebuild without host inference credentials",
+      "finalize Hermes Discord resources",
+    ],
+  },
+}, async ({ artifacts, cleanup, host, progress, sandbox, secrets }) => {
   const apiKey = secrets.required("NVIDIA_INFERENCE_API_KEY");
   const env = commandEnv(apiKey);
   const redactionValues = redactions(apiKey);
@@ -415,6 +427,7 @@ test("hermes-discord: Hermes Discord schema, credential isolation, native gatewa
     process.env.NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE ?? env.NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE,
   ).toBe("1");
 
+  progress.phase("install Hermes Discord sandbox");
   const install = await host.command("bash", ["install.sh", "--non-interactive"], {
     artifactName: "phase-1-install-hermes-discord",
     cwd: REPO_ROOT,
@@ -442,6 +455,7 @@ test("hermes-discord: Hermes Discord schema, credential isolation, native gatewa
   expectExitZero(cliProbe, "nemoclaw and openshell installed");
   expect(cliProbe.stdout).toContain("nemoclaw");
 
+  progress.phase("validate Discord provider and Hermes health");
   const list = await host.command("nemoclaw", ["list"], {
     artifactName: "phase-2-nemoclaw-list",
     env,
@@ -482,8 +496,9 @@ test("hermes-discord: Hermes Discord schema, credential isolation, native gatewa
   expect(health?.exitCode, health ? resultText(health) : "missing health result").toBe(0);
   expect(resultText(health!)).toMatch(/"ok"/i);
 
+  progress.phase("validate Discord config and placeholders");
   const expectedRequireMention = DISCORD_REQUIRE_MENTION === "0" ? "false" : "true";
-  const configProbe = await sandboxEncodedSh(
+  const configProbe = await sandboxShWithArgs(
     sandbox,
     SANDBOX_NAME,
     `EXPECTED_REQUIRE_MENTION=${shellQuote(expectedRequireMention)} python3 - <<'PY'
@@ -530,7 +545,7 @@ PY`,
   expectExitZero(configProbe, "Hermes Discord config shape");
   expect(configProbe.stdout.trim()).toBe("OK");
 
-  const envProbe = await sandboxEncodedSh(
+  const envProbe = await sandboxShWithArgs(
     sandbox,
     SANDBOX_NAME,
     `EXPECTED_ALLOWED_USERS=${shellQuote(normalizedCsv(DISCORD_ALLOWED_IDS))} EXPECTED_GUILD_IDS=${shellQuote(normalizedCsv(DISCORD_SERVER_IDS))} python3 - <<'PY'
@@ -559,6 +574,7 @@ PY`,
   expectExitZero(envProbe, "Hermes Discord .env shape");
   expect(envProbe.stdout.trim()).toBe("OK");
 
+  progress.phase("exercise native Discord gateway rewrite");
   const fakeGateway = await startHermesFakeDiscordGateway(
     host,
     cleanup,
@@ -588,6 +604,7 @@ PY`,
   expect(resultText(nativeGateway)).not.toContain("IMPORT_DISCORD_FAILED");
   assertDiscordGatewayCapture(fakeGateway.captureFile, DISCORD_TOKEN);
 
+  progress.phase("verify Discord token isolation and REST boundary");
   await assertRawTokenAbsentFromFiles(sandbox, DISCORD_TOKEN, redactionValues);
 
   const envSurface = await rawTokenSurfaceProbe(
@@ -677,7 +694,7 @@ req.end();
       throw new Error(`Discord API call failed: ${discordApiResult.error}`);
   }
 
-  const bridgeResidue = await sandboxEncodedSh(
+  const bridgeResidue = await sandboxShWithArgs(
     sandbox,
     SANDBOX_NAME,
     String.raw`set +e
@@ -706,6 +723,7 @@ done`,
   expectExitZero(bridgeResidue, "no local Discord bridge residue probe");
   expect(bridgeResidue.stdout.trim()).toBe("");
 
+  progress.phase("rebuild without host inference credentials");
   await bestEffortLifecycleCleanup(() =>
     host.command("docker", ["rm", "-f", fakeGateway.container], {
       artifactName: "phase-8-remove-fake-discord-container-before-rebuild",
@@ -745,6 +763,7 @@ done`,
   expectExitZero(rebuild, "Hermes rebuild without NVIDIA_INFERENCE_API_KEY");
   expect(resultText(rebuild)).not.toMatch(/provider credential not found/i);
 
+  progress.phase("finalize Hermes Discord resources");
   await (async (): Promise<void> => {
     switch (process.env.NEMOCLAW_E2E_KEEP_SANDBOX) {
       case "1":

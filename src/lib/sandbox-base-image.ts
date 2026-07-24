@@ -12,6 +12,7 @@ import {
 } from "./adapters/docker";
 import { ROOT, redact } from "./runner";
 import { imageMeetsMinimumGlibc } from "./sandbox-base-image/image-compatibility";
+import { withLocalBuildHeartbeat } from "./sandbox-base-image/local-build-heartbeat";
 import {
   createSandboxBaseImageBuildProvenance,
   createSandboxBaseImageBuildProvenanceKey,
@@ -98,6 +99,15 @@ function getRepoDigest(
   imageName: string,
   imageRef: string,
 ): { digest: string; ref: string } | null {
+  const referencesExpectedRepository =
+    imageRef === imageName ||
+    imageRef.startsWith(`${imageName}:`) ||
+    imageRef.startsWith(`${imageName}@`);
+  // A directly tagged local override can retain the upstream RepoDigest of
+  // its source image. Keep the caller's explicit repository boundary instead
+  // of silently converting that trusted local ref back into a remote digest.
+  if (!referencesExpectedRepository) return null;
+
   const atIndex = imageRef.indexOf("@sha256:");
   const pinnedDigest =
     atIndex !== -1 ? { digest: imageRef.slice(atIndex + 1), ref: imageRef } : null;
@@ -346,14 +356,16 @@ function resolveLocalCandidate(
   // `suppressOutput` keeps captured stdio out of the user's terminal.
   // On failure, surface the captured stderr so the user still gets a
   // useful diagnostic.
-  const buildResult = dockerBuild(options.dockerfilePath, imageRef, options.rootDir || ROOT, {
-    labels: {
-      [SANDBOX_BASE_BUILD_PROVENANCE_LABEL]: createSandboxBaseImageBuildProvenance(options),
-    },
-    quiet: true,
-    ignoreError: true,
-    suppressOutput: true,
-  });
+  const buildResult = withLocalBuildHeartbeat(() =>
+    dockerBuild(options.dockerfilePath, imageRef, options.rootDir || ROOT, {
+      labels: {
+        [SANDBOX_BASE_BUILD_PROVENANCE_LABEL]: createSandboxBaseImageBuildProvenance(options),
+      },
+      quiet: true,
+      ignoreError: true,
+      suppressOutput: true,
+    }),
+  );
   if (buildResult.error || buildResult.status !== 0) {
     const diagnostics = formatBuildFailureDiagnostics(buildResult);
     if (diagnostics) console.error(diagnostics);

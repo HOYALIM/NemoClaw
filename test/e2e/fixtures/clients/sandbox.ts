@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { Buffer } from "node:buffer";
 import { buildAvailabilityProbeEnv } from "../availability-env.ts";
 import type { ShellProbeResult, ShellProbeRunOptions } from "../shell-probe.ts";
 import { trustedShellCommand } from "../shell-probe.ts";
@@ -54,15 +53,6 @@ export function trustedSandboxShellScript(script: string): TrustedSandboxShellSc
     throw new Error("sandbox shell script must contain no NUL bytes");
   }
   return script as TrustedSandboxShellScript;
-}
-
-function sandboxShellArgument(script: TrustedSandboxShellScript): string {
-  const encodedScript = Buffer.from(script, "utf8").toString("base64");
-  return [
-    "command -v base64 >/dev/null 2>&1 || { echo NEMOCLAW_BASE64_MISSING >&2; exit 127; }",
-    `_NEMOCLAW_E2E_SCRIPT="$(printf '%s' '${encodedScript}' | base64 -d)" || exit $?`,
-    `eval "$_NEMOCLAW_E2E_SCRIPT"`,
-  ].join("; ");
 }
 
 export class SandboxClient {
@@ -131,13 +121,10 @@ export class SandboxClient {
     options: ShellProbeRunOptions = {},
   ): Promise<ShellProbeResult> {
     validateSandboxName(name);
-    return this.openshell(
-      ["sandbox", "exec", "-n", name, "--", "sh", "-lc", sandboxShellArgument(script)],
-      {
-        artifactName: `sandbox-exec-shell-${name}`,
-        ...options,
-      },
-    );
+    return this.openshell(["sandbox", "exec", "-n", name, "--", "sh", "-lc", script], {
+      artifactName: `sandbox-exec-shell-${name}`,
+      ...options,
+    });
   }
 
   upload(
@@ -179,7 +166,7 @@ export class SandboxClient {
    *
    * Used exclusively by recovery E2E targets (#2701). Removes:
    *   - /tmp/nemoclaw-proxy-env.sh (the NODE_OPTIONS chain export file)
-   *   - the seven --require preload guard scripts written by the entrypoint
+   *   - the five --require preload guard scripts written by the entrypoint
    */
   async wipeGuardChain(
     name: string,
@@ -194,9 +181,7 @@ export class SandboxClient {
       "/tmp/nemoclaw-ciao-network-guard.js",
       "/tmp/nemoclaw-slack-channel-guard.js",
       "/tmp/nemoclaw-http-proxy-fix.js",
-      "/tmp/nemoclaw-ws-proxy-fix.js",
       "/tmp/nemoclaw-nemotron-inference-fix.js",
-      "/tmp/nemoclaw-seccomp-guard.js",
     ];
     const result = await this.exec(name, removeCommand, {
       artifactName: `sandbox-wipe-guard-chain-${name}`,

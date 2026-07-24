@@ -16,8 +16,8 @@ import {
   phase6Env,
   precleanSandbox,
   resultText,
-  sandboxEncodedSh,
   sandboxSh,
+  sandboxShWithArgs,
   shellQuote,
   trackPreinstallSandboxCleanup,
 } from "./phase6-messaging-helpers.ts";
@@ -241,6 +241,7 @@ export async function runHermesSlackE2E({
   artifacts,
   cleanup,
   host,
+  progress,
   sandbox,
   secrets,
   skip,
@@ -315,6 +316,7 @@ export async function runHermesSlackE2E({
   await precleanHermesSlack({ host, apiKey, artifactPrefix: "preclean-hermes-slack" });
   await precleanSandbox(host, SANDBOX_NAME, env, redactionValues, "preclean-hermes-slack-cli");
 
+  progress.phase("install Hermes Slack sandbox");
   const install = await installSandboxOrSkipOnRateLimit(
     host,
     env,
@@ -344,6 +346,7 @@ export async function runHermesSlackE2E({
   expect(resultText(cliProbe)).toContain("nemoclaw");
   expect(resultText(cliProbe)).toContain("openshell");
 
+  progress.phase("validate Slack providers and Hermes health");
   const list = await host.command("node", [CLI, "list"], {
     artifactName: "phase-2-nemoclaw-list-hermes-slack",
     env,
@@ -368,7 +371,8 @@ export async function runHermesSlackE2E({
 
   await waitForHermesHealth({ sandbox, apiKey });
 
-  const configProbe = await sandboxEncodedSh(
+  progress.phase("inspect Slack config and secret isolation");
+  const configProbe = await sandboxShWithArgs(
     sandbox,
     SANDBOX_NAME,
     String.raw`python3 - <<'PY'
@@ -414,7 +418,7 @@ PY`,
   expectExitZero(configProbe, "Hermes Slack config shape probe");
   expect(configProbe.stdout.trim()).toBe("OK");
 
-  const rendererProbe = await sandboxEncodedSh(
+  const rendererProbe = await sandboxShWithArgs(
     sandbox,
     SANDBOX_NAME,
     String.raw`python3 - <<'PY'
@@ -451,7 +455,7 @@ PY`,
   expectExitZero(rendererProbe, "Hermes Slack Block Kit renderer probe");
   expect(rendererProbe.stdout.trim()).toBe("OK");
 
-  const envProbe = await sandboxEncodedSh(
+  const envProbe = await sandboxShWithArgs(
     sandbox,
     SANDBOX_NAME,
     String.raw`python3 - <<'PY'
@@ -479,7 +483,7 @@ PY`,
   expectExitZero(envProbe, "Hermes Slack .env placeholder probe");
   expect(envProbe.stdout.trim()).toBe("OK");
 
-  const secretBoundaryProbe = await sandboxEncodedSh(
+  const secretBoundaryProbe = await sandboxShWithArgs(
     sandbox,
     SANDBOX_NAME,
     String.raw`python3 - <<'PY'
@@ -576,6 +580,7 @@ else:
   expectExitZero(processScan, "raw Slack token process scan");
   if (processScan.stdout.trim() !== "EMPTY") expect(processScan.stdout.trim()).toBe("OK");
 
+  progress.phase("validate Hermes-scoped Slack policy");
   const policy = await host.command(
     host.openshellCommandPath,
     ["policy", "get", "--full", SANDBOX_NAME],
@@ -600,7 +605,7 @@ else:
   expect(slackBlock).toContain("wss-backup.slack.com");
   expect(slackBlock).toContain("request_body_credential_rewrite: true");
 
-  const bridgeResidue = await sandboxEncodedSh(
+  const bridgeResidue = await sandboxShWithArgs(
     sandbox,
     SANDBOX_NAME,
     String.raw`set +e
@@ -626,7 +631,8 @@ done`,
   expectExitZero(bridgeResidue, "Hermes Slack bridge residue probe");
   expect(resultText(bridgeResidue).trim()).toBe("");
 
-  const slackProbe = await sandboxEncodedSh(
+  progress.phase("exercise Slack API through credential aliases");
+  const slackProbe = await sandboxShWithArgs(
     sandbox,
     SANDBOX_NAME,
     String.raw`sh -lc '. /tmp/nemoclaw-proxy-env.sh 2>/dev/null || true; if [ -x /opt/hermes/.venv/bin/python ]; then exec /opt/hermes/.venv/bin/python -; fi; exec python3 -' <<'PY'
@@ -719,6 +725,7 @@ PY`,
   expect(slackProbeText).not.toMatch(/^(FAIL|ERROR)/m);
 
   if (process.env.NEMOCLAW_E2E_KEEP_SANDBOX !== "1") {
+    progress.phase("remove Hermes Slack sandbox");
     const destroy = await host.command("node", [CLI, SANDBOX_NAME, "destroy", "--yes"], {
       artifactName: "phase-7-nemoclaw-destroy",
       env,
@@ -763,6 +770,7 @@ PY`,
     }
   }
 
+  progress.phase("record Hermes Slack results");
   await artifacts.target.complete({
     id: "hermes-slack-e2e",
     assertions: {

@@ -64,6 +64,30 @@ describe("E2E operations workflow boundary", () => {
     );
   });
 
+  it("pins the scorecard's current-run progress artifact action", () => {
+    const workflow = readE2eOperationsWorkflow();
+    const download = workflow.jobs.scorecard.steps!.find(
+      (step) => step.name === "Download E2E progress artifacts",
+    )!;
+    download.uses = "actions/download-artifact@0000000000000000000000000000000000000000";
+
+    expect(validateE2eOperationsWorkflow(workflow)).toContain(
+      "scorecard must download this run's E2E artifacts into the runtime audit directory",
+    );
+  });
+
+  it("limits the scorecard artifact download to E2E progress sources", () => {
+    const workflow = readE2eOperationsWorkflow();
+    const download = workflow.jobs.scorecard.steps!.find(
+      (step) => step.name === "Download E2E progress artifacts",
+    )!;
+    download.with!.pattern = "*";
+
+    expect(validateE2eOperationsWorkflow(workflow)).toContain(
+      "scorecard must download this run's E2E artifacts into the runtime audit directory",
+    );
+  });
+
   it("rejects controller protocol and PR validation drift", () => {
     const workflow = readE2eOperationsWorkflow();
     delete workflow.on?.workflow_dispatch?.inputs?.base_sha;
@@ -98,6 +122,33 @@ describe("E2E operations workflow boundary", () => {
         'Controller validation must retain [[ "$(jq -r \'.base.sha\' <<< "$pull_json")" == "$BASE_SHA" ]]',
         'Controller validation must retain "$PR_NUMBER" =~ ^[1-9][0-9]*$',
         "generate-matrix checkout must use the selected PR commit",
+      ]),
+    );
+  });
+
+  it("binds controller dispatch to the exact checkout, plan, and correlation identity (#6955)", () => {
+    const workflow = readE2eOperationsWorkflow();
+    const validation = workflow.jobs["generate-matrix"].steps!.find(
+      (step) => step.name === "Validate controller dispatch",
+    )!;
+    validation.run = validation
+      .run!.replace('[[ "$CHECKOUT_SHA" =~ ^[a-f0-9]{40}$ ]]', '[[ -n "$CHECKOUT_SHA" ]]')
+      .replace('[[ "$PLAN_HASH" =~ ^[a-f0-9]{64}$ ]]', '[[ -n "$PLAN_HASH" ]]')
+      .replace(
+        '[[ "$CORRELATION_ID" =~ ^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$ ]]',
+        '[[ -n "$CORRELATION_ID" ]]',
+      )
+      .replace(
+        `[[ "$(jq -r '.head.sha' <<< "$pull_json")" == "$CHECKOUT_SHA" ]]`,
+        `[[ -n "$(jq -r '.head.sha' <<< "$pull_json")" ]]`,
+      );
+
+    expect(validateE2eOperationsWorkflow(workflow)).toEqual(
+      expect.arrayContaining([
+        'Controller validation must retain "$CHECKOUT_SHA" =~ ^[a-f0-9]{40}$',
+        'Controller validation must retain "$PLAN_HASH" =~ ^[a-f0-9]{64}$',
+        'Controller validation must retain "$CORRELATION_ID" =~ ^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$',
+        `Controller validation must retain [[ "$(jq -r '.head.sha' <<< "$pull_json")" == "$CHECKOUT_SHA" ]]`,
       ]),
     );
   });
@@ -339,29 +390,27 @@ describe("E2E operations workflow boundary", () => {
       }),
     };
     const scorecardJobs = {
-      isSelectiveDispatch: vi.fn().mockReturnValue(false),
       loadWorkflowRunJobs: vi.fn().mockResolvedValue([]),
-      summarizeJobs: vi.fn().mockReturnValue({
-        cancelled: 0,
-        failedJobs: [],
-        failure: 0,
-        ran: 1,
-        skipped: 0,
-        success: 1,
-        total: 1,
+    };
+    const coordinator = {
+      buildScorecard: vi.fn().mockReturnValue({
+        scorecardData: { ran: 0, runMode: "Scheduled E2E", total: 0 },
+        slackData: { channel: "daily", payload: { attachments: [], text: "scorecard fallback" } },
+        summaryMarkdown: "## 🌅 NemoClaw E2E Scorecard\n\n### Onboard Performance Budget",
       }),
     };
-    const slackBlocks = {
-      buildBlocks: vi.fn().mockReturnValue([]),
-      buildFallbackText: vi.fn().mockReturnValue("scorecard fallback"),
-      getSlackChannel: vi.fn().mockReturnValue("daily"),
-      getStatusColor: vi.fn().mockReturnValue("good"),
+    const runtimeAudit = {
+      auditTestRuntime: vi.fn().mockReturnValue([{ target: "full-e2e" }]),
+      formatRuntimeAuditSummary: vi
+        .fn()
+        .mockReturnValue("## E2E Test Phase Runtime\n\n| Target | Slowest observed phase |"),
     };
     const runtimeModules = new Map<string, unknown>([
       ["path", { join: (...parts: string[]) => parts.join("/") }],
+      ["/workspace/scripts/audit-test-runtime.mts", runtimeAudit],
+      ["/workspace/scripts/scorecard/coordinate-scorecard.mts", coordinator],
       ["/workspace/scripts/scorecard/analyze-trace-timing.mts", traceTiming],
       ["/workspace/scripts/scorecard/summarize-jobs.mts", scorecardJobs],
-      ["/workspace/scripts/scorecard/build-slack-blocks.mts", slackBlocks],
     ]);
     const runtimeRequire = (specifier: string) => {
       const runtimeModule = runtimeModules.get(specifier);
@@ -373,6 +422,7 @@ describe("E2E operations workflow boundary", () => {
         EXPLICIT_ONLY_JOBS: "",
         GITHUB_WORKSPACE: "/workspace",
         JOBS: "",
+        RUNTIME_ARTIFACTS: "/runner/e2e-runtime-audit",
         TARGETS: "",
       },
     };
@@ -394,9 +444,116 @@ describe("E2E operations workflow boundary", () => {
     );
 
     expect(traceTiming.buildTraceTimingResult).toHaveBeenCalledWith({ github: {}, context, core });
+    expect(runtimeAudit.auditTestRuntime).toHaveBeenCalledWith(["/runner/e2e-runtime-audit"]);
+    expect(runtimeAudit.auditTestRuntime.mock.invocationCallOrder[0]).toBeLessThan(
+      traceTiming.buildTraceTimingResult.mock.invocationCallOrder[0],
+    );
     expect(warning).toHaveBeenCalledWith("Cloud onboard advisory performance budget exceeded");
+    expect(coordinator.buildScorecard).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiJobs: [],
+        eventName: "schedule",
+        needs: { "generate-matrix": { result: "success" } },
+        rawExplicitOnly: "",
+        rawJobs: "",
+        rawTargets: "",
+        trace: expect.objectContaining({
+          traceSummaryLines: expect.arrayContaining(["### Onboard Performance Budget"]),
+        }),
+      }),
+    );
     expect(summary.addRaw).toHaveBeenCalledWith(
-      expect.stringContaining("### Onboard Performance Budget"),
+      expect.stringMatching(/### Onboard Performance Budget[\s\S]*## E2E Test Phase Runtime/u),
+    );
+    expect(summary.write).toHaveBeenCalledOnce();
+    expect(setOutput).toHaveBeenCalledWith("scorecardData", expect.any(String));
+    expect(setOutput).toHaveBeenCalledWith("slackData", expect.any(String));
+  });
+
+  it("keeps scorecard outputs available when a progress artifact is invalid", async () => {
+    const script = workflowScript("scorecard", "Generate E2E scorecard").replace(
+      "${{ toJSON(needs) }}",
+      JSON.stringify({ "generate-matrix": { result: "success" } }),
+    );
+    const warning = vi.fn();
+    const setOutput = vi.fn();
+    const summary = {
+      addRaw: vi.fn(),
+      write: vi.fn().mockResolvedValue(undefined),
+    };
+    summary.addRaw.mockReturnValue(summary);
+    const runtimeAudit = {
+      auditTestRuntime: vi.fn(() => {
+        throw new Error("invalid progress artifact");
+      }),
+      formatRuntimeAuditSummary: vi.fn(),
+    };
+    const runtimeModules = new Map<string, unknown>([
+      ["path", { join: (...parts: string[]) => parts.join("/") }],
+      ["/workspace/scripts/audit-test-runtime.mts", runtimeAudit],
+      [
+        "/workspace/scripts/scorecard/coordinate-scorecard.mts",
+        {
+          buildScorecard: vi.fn().mockReturnValue({
+            scorecardData: { ran: 0, runMode: "Scheduled E2E", total: 0 },
+            slackData: { channel: "daily", payload: { attachments: [], text: "scorecard" } },
+            summaryMarkdown: "## 🌅 NemoClaw E2E Scorecard",
+          }),
+        },
+      ],
+      [
+        "/workspace/scripts/scorecard/analyze-trace-timing.mts",
+        {
+          buildTraceTimingResult: vi.fn().mockResolvedValue({
+            budgetWarningMessage: undefined,
+            traceSummaryLines: [],
+            traceTimingLine: "Trace: unavailable",
+          }),
+        },
+      ],
+      [
+        "/workspace/scripts/scorecard/summarize-jobs.mts",
+        { loadWorkflowRunJobs: vi.fn().mockResolvedValue([]) },
+      ],
+    ]);
+    const runtimeRequire = (specifier: string) => {
+      const runtimeModule = runtimeModules.get(specifier);
+      expect(runtimeModule, `Unexpected scorecard require: ${specifier}`).toBeDefined();
+      return runtimeModule;
+    };
+    const processMock = {
+      env: {
+        EXPLICIT_ONLY_JOBS: "",
+        GITHUB_WORKSPACE: "/workspace",
+        JOBS: "",
+        RUNTIME_ARTIFACTS: "/runner/e2e-runtime-audit",
+        TARGETS: "",
+      },
+    };
+    const context = {
+      actor: "scorecard-test",
+      eventName: "schedule",
+      repo: { owner: "NVIDIA", repo: "NemoClaw" },
+      runId: 123,
+      serverUrl: "https://github.com",
+    };
+
+    await new AsyncFunction("require", "process", "github", "context", "core", script)(
+      runtimeRequire,
+      processMock,
+      {},
+      context,
+      { setOutput, summary, warning },
+    );
+
+    expect(warning).toHaveBeenCalledWith(
+      "E2E test phase runtime summary unavailable: invalid progress artifact",
+    );
+    expect(runtimeAudit.formatRuntimeAuditSummary).not.toHaveBeenCalled();
+    expect(summary.addRaw).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "The summary is unavailable because a `test-progress.json` artifact was invalid.",
+      ),
     );
     expect(summary.write).toHaveBeenCalledOnce();
     expect(setOutput).toHaveBeenCalledWith("scorecardData", expect.any(String));
@@ -409,7 +566,13 @@ describe("E2E operations workflow boundary", () => {
     const fetchMock = vi.fn();
     vi.stubEnv(
       "SLACK_DATA",
-      JSON.stringify({ channel: "preview", payload: { text: "safe precomputed payload" } }),
+      JSON.stringify({
+        channel: "preview",
+        payload: {
+          text: "safe precomputed payload",
+          attachments: [{ color: "#76b900", blocks: [] }],
+        },
+      }),
     );
     vi.stubEnv("POST_TO_SLACK", "false");
     try {
@@ -419,6 +582,36 @@ describe("E2E operations workflow boundary", () => {
         fetchMock,
       );
       expect(info).toHaveBeenCalledWith("Selective dispatch without post_to_slack — skipping");
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each([
+    ["empty payload", { channel: "daily", payload: {} }],
+    [
+      "missing text",
+      { channel: "daily", payload: { attachments: [{ color: "#76b900", blocks: [] }] } },
+    ],
+    ["non-array attachments", { channel: "daily", payload: { text: "hi", attachments: {} } }],
+    [
+      "malformed attachment",
+      { channel: "daily", payload: { text: "hi", attachments: [{ blocks: [] }] } },
+    ],
+  ])("rejects a precomputed Slack payload with %s before calling fetch", async (_label, data) => {
+    const script = workflowScript("scorecard", "Post scorecard to Slack");
+    const setFailed = vi.fn();
+    const fetchMock = vi.fn();
+    vi.stubEnv("SLACK_DATA", JSON.stringify(data));
+    vi.stubEnv("POST_TO_SLACK", "true");
+    try {
+      await new AsyncFunction("process", "core", "fetch", script)(
+        process,
+        { info: vi.fn(), setFailed },
+        fetchMock,
+      );
+      expect(setFailed).toHaveBeenCalledWith("Invalid precomputed Slack payload");
       expect(fetchMock).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllEnvs();
