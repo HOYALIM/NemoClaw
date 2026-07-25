@@ -382,8 +382,8 @@ function main(): void {
 
 // Export for unit tests without re-running main().
 export {
-  DANGEROUS_HOSTS,
   compileConfigSchema,
+  DANGEROUS_HOSTS,
   discoverTargets,
   findDangerousHosts,
   findDangerousRouterApiBases,
