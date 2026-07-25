@@ -29,7 +29,7 @@ type Workflow = {
 };
 
 const REPO_ROOT = path.join(import.meta.dirname, "..");
-const BOOTSTRAP_SHA = "57c97bf5dc0bf2489ec494d4637977be3986afb8";
+const BOOTSTRAP_SHA = "0c7dd29394d2c4db660c4d09f3654c0789e200d0";
 // Removal condition: delete the PR-6830 fork bootstrap after this PR merges and
 // the base branch contains the schema-v2 reviewed npm audit action.
 const BOOTSTRAP_IF =
