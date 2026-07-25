@@ -382,6 +382,11 @@ export function verifyReviewedNpmLock(
   if (topLevel.resolved !== request.tarballUrl) {
     throw new Error(`reviewed npm lock tarball URL mismatch for ${request.packageSpec}`);
   }
+  if (Object.prototype.hasOwnProperty.call(topLevel, "hasShrinkwrap")) {
+    throw new Error(
+      `reviewed npm lock must be authoritative for ${request.packageSpec}; nested shrinkwrap delegation is not allowed`,
+    );
+  }
 
   const reviewed = readReviewedLockPackages(packages, request.lockfilePath, registryOrigin);
   verifyReviewedNpmMetadata(request, npmRunner);

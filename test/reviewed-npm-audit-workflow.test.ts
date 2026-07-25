@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import fs from "node:fs";
+import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { normalizeOpenClawSignatureAlias } from "../scripts/audit-reviewed-npm-graph.mts";
 import { readYaml } from "./helpers/e2e-workflow-contract";
 
 type WorkflowStep = {
@@ -33,6 +36,8 @@ const BOOTSTRAP_IF =
   "${{ steps.trusted-reviewed-npm-audit.outputs.available != 'true' && github.event.pull_request.number == 6830 && github.event.pull_request.head.repo.full_name == 'HOYALIM/NemoClaw' }}";
 const REJECT_UNAVAILABLE_IF =
   "${{ steps.trusted-reviewed-npm-audit.outputs.available != 'true' && (github.event.pull_request.number != 6830 || github.event.pull_request.head.repo.full_name != 'HOYALIM/NemoClaw') }}";
+const DOMEXCEPTION_INTEGRITY =
+  "sha512-tlc/FcYIv5i8RYsl2iDil4A0gOihaas1R5jPcIC4Zw3GhjKsVilw90aHcVlhZPTBLGBzd379S+VcnsDjd9ChiA==";
 
 function requiredStep(job: WorkflowJob, name: string): WorkflowStep {
   const step = job.steps?.find((candidate) => candidate.name === name);
@@ -111,7 +116,7 @@ describe("trusted reviewed npm audit workflow (#5896)", () => {
       "utf8",
     );
 
-    expect(action).toContain('node-version: "22.22.2"');
+    expect(action).toContain('node-version: "22.23.1"');
     expect(action).toContain("npm install --global npm@10.9.4");
     expect(action).toContain("NEMOCLAW_REVIEWED_NPM_AUDIT_TARGET_ROOT");
     expect(action).toContain("NEMOCLAW_REVIEWED_NPM_AUDIT_REPORT_DIR");
@@ -121,5 +126,69 @@ describe("trusted reviewed npm audit workflow (#5896)", () => {
     expect(action).not.toContain("run: node --experimental-strip-types scripts/");
     expect(driver).toContain("resolveTrustedAuditConfigPath(TRUSTED_REPO_ROOT)");
     expect(driver).not.toContain('resolveTargetPath(\n  "ci/reviewed-npm-audit.json"');
+  });
+
+  it("normalizes only the reviewed OpenClaw npm alias for registry signature verification", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-signature-alias-"));
+    const aliasPath = path.join("node_modules", "openclaw", "node_modules", "node-domexception");
+    const actualPath = path.join(
+      "node_modules",
+      "openclaw",
+      "node_modules",
+      "@nolyfill",
+      "domexception",
+    );
+    const requesterPath = path.join("node_modules", "openclaw", "node_modules", "fetch-blob");
+    const aliasManifest = { name: "@nolyfill/domexception", version: "1.0.28" };
+    const requesterManifest = {
+      name: "fetch-blob",
+      version: "3.2.0",
+      dependencies: { "node-domexception": "^1.0.0" },
+    };
+    const lock = {
+      lockfileVersion: 3,
+      packages: {
+        [aliasPath]: {
+          ...aliasManifest,
+          resolved: "https://registry.npmjs.org/@nolyfill/domexception/-/domexception-1.0.28.tgz",
+          integrity: DOMEXCEPTION_INTEGRITY,
+        },
+        [requesterPath]: requesterManifest,
+      },
+    };
+    try {
+      for (const [directory, manifest] of [
+        [aliasPath, aliasManifest],
+        [requesterPath, requesterManifest],
+      ] as const) {
+        fs.mkdirSync(path.join(root, directory), { recursive: true });
+        fs.writeFileSync(
+          path.join(root, directory, "package.json"),
+          `${JSON.stringify(manifest)}\n`,
+        );
+      }
+      fs.writeFileSync(path.join(root, "package-lock.json"), `${JSON.stringify(lock)}\n`);
+
+      normalizeOpenClawSignatureAlias(root);
+
+      const normalizedLock = JSON.parse(
+        fs.readFileSync(path.join(root, "package-lock.json"), "utf-8"),
+      );
+      const normalizedRequester = createRequire(import.meta.url)(
+        path.join(root, requesterPath, "package.json"),
+      );
+      expect(fs.existsSync(path.join(root, aliasPath))).toBe(false);
+      expect(fs.existsSync(path.join(root, actualPath, "package.json"))).toBe(true);
+      expect(normalizedLock.packages[aliasPath]).toBeUndefined();
+      expect(normalizedLock.packages[actualPath]).toMatchObject(aliasManifest);
+      expect(normalizedLock.packages[requesterPath].dependencies).toEqual({
+        "@nolyfill/domexception": "1.0.28",
+      });
+      expect(normalizedRequester.dependencies).toEqual({
+        "@nolyfill/domexception": "1.0.28",
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

@@ -15,11 +15,11 @@ import {
 const REPO_ROOT = path.join(import.meta.dirname, "..");
 const RUNTIME_DIRECTORY = path.join(REPO_ROOT, "agents", "openclaw", "openclaw-runtime");
 const LOCKFILE = path.join(RUNTIME_DIRECTORY, "package-lock.json");
-const PACKAGE_SPEC = "openclaw@2026.6.10";
+const PACKAGE_SPEC = "openclaw@2026.7.1";
 const INTEGRITY =
-  "sha512-LcooND2tBQw8A+kc1Ujltu3lg30bJ0w7XaeRy7eYzobb8BBdcW6DOGbwJL4vpj1vl9+gjRceOtlh5nh9OARcug==";
-const TARBALL = "https://registry.npmjs.org/openclaw/-/openclaw-2026.6.10.tgz";
-const LOCK_SHA256 = "a0f91c7e0b769e73c3f6119b2a6ee2dfd9bcb32b3dc69655b22696c654694d2d";
+  "sha512-ge/Xss99CHAjPL/ikmH/UFoiOrjcxDB4sW3y9mhyCD+dYW3wzV7TKbAVdkrXFgAG2d2BjpJofP97zUZ+umxo8g==";
+const TARBALL = "https://registry.npmjs.org/openclaw/-/openclaw-2026.7.1.tgz";
+const LOCK_SHA256 = "82489f62febb12da52833c0b1f7f6969f7e21a098c565ef1f91342b1e5e32d88";
 const roots: string[] = [];
 
 function sha256(file: string): string {
@@ -30,7 +30,7 @@ function lockRequest(lockfilePath = LOCKFILE, expectedLockSha256 = LOCK_SHA256) 
   return {
     expectedIntegrity: INTEGRITY,
     expectedLockSha256,
-    label: "OpenClaw 2026.6.10 locked runtime graph",
+    label: "OpenClaw 2026.7.1 locked runtime graph",
     lockfilePath,
     packageSpec: PACKAGE_SPEC,
     registryOrigin: "https://registry.npmjs.org/",
@@ -170,12 +170,11 @@ afterEach(() => {
 describe("locked OpenClaw production installation (#5896)", () => {
   it("binds the reviewed root artifact to the complete committed closure", () => {
     const verified = verifyReviewedNpmLock(lockRequest(), reviewedMetadata);
-    expect(verified).toHaveLength(305);
+    expect(verified).toHaveLength(307);
     expect(verified).toContain(PACKAGE_SPEC);
+    expect(verified).toContain("brace-expansion@5.0.8");
+    expect(verified).toContain("fast-uri@3.1.4");
     expect(sha256(LOCKFILE)).toBe(LOCK_SHA256);
-    expect(JSON.parse(fs.readFileSync(LOCKFILE, "utf-8"))).toMatchObject({
-      packages: { "": { dependencies: { openclaw: "2026.6.10" } } },
-    });
   });
 
   // source-shape-contract: security -- The committed production lock digest must fail before any registry-controlled metadata is consulted
@@ -197,25 +196,32 @@ describe("locked OpenClaw production installation (#5896)", () => {
   // source-shape-contract: security -- Mutating the shipped lock proves every reviewed transitive identity remains bound to committed production bytes
   it.each([
     {
-      expected: "root must depend only on openclaw@2026.6.10",
+      expected: "root must depend only on openclaw@2026.7.1",
       mutate: (lock: any) => {
-        lock.packages[""].dependencies.openclaw = "2026.6.11";
+        lock.packages[""].dependencies.openclaw = "2026.7.2";
       },
       name: "root version drift",
     },
     {
-      expected: "root must depend only on openclaw@2026.6.10",
+      expected: "root must depend only on openclaw@2026.7.1",
       mutate: (lock: any) => {
         lock.packages[""].optionalDependencies = { "left-pad": "1.3.0" };
       },
       name: "root optional dependency injection",
     },
     {
-      expected: "lock integrity mismatch for openclaw@2026.6.10",
+      expected: "lock integrity mismatch for openclaw@2026.7.1",
       mutate: (lock: any) => {
         lock.packages["node_modules/openclaw"].integrity = `sha512-${"B".repeat(88)}`;
       },
       name: "top-level integrity drift",
+    },
+    {
+      expected: "nested shrinkwrap delegation is not allowed",
+      mutate: (lock: any) => {
+        lock.packages["node_modules/openclaw"].hasShrinkwrap = true;
+      },
+      name: "nested shrinkwrap delegation",
     },
     {
       expected: "must use a committed sha512 npm integrity value",
@@ -351,7 +357,7 @@ describe("locked OpenClaw production installation (#5896)", () => {
     const audit = JSON.parse(
       fs.readFileSync(path.join(REPO_ROOT, "ci", "reviewed-npm-audit.json"), "utf-8"),
     );
-    expect(audit.archivePackages).not.toEqual(
+    expect(audit.archivePackages).toEqual(
       expect.arrayContaining([expect.objectContaining({ packageSpec: PACKAGE_SPEC })]),
     );
     expect(audit.lockedGraphs).toEqual(
