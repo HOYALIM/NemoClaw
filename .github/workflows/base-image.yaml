@@ -37,7 +37,6 @@ on:
       - "nemoclaw-blueprint/blueprint.yaml"
       - "scripts/lib/openclaw-npm-remediation.mts"
       - "scripts/lib/reviewed-npm-audit.mts"
-      - "scripts/lib/reviewed-npm-archive.mts"
       - "scripts/checks/node-tar-image-scan.mts"
       - "scripts/patch-bundled-npm-tar.mts"
       - "scripts/upgrade-bundled-npm.mts"
