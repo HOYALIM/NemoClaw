@@ -293,6 +293,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             .github/actions/ci-reviewed-npm-audit
+            ci/npm-audit-exceptions.json
             ci/reviewed-npm-audit.json
             scripts/audit-reviewed-npm-graph.mts
             scripts/lib/openclaw-npm-remediation.mts
@@ -308,6 +309,7 @@ jobs:
               .trusted-reviewed-npm-audit/.github/actions/ci-reviewed-npm-audit/action.yaml \
             && grep -Fq 'resolveTrustedAuditConfigPath(TRUSTED_REPO_ROOT)' \
               .trusted-reviewed-npm-audit/scripts/audit-reviewed-npm-graph.mts \
+            && [ -f .trusted-reviewed-npm-audit/ci/npm-audit-exceptions.json ] \
             && [ -f .trusted-reviewed-npm-audit/ci/reviewed-npm-audit.json ] \
             && [ -f .trusted-reviewed-npm-audit/scripts/lib/openclaw-npm-remediation.mts ] \
             && [ -f .trusted-reviewed-npm-audit/scripts/lib/reviewed-npm-audit.mts ]; then
@@ -328,6 +330,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             .github/actions/ci-reviewed-npm-audit
+            ci/npm-audit-exceptions.json
             ci/reviewed-npm-audit.json
             scripts/audit-reviewed-npm-graph.mts
             scripts/lib/openclaw-npm-remediation.mts

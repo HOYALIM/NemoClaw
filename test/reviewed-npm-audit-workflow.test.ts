@@ -62,6 +62,7 @@ describe("trusted reviewed npm audit workflow (#5896)", () => {
     });
     const sparseCheckout = String(trustedCheckout.with?.["sparse-checkout"]);
     expect(sparseCheckout).toContain(".github/actions/ci-reviewed-npm-audit");
+    expect(sparseCheckout).toContain("ci/npm-audit-exceptions.json");
     expect(sparseCheckout).toContain("ci/reviewed-npm-audit.json");
     expect(sparseCheckout).toContain("scripts/audit-reviewed-npm-graph.mts");
     expect(sparseCheckout).toContain("scripts/lib/openclaw-npm-remediation.mts");
@@ -71,6 +72,7 @@ describe("trusted reviewed npm audit workflow (#5896)", () => {
     const detection = requiredStep(prJob, "Detect trusted reviewed npm audit schema");
     expect(detection.id).toBe("trusted-reviewed-npm-audit");
     expect(detection.run).toContain("resolveTrustedAuditConfigPath(TRUSTED_REPO_ROOT)");
+    expect(detection.run).toContain(".trusted-reviewed-npm-audit/ci/npm-audit-exceptions.json");
     expect(detection.run).toContain(".trusted-reviewed-npm-audit/ci/reviewed-npm-audit.json");
     expect(detection.run).toContain(
       ".trusted-reviewed-npm-audit/scripts/lib/openclaw-npm-remediation.mts",
@@ -88,6 +90,7 @@ describe("trusted reviewed npm audit workflow (#5896)", () => {
       "persist-credentials": false,
     });
     const bootstrapSparseCheckout = String(bootstrap.with?.["sparse-checkout"]);
+    expect(bootstrapSparseCheckout).toContain("ci/npm-audit-exceptions.json");
     expect(bootstrapSparseCheckout).toContain("scripts/lib/openclaw-npm-remediation.mts");
     expect(bootstrapSparseCheckout).toContain("scripts/lib/reviewed-npm-audit.mts");
     const rejectUnavailable = requiredStep(prJob, "Reject unavailable trusted reviewed npm audit");
