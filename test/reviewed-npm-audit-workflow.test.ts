@@ -64,12 +64,20 @@ describe("trusted reviewed npm audit workflow (#5896)", () => {
     expect(sparseCheckout).toContain(".github/actions/ci-reviewed-npm-audit");
     expect(sparseCheckout).toContain("ci/reviewed-npm-audit.json");
     expect(sparseCheckout).toContain("scripts/audit-reviewed-npm-graph.mts");
+    expect(sparseCheckout).toContain("scripts/lib/openclaw-npm-remediation.mts");
     expect(sparseCheckout).toContain("scripts/lib/reviewed-npm-archive.mts");
+    expect(sparseCheckout).toContain("scripts/lib/reviewed-npm-audit.mts");
 
     const detection = requiredStep(prJob, "Detect trusted reviewed npm audit schema");
     expect(detection.id).toBe("trusted-reviewed-npm-audit");
     expect(detection.run).toContain("resolveTrustedAuditConfigPath(TRUSTED_REPO_ROOT)");
     expect(detection.run).toContain(".trusted-reviewed-npm-audit/ci/reviewed-npm-audit.json");
+    expect(detection.run).toContain(
+      ".trusted-reviewed-npm-audit/scripts/lib/openclaw-npm-remediation.mts",
+    );
+    expect(detection.run).toContain(
+      ".trusted-reviewed-npm-audit/scripts/lib/reviewed-npm-audit.mts",
+    );
 
     const bootstrap = requiredStep(prJob, "Checkout pinned bootstrap reviewed npm audit");
     expect(bootstrap.if).toBe(BOOTSTRAP_IF);
@@ -79,6 +87,9 @@ describe("trusted reviewed npm audit workflow (#5896)", () => {
       path: ".trusted-reviewed-npm-audit-bootstrap",
       "persist-credentials": false,
     });
+    const bootstrapSparseCheckout = String(bootstrap.with?.["sparse-checkout"]);
+    expect(bootstrapSparseCheckout).toContain("scripts/lib/openclaw-npm-remediation.mts");
+    expect(bootstrapSparseCheckout).toContain("scripts/lib/reviewed-npm-audit.mts");
     const rejectUnavailable = requiredStep(prJob, "Reject unavailable trusted reviewed npm audit");
     expect(rejectUnavailable.if).toBe(REJECT_UNAVAILABLE_IF);
     expect(rejectUnavailable.run).toContain("exit 1");

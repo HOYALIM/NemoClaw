@@ -295,7 +295,9 @@ jobs:
             .github/actions/ci-reviewed-npm-audit
             ci/reviewed-npm-audit.json
             scripts/audit-reviewed-npm-graph.mts
+            scripts/lib/openclaw-npm-remediation.mts
             scripts/lib/reviewed-npm-archive.mts
+            scripts/lib/reviewed-npm-audit.mts
           sparse-checkout-cone-mode: false
 
       - name: Detect trusted reviewed npm audit schema
@@ -306,7 +308,9 @@ jobs:
               .trusted-reviewed-npm-audit/.github/actions/ci-reviewed-npm-audit/action.yaml \
             && grep -Fq 'resolveTrustedAuditConfigPath(TRUSTED_REPO_ROOT)' \
               .trusted-reviewed-npm-audit/scripts/audit-reviewed-npm-graph.mts \
-            && [ -f .trusted-reviewed-npm-audit/ci/reviewed-npm-audit.json ]; then
+            && [ -f .trusted-reviewed-npm-audit/ci/reviewed-npm-audit.json ] \
+            && [ -f .trusted-reviewed-npm-audit/scripts/lib/openclaw-npm-remediation.mts ] \
+            && [ -f .trusted-reviewed-npm-audit/scripts/lib/reviewed-npm-audit.mts ]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
           else
             echo "available=false" >> "$GITHUB_OUTPUT"
@@ -326,7 +330,9 @@ jobs:
             .github/actions/ci-reviewed-npm-audit
             ci/reviewed-npm-audit.json
             scripts/audit-reviewed-npm-graph.mts
+            scripts/lib/openclaw-npm-remediation.mts
             scripts/lib/reviewed-npm-archive.mts
+            scripts/lib/reviewed-npm-audit.mts
           sparse-checkout-cone-mode: false
 
       - name: Reject unavailable trusted reviewed npm audit
