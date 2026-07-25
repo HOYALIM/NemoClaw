@@ -12,7 +12,6 @@ import {
   packReviewedNpmArchive,
   verifyInstalledNpmLock,
   verifyReviewedNpmLock,
-  verifyReviewedNpmMetadata,
 } from "./lib/reviewed-npm-archive.mts";
 import {
   assertExceptionGraphs,
