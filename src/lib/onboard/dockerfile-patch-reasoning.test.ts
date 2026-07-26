@@ -41,6 +41,8 @@ describe("Dockerfile reasoning capability patch", () => {
       { compatibleEndpointReasoning: "true" },
     );
 
-    expect(fs.readFileSync(dockerfilePath, "utf8")).toContain("ARG NEMOCLAW_REASONING=true");
+    const dockerfile = fs.readFileSync(dockerfilePath, "utf8");
+    expect(dockerfile).toContain("ARG NEMOCLAW_REASONING=true");
+    expect(dockerfile).not.toContain("ARG NEMOCLAW_REASONING=false");
   });
 });
