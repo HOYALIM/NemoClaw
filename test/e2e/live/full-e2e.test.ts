@@ -185,7 +185,9 @@ async function assertColdOnboardPerformance(input: {
   budget: ColdOnboardPerformanceBudget;
   install: ShellProbeResult;
   installCompletedAtMs: number;
+  model: string;
   outputEvents: readonly ShellProbeOutputEvent[];
+  providerName: string;
   sandbox: SandboxClient;
   traceDirectory: string;
   traceFile: string;
@@ -252,10 +254,18 @@ async function assertColdOnboardPerformance(input: {
       rootEndToFirstTurnCompletionMs: performanceEvaluation.rootEndToFirstTurnCompletionMs,
       tracePhasesMs: traceWindow.phaseDurationsMs,
     },
+    firstTurnCohort: {
+      agent: "openclaw",
+      inferenceMode: "agent-thinking-off",
+      model: input.model,
+      provider: input.providerName,
+      promptContract: "sentinel-v1",
+    },
     onboardSecs: Math.ceil(traceWindow.durationMs / 1_000),
     rootStartToFirstTurnCompletionSecs,
     budget: input.budget,
     performance: {
+      anomalies: performanceEvaluation.anomalies,
       passed: performanceEvaluation.passed,
       violations: performanceEvaluation.violations,
       usedAuthoritativeLocalBaseBuild,
@@ -284,6 +294,11 @@ async function assertColdOnboardPerformance(input: {
     compactAssistantReply,
     `expected the sentinel first agent reply, got: ${turnText}`,
   ).toContain(EXPECTED_FIRST_REPLY);
+  for (const anomaly of performanceEvaluation.anomalies) {
+    console.warn(
+      `::warning title=Hosted first-turn latency anomaly::root-end-to-first-turn-completion ${anomaly.measurementMs}ms exceeded ${anomaly.budgetMs}ms by ${anomaly.overageMs}ms after all deterministic cold-onboard budgets passed`,
+    );
+  }
   expect(
     performanceEvaluation.passed,
     `onboard-root-start-to-first-turn-completion took ${rootStartToFirstTurnCompletionSecs}s; ${performanceEvaluation.violations.join("; ")}`,
@@ -399,7 +414,9 @@ test("full e2e: install, onboard, inference, cli operations, and cleanup", {
         budget: coldOnboardBudget!,
         install,
         installCompletedAtMs,
+        model: hosted.model,
         outputEvents: coldOnboard.outputEvents,
+        providerName: hosted.providerName,
         sandbox,
         traceDirectory: coldOnboard.traceDirectory,
         traceFile: coldOnboard.traceFile,
