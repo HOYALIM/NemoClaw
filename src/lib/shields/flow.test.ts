@@ -352,6 +352,7 @@ describe("shields command flow", () => {
     ).toThrow("Shields-down recovery ownership changed during the transition");
 
     expect(fs.readFileSync(statePath, "utf-8")).toBe(corruptState);
+    expect(harness.getOpenClawPosture()).toBe("mutable");
     expect(harness.errorSpy.mock.calls.flat().map(String).join("\n")).toContain(
       "Original mutable-default posture restored",
     );
