@@ -317,7 +317,11 @@ describe("shields command flow", () => {
     expect(fs.existsSync(path.join(stateDir, "shields-openclaw.json"))).toBe(false);
     const output = harness.errorSpy.mock.calls.flat().map(String).join("\n");
     expect(output).toContain("Original mutable-default posture restored");
-    expect(output).not.toContain("Lockdown restored");
+    expect(output).toContain(
+      "Auto-restore handoff failed; the original mutable-default posture was restored",
+    );
+    expect(output).not.toMatch(/lockdown (?:was )?restored/i);
+    expect(output).not.toContain("scheduled auto-restore remains authoritative");
   });
 
   it("rejects corrupt state before weakening an initially locked config", () => {
@@ -385,6 +389,10 @@ describe("shields command flow", () => {
     expect(output).toContain(
       "Fail-closed lockdown applied; the original mutable-default posture was not restored",
     );
+    expect(output).toContain(
+      "Config did not reach the mutable-default state; fail-closed lockdown was restored",
+    );
+    expect(output).not.toContain("scheduled auto-restore remains authoritative");
   });
 
   it("binds manual shields-up to the active auto-restore timer generation", () => {

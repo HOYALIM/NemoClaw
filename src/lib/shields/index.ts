@@ -2347,6 +2347,11 @@ function lockAgentConfig(
   });
 }
 
+type ShieldsDownRollbackOutcome =
+  | "mutable_default_restored"
+  | "lockdown_restored"
+  | "manual_intervention_required";
+
 function rollbackShieldsDown(
   sandboxName: string,
   target: AgentConfigTarget,
@@ -2355,7 +2360,7 @@ function rollbackShieldsDown(
   initialState: LoadedShieldsState,
   allowLegacyHermesProtocol = false,
   cachedProtocol?: HermesShieldsProtocol,
-): void {
+): ShieldsDownRollbackOutcome {
   console.error("  Rolling back — restoring policy from snapshot...");
   const rollbackResult = run(buildPolicySetCommand(snapshotPath, sandboxName), {
     ignoreError: true,
@@ -2369,7 +2374,7 @@ function rollbackShieldsDown(
         killTimer(sandboxName);
         restoreShieldsStateSnapshot(sandboxName, initialState);
         console.error("  Original mutable-default posture restored.");
-        return;
+        return "mutable_default_restored";
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         console.error(
@@ -2410,10 +2415,11 @@ function rollbackShieldsDown(
         ? "  Fail-closed lockdown applied; the original mutable-default posture was not restored."
         : "  Lockdown restored. Config was never left unguarded.",
     );
-  } else {
-    console.error("  Config remains unlocked — manual intervention required.");
-    printManualRelockRecoveryHint(sandboxName);
+    return "lockdown_restored";
   }
+  console.error("  Config remains unlocked — manual intervention required.");
+  printManualRelockRecoveryHint(sandboxName);
+  return "manual_intervention_required";
 }
 
 interface LockdownActivationResult {
@@ -2845,7 +2851,7 @@ function shieldsDownWithoutHostLock(sandboxName: string, opts: ShieldsDownOpts =
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    rollbackShieldsDown(
+    const rollbackOutcome = rollbackShieldsDown(
       sandboxName,
       target,
       snapshotPath,
@@ -2856,9 +2862,21 @@ function shieldsDownWithoutHostLock(sandboxName: string, opts: ShieldsDownOpts =
     );
     if (transition) clearShieldsDownTransition(sandboxName, transition.processToken);
     console.error(`  ERROR: ${message}`);
-    console.error(
-      "  Config did not reach the mutable-default state; the scheduled auto-restore remains authoritative.",
-    );
+    if (rollbackOutcome === "mutable_default_restored") {
+      console.error("  Config mutation failed; the original mutable-default posture was restored.");
+    } else if (rollbackOutcome === "lockdown_restored") {
+      console.error(
+        transition
+          ? "  Config did not reach the mutable-default state; fail-closed lockdown was restored and the scheduled auto-restore remains authoritative."
+          : "  Config did not reach the mutable-default state; fail-closed lockdown was restored.",
+      );
+    } else {
+      console.error(
+        transition
+          ? "  Config rollback is incomplete; the scheduled auto-restore remains authoritative."
+          : "  Config rollback is incomplete; manual intervention is required.",
+      );
+    }
     console.error(
       `  Re-run \`nemoclaw ${sandboxName} shields down\` after correcting file ownership.`,
     );
@@ -2871,7 +2889,7 @@ function shieldsDownWithoutHostLock(sandboxName: string, opts: ShieldsDownOpts =
       writeShieldsDownTransition(transition, "preparing");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      rollbackShieldsDown(
+      const rollbackOutcome = rollbackShieldsDown(
         sandboxName,
         target,
         snapshotPath,
@@ -2882,7 +2900,13 @@ function shieldsDownWithoutHostLock(sandboxName: string, opts: ShieldsDownOpts =
       );
       clearShieldsDownTransition(sandboxName, transition.processToken);
       console.error(`  ERROR: ${message}`);
-      console.error("  Auto-restore handoff failed; lockdown was restored.");
+      console.error(
+        rollbackOutcome === "mutable_default_restored"
+          ? "  Auto-restore handoff failed; the original mutable-default posture was restored."
+          : rollbackOutcome === "lockdown_restored"
+            ? "  Auto-restore handoff failed; lockdown was restored."
+            : "  Auto-restore handoff failed; rollback is incomplete and the scheduled auto-restore remains authoritative.",
+      );
       return failShieldsCommand(message, opts.throwOnError);
     }
   }
