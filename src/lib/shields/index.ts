@@ -735,6 +735,7 @@ type LoadedShieldsState = ShieldsState & {
   _hasStateFile: boolean;
   _isCorrupt?: boolean;
   _corruptError?: string;
+  _rawFileContents?: string;
 };
 
 interface ShieldsPosture {
@@ -837,13 +838,17 @@ function describeShieldsMode(mode: ShieldsPostureMode): Omit<ShieldsPosture, "st
 function loadShieldsState(sandboxName: string): LoadedShieldsState {
   const filePath = stateFilePath(sandboxName);
   if (!fs.existsSync(filePath)) return { _hasStateFile: false };
+  let rawFileContents: string | undefined;
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    const contents = fs.readFileSync(filePath, "utf-8");
+    rawFileContents = contents;
+    const parsed = JSON.parse(contents);
     if (!isShieldsState(parsed)) {
       return {
         _hasStateFile: true,
         _isCorrupt: true,
         _corruptError: "invalid shields state shape",
+        _rawFileContents: rawFileContents,
       };
     }
     const state: ShieldsState = parsed;
@@ -854,6 +859,7 @@ function loadShieldsState(sandboxName: string): LoadedShieldsState {
       _hasStateFile: true,
       _isCorrupt: true,
       _corruptError: message,
+      ...(rawFileContents === undefined ? {} : { _rawFileContents: rawFileContents }),
     };
   }
 }
@@ -901,6 +907,7 @@ function saveShieldsState(sandboxName: string, patch: ShieldsState): ShieldsStat
     _hasStateFile: _hasStateFile,
     _isCorrupt: _isCorrupt,
     _corruptError: _corruptError,
+    _rawFileContents: _rawFileContents,
     ...currentClean
   } = current;
   const updated: ShieldsState = {
@@ -916,8 +923,9 @@ function saveShieldsState(sandboxName: string, patch: ShieldsState): ShieldsStat
 function restoreShieldsStateSnapshot(sandboxName: string, state: LoadedShieldsState): void {
   const {
     _hasStateFile: hasStateFile,
-    _isCorrupt: _isCorrupt,
+    _isCorrupt: isCorrupt,
     _corruptError: _corruptError,
+    _rawFileContents: rawFileContents,
     ...persisted
   } = state;
   const filePath = stateFilePath(sandboxName);
@@ -926,6 +934,13 @@ function restoreShieldsStateSnapshot(sandboxName: string, state: LoadedShieldsSt
     return;
   }
   fs.mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+  if (isCorrupt) {
+    if (rawFileContents === undefined) {
+      throw new Error("Cannot restore corrupt shields state without its original bytes");
+    }
+    fs.writeFileSync(filePath, rawFileContents, { mode: 0o600 });
+    return;
+  }
   fs.writeFileSync(filePath, JSON.stringify(persisted, null, 2), { mode: 0o600 });
 }
 
@@ -2626,6 +2641,12 @@ function shieldsDownWithoutHostLock(sandboxName: string, opts: ShieldsDownOpts =
   validateName(sandboxName, "sandbox name");
 
   const state = loadShieldsState(sandboxName);
+  if (state._isCorrupt && state._rawFileContents === undefined) {
+    return failShieldsCommand(
+      `Cannot snapshot corrupt shields state for ${sandboxName}`,
+      opts.throwOnError,
+    );
+  }
   const initialMode = deriveShieldsMode(state, state._hasStateFile);
   if (state.shieldsDown) {
     console.error(

@@ -319,6 +319,44 @@ describe("shields command flow", () => {
     expect(output).not.toContain("Lockdown restored");
   });
 
+  it("restores corrupt mutable-default state bytes when the timer handoff fails", () => {
+    const stateDir = path.join(tmpDir, ".nemoclaw", "state");
+    const statePath = path.join(stateDir, "shields-openclaw.json");
+    const corruptState = "{not-json\n";
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(statePath, corruptState);
+    const harness = createHarness({
+      fork: () => ({
+        pid: 4242,
+        disconnect: vi.fn(),
+        unref: vi.fn(),
+        send: vi.fn(() => {
+          const transitionName = fs
+            .readdirSync(stateDir)
+            .find((entry) => entry.startsWith("shields-transition-openclaw-"));
+          const transitionPath = path.join(stateDir, transitionName!);
+          const transition = JSON.parse(fs.readFileSync(transitionPath, "utf-8"));
+          fs.writeFileSync(transitionPath, JSON.stringify({ ...transition, phase: "active" }));
+          return true;
+        }),
+        kill: vi.fn(() => true),
+      }),
+    });
+
+    expect(() =>
+      harness.shieldsDown("openclaw", {
+        timeout: "5m",
+        reason: "corrupt rollback coverage",
+        throwOnError: true,
+      }),
+    ).toThrow("Shields-down recovery ownership changed during the transition");
+
+    expect(fs.readFileSync(statePath, "utf-8")).toBe(corruptState);
+    expect(harness.errorSpy.mock.calls.flat().map(String).join("\n")).toContain(
+      "Original mutable-default posture restored",
+    );
+  });
+
   it("reports fail-closed lockdown when mutable-default rollback cannot be verified", () => {
     const harness = createHarness({
       failOpenClawGuardActions: ["unlock"],
