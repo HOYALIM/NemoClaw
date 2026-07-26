@@ -119,6 +119,7 @@ describe("prepareSandboxDockerfilePatch", () => {
       model: "model-a",
       chatUiUrl: "http://127.0.0.1:7000",
       provider: "nvidia-prod",
+      compatibleEndpointReasoning: "true",
       preferredInferenceApi: "chat",
       webSearchConfig: { fetchEnabled: true },
       hermesToolGateways: ["github"],
@@ -170,6 +171,7 @@ describe("prepareSandboxDockerfilePatch", () => {
       ["github"],
       {
         buildIdPolicy: "preserve",
+        compatibleEndpointReasoning: "true",
         toolDisclosure: "progressive",
         trustedManagedDockerfile: true,
         wslDashboardExposure: false,

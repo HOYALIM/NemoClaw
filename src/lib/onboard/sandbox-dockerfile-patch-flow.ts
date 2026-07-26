@@ -41,6 +41,7 @@ export type PrepareSandboxDockerfilePatchInput = {
   chatUiUrl: string;
   provider: string | null;
   endpointUrl?: string | null;
+  compatibleEndpointReasoning?: "true" | "false";
   preferredInferenceApi: string | null;
   webSearchConfig: WebSearchConfig | null;
   toolDisclosure?: ToolDisclosure;
@@ -114,6 +115,7 @@ export async function prepareSandboxDockerfilePatch({
   chatUiUrl,
   provider,
   endpointUrl = null,
+  compatibleEndpointReasoning,
   preferredInferenceApi,
   webSearchConfig,
   toolDisclosure = DEFAULT_TOOL_DISCLOSURE,
@@ -211,6 +213,7 @@ export async function prepareSandboxDockerfilePatch({
           ? { wslDashboardExposure: managedOpenClawWslExposure }
           : {}),
         ...(endpointUrl ? { upstreamEndpointUrl: endpointUrl } : {}),
+        ...(compatibleEndpointReasoning ? { compatibleEndpointReasoning } : {}),
         ...(dcodeAutoApprovalMode ? { dcodeAutoApprovalMode } : {}),
         requireToolDisclosureContract: Boolean(fromDockerfile),
         ...(metadata ? { baseImageResolutionMetadata: metadata } : {}),

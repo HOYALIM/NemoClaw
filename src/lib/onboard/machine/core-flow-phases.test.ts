@@ -272,6 +272,19 @@ describe("core onboard flow phases", () => {
     const updateSandboxRegistry = vi.fn();
     const createSandbox = vi.fn(async () => "created-sandbox");
     const [providerPhase, sandboxPhase] = createPhases({
+      providerDeps: {
+        setupNim: vi.fn(async () => ({
+          model: "nvidia/test",
+          provider: "compatible-endpoint",
+          endpointUrl: "https://example.test/v1",
+          credentialEnv: "NVIDIA_INFERENCE_API_KEY",
+          hermesAuthMethod: null,
+          hermesToolGateways: ["local"],
+          preferredInferenceApi: "chat",
+          compatibleEndpointReasoning: "true",
+          nimContainer: "nim-test",
+        })),
+      },
       sandboxDeps: {
         createSandbox,
         planRegisteredExtraProviders: vi.fn(() => ({
@@ -287,11 +300,12 @@ describe("core onboard flow phases", () => {
     expect(providerResult.context).toMatchObject({
       sandboxName: "my-sandbox",
       model: "nvidia/test",
-      provider: "nim",
+      provider: "compatible-endpoint",
       endpointUrl: "https://example.test/v1",
       credentialEnv: "NVIDIA_INFERENCE_API_KEY",
       hermesToolGateways: ["local"],
       preferredInferenceApi: "chat",
+      compatibleEndpointReasoning: "true",
       nimContainer: "nim-test",
     });
     expect(Array.isArray(providerResult.result)).toBe(true);
@@ -301,7 +315,7 @@ describe("core onboard flow phases", () => {
     expect(sandboxResult.context).toMatchObject({
       sandboxName: "created-sandbox",
       model: "nvidia/test",
-      provider: "nim",
+      provider: "compatible-endpoint",
       endpointUrl: "https://example.test/v1",
       credentialEnv: "NVIDIA_INFERENCE_API_KEY",
       fromDockerfile: null,
@@ -322,8 +336,9 @@ describe("core onboard flow phases", () => {
       }),
     );
     expect(createSandbox.mock.calls[0]?.at(-1)).toMatchObject({
+      compatibleEndpointReasoning: "true",
       resolved: {
-        inferenceProvider: "nim",
+        inferenceProvider: "compatible-endpoint",
         extraProviders: ["current-provider"],
         staleExtraProviders: ["stale-provider"],
       },
