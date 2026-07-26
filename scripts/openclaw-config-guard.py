@@ -3461,6 +3461,13 @@ def _transition(
                 raise GuardError(exc.code, exc.path, detail) from exc
             raise GuardError("transition-failed", opened.config_path, detail) from exc
 
+    if _is_mutable_dir_posture(opened, identity):
+        # Fresh and rebuilt sandboxes begin in this exact posture. Treating
+        # unlock as a locked-only transition makes the first shields-down fail
+        # and its rollback change the posture before a retry can succeed.
+        _preflight_restart(opened, identity)
+        return
+
     pair = _snapshot_pair(opened)
     _verify_locked_posture(opened, pair, identity, allow_blocking_flags=True)
     snapshots: list[FileSnapshot] = []

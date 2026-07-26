@@ -283,6 +283,82 @@ describe("shields command flow", () => {
     );
   });
 
+  it("restores fresh mutable-default state when the timer handoff fails", () => {
+    const stateDir = path.join(tmpDir, ".nemoclaw", "state");
+    const harness = createHarness({
+      fork: () => ({
+        pid: 4242,
+        disconnect: vi.fn(),
+        unref: vi.fn(),
+        send: vi.fn(() => {
+          const transitionName = fs
+            .readdirSync(stateDir)
+            .find((entry) => entry.startsWith("shields-transition-openclaw-"));
+          const transitionPath = path.join(stateDir, transitionName!);
+          const transition = JSON.parse(fs.readFileSync(transitionPath, "utf-8"));
+          fs.writeFileSync(transitionPath, JSON.stringify({ ...transition, phase: "active" }));
+          return true;
+        }),
+        kill: vi.fn(() => true),
+      }),
+    });
+
+    expect(() =>
+      harness.shieldsDown("openclaw", {
+        timeout: "5m",
+        reason: "rollback coverage",
+        throwOnError: true,
+      }),
+    ).toThrow("Shields-down recovery ownership changed during the transition");
+
+    expect(fs.existsSync(path.join(stateDir, "shields-openclaw.json"))).toBe(false);
+    const output = harness.errorSpy.mock.calls.flat().map(String).join("\n");
+    expect(output).toContain("Original mutable-default posture restored");
+    expect(output).not.toContain("Lockdown restored");
+  });
+
+  it("reports fail-closed lockdown when mutable-default rollback cannot be verified", () => {
+    const harness = createHarness({
+      failOpenClawGuardActions: ["unlock"],
+      dockerExecFileSync: (argv: unknown) => {
+        const args = Array.isArray(argv) ? argv.map(String) : [];
+        switch (true) {
+          case args.includes("sha256sum"):
+            return `${"a".repeat(64)}  ${String(args.at(-1))}\n`;
+          case args.includes("lsattr"):
+            return `----i---------e----- ${String(args.at(-1))}\n`;
+          case args.includes("stat"):
+            return args.at(-1) === "/sandbox"
+              ? "1775 root:sandbox\n"
+              : args.at(-1) === "/sandbox/.openclaw"
+                ? "755 root:root\n"
+                : "444 root:root\n";
+          default:
+            return "";
+        }
+      },
+    });
+
+    expect(() =>
+      harness.shieldsDown("openclaw", {
+        timeout: "5m",
+        reason: "containment coverage",
+        skipTimer: true,
+        throwOnError: true,
+      }),
+    ).toThrow(/startup-not-ready/);
+
+    const statePath = path.join(tmpDir, ".nemoclaw", "state", "shields-openclaw.json");
+    expect(JSON.parse(fs.readFileSync(statePath, "utf-8"))).toMatchObject({
+      shieldsDown: false,
+    });
+    const output = harness.errorSpy.mock.calls.flat().map(String).join("\n");
+    expect(output).toContain("applying fail-closed lockdown");
+    expect(output).toContain(
+      "Fail-closed lockdown applied; the original mutable-default posture was not restored",
+    );
+  });
+
   it("binds manual shields-up to the active auto-restore timer generation", () => {
     const stateDir = path.join(tmpDir, ".nemoclaw", "state");
     const sandboxName = "openclaw";
