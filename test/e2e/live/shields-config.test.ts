@@ -244,6 +244,7 @@ test("shields-config: live shields up/down locks config and detects drift", {
       "source install creates a live OpenClaw sandbox",
       "default config starts mutable with unified .openclaw layout",
       "documented nemoclaw exec doctor path preserves 2770/660 and gateway writes",
+      "fresh mutable-default shields down preserves the mutable config posture",
       "shields up locks config/workspace and config get redacts secrets",
       "host-root chmod-write-chmod tamper is detected as content drift",
       "shields down restores mutable modes and records audit JSONL",
@@ -428,6 +429,24 @@ test("shields-config: live shields up/down locks config and detects drift", {
   });
   expect(statusDefault.exitCode, resultText(statusDefault)).toBe(0);
   expect(statusDefault.stdout).toContain("Shields: NOT CONFIGURED");
+
+  const freshMutableDown = await runNemoclaw(
+    host,
+    [SANDBOX_NAME, "shields", "down", "--timeout", "5m", "--reason", "Fresh mutable-default E2E"],
+    { artifactName: "phase-2c-fresh-mutable-shields-down" },
+  );
+  expect(freshMutableDown.exitCode, resultText(freshMutableDown)).toBe(0);
+  expect(resultText(freshMutableDown)).toContain("Config unlocked");
+  expect(await statPath(sandbox, CONFIG_PATH, "phase-2c-config-perms-after-down")).toMatchObject({
+    mode: "660",
+    owner: "sandbox:sandbox",
+  });
+  expect(await statPath(sandbox, CONFIG_DIR, "phase-2c-config-dir-perms-after-down")).toMatchObject(
+    {
+      mode: "2770",
+      owner: "sandbox:sandbox",
+    },
+  );
 
   const layoutProbe = await sandboxShell(
     sandbox,
