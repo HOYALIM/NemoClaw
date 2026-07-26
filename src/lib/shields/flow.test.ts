@@ -28,6 +28,7 @@ setInterval(() => {}, 60000);
 type ShieldsHarness = {
   auditSpy: MockInstance;
   errorSpy: MockInstance;
+  getOpenClawPosture: () => "locked" | "mutable";
   logSpy: MockInstance;
   runSpy: MockInstance;
   shieldsDown: typeof import("./index.js").shieldsDown;
@@ -214,6 +215,7 @@ function createHarness(options: HarnessOptions = {}): ShieldsHarness {
   return {
     auditSpy,
     errorSpy,
+    getOpenClawPosture: () => openClawPosture,
     logSpy,
     runSpy,
     shieldsDown: shields.shieldsDown,
@@ -352,6 +354,7 @@ describe("shields command flow", () => {
     expect(JSON.parse(fs.readFileSync(statePath, "utf-8"))).toMatchObject({
       shieldsDown: false,
     });
+    expect(harness.getOpenClawPosture()).toBe("locked");
     const output = harness.errorSpy.mock.calls.flat().map(String).join("\n");
     expect(output).toContain("applying fail-closed lockdown");
     expect(output).toContain(
