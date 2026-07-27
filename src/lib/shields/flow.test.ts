@@ -402,7 +402,7 @@ describe("shields command flow", () => {
         reason: "corrupt fail-closed coverage",
         throwOnError: true,
       }),
-    ).toThrow("Cannot lower shields while persisted shields state is corrupt for openclaw");
+    ).toThrow("Shields state is corrupt for openclaw");
 
     expect(fs.readFileSync(statePath)).toEqual(corruptState);
     expect(harness.getOpenClawPosture()).toBe("locked");
