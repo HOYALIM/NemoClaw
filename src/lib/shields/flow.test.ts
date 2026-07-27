@@ -213,14 +213,16 @@ function createHarness(options: HarnessOptions = {}): ShieldsHarness {
             : "";
   });
   const auditSpy = vi.spyOn(audit, "appendAuditEntry").mockImplementation(() => undefined);
-  if (options.timerAuthorityRevoked !== undefined) {
+  for (const timerAuthorityRevoked of options.timerAuthorityRevoked === undefined
+    ? []
+    : [options.timerAuthorityRevoked]) {
     vi.spyOn(timerControl, "killTimer").mockReturnValue({
-      authorityRevoked: options.timerAuthorityRevoked,
+      authorityRevoked: timerAuthorityRevoked,
       markerFound: true,
       markerPid: 4242,
       wasAlive: false,
       terminated: false,
-      warnings: options.timerAuthorityRevoked
+      warnings: timerAuthorityRevoked
         ? []
         : ["Failed to remove shields timer marker: permission denied"],
     });

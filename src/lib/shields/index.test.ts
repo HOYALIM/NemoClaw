@@ -103,6 +103,12 @@ function withDefaultNodeExecFileSync(
   return defaultNodeExecFileSync(file, argv) || fallback();
 }
 
+function throwErrno(message: string, code: string): never {
+  const error = new Error(message) as NodeJS.ErrnoException;
+  error.code = code;
+  throw error;
+}
+
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shields-test-"));
   vi.stubEnv("HOME", tmpDir);
@@ -1119,23 +1125,15 @@ describe("NC-2227-05: shields timer marker behavior", () => {
 
     const processKillSpy = vi
       .spyOn(process, "kill")
-      .mockImplementation((pid: number, signal?: string | number) => {
-        if (pid === 7331 && signal === 0) {
-          const err = new Error("gone") as NodeJS.ErrnoException;
-          err.code = "ESRCH";
-          throw err;
-        }
-        return true;
-      });
+      .mockImplementation((pid: number, signal?: string | number) =>
+        pid === 7331 && signal === 0 ? throwErrno("gone", "ESRCH") : true,
+      );
     const originalUnlinkSync = fs.unlinkSync.bind(fs);
-    vi.spyOn(fs, "unlinkSync").mockImplementation((filePath: fs.PathLike) => {
-      if (String(filePath) === markerPath) {
-        const error = new Error("permission denied") as NodeJS.ErrnoException;
-        error.code = "EACCES";
-        throw error;
-      }
-      return originalUnlinkSync(filePath);
-    });
+    vi.spyOn(fs, "unlinkSync").mockImplementation((filePath: fs.PathLike) =>
+      String(filePath) === markerPath
+        ? throwErrno("permission denied", "EACCES")
+        : originalUnlinkSync(filePath),
+    );
 
     const result = killTimer("openclaw");
 
