@@ -1278,6 +1278,21 @@ function checkAndRecoverSandboxProcessesWithoutHostLock(
     if (relaunch) {
       try {
         const completion = relaunch.finalize(true);
+        if (completion.stateRestored === false || completion.rolledBack) {
+          if (!quiet) {
+            console.error(
+              completion.rolledBack
+                ? "  Sandbox state restore failed; the previous container was restored."
+                : "  Sandbox state restore failed and the previous container could not be restored automatically.",
+            );
+          }
+          return {
+            checked: true,
+            wasRunning: false,
+            recovered: false,
+            forwardRecovered: false,
+          };
+        }
         if (!completion.backupRemoved && !quiet) {
           console.error(
             "  Warning: the recovered sandbox is healthy, but its previous container backup could not be removed.",

@@ -8,6 +8,7 @@ import {
   type DockerContainerInspect,
   parseDockerInspectJson,
 } from "../../onboard/docker-gpu-patch";
+import { sameContainerId } from "../../onboard/docker-gpu-patch-clone";
 import {
   type DockerGpuPatchFinalizeOutcome,
   finalizeDockerGpuPatchBackup,
@@ -17,6 +18,7 @@ import { buildSandboxRuntimeEnvArgs } from "../../onboard/sandbox-create-launch"
 import { resolveDirectSandboxContainer } from "../../sandbox/privileged-exec";
 import { redact, redactFull } from "../../security/redact";
 import * as registry from "../../state/registry";
+import * as sandboxState from "../../state/sandbox";
 import { resolveSandboxDashboardPort } from "./forward-recovery";
 
 /**
@@ -33,7 +35,7 @@ const DOCKER_INSPECT_TIMEOUT_MS = 15000;
 
 export type ManagedSupervisorRelaunch = {
   containerId: string;
-  finalize(supervisorReady: boolean): DockerGpuPatchFinalizeOutcome;
+  finalize(supervisorReady: boolean): DockerGpuPatchFinalizeOutcome & { stateRestored?: boolean };
 };
 
 export type ManagedSupervisorRelaunchDeps = {
@@ -43,6 +45,8 @@ export type ManagedSupervisorRelaunchDeps = {
   resolveContainer?: typeof resolveDirectSandboxContainer;
   inspectContainer?: (containerId: string) => DockerContainerInspect;
   confirmMissingSupervisor?: (containerId: string) => boolean;
+  backupState?: typeof sandboxState.backupSandboxState;
+  restoreState?: typeof sandboxState.restoreSandboxState;
   recreate?: typeof recreateOpenShellDockerSandboxWithStartupCommand;
   finalize?: typeof finalizeDockerGpuPatchBackup;
 };
@@ -128,12 +132,30 @@ export function relaunchManagedSupervisorSession(
   const resolveContainer = deps.resolveContainer ?? resolveDirectSandboxContainer;
   const inspect = deps.inspectContainer ?? inspectContainer;
   const confirmMissingSupervisor = deps.confirmMissingSupervisor;
+  const backupState = deps.backupState ?? sandboxState.backupSandboxState;
+  const restoreState = deps.restoreState ?? sandboxState.restoreSandboxState;
   const recreate = deps.recreate ?? recreateOpenShellDockerSandboxWithStartupCommand;
   const finalize = deps.finalize ?? finalizeDockerGpuPatchBackup;
   try {
     const containerId = resolveContainer(sandboxName, driver);
     if (!hasLegacyKeepaliveStartup(inspect(containerId))) return null;
     if (!confirmMissingSupervisor?.(containerId)) return null;
+    const backup = backupState(sandboxName);
+    if (
+      !backup.success ||
+      !backup.manifest ||
+      backup.failedDirs.length > 0 ||
+      backup.failedFiles.length > 0
+    ) {
+      if (!quiet) {
+        console.error(
+          "  Trusted container recovery stopped before recreation because sandbox state could not be fully backed up.",
+        );
+        console.error("  The existing sandbox container was left unchanged.");
+      }
+      return null;
+    }
+    const backupManifest = backup.manifest;
     if (!quiet) {
       console.log("  Recreating the sandbox container with its managed startup command...");
     }
@@ -143,8 +165,10 @@ export function relaunchManagedSupervisorSession(
       expectedOldContainerId: containerId,
       waitForSupervisor: false,
     });
-    let completed: { supervisorReady: boolean; outcome: DockerGpuPatchFinalizeOutcome } | null =
-      null;
+    let completed: {
+      supervisorReady: boolean;
+      outcome: DockerGpuPatchFinalizeOutcome & { stateRestored?: boolean };
+    } | null = null;
     return {
       containerId: result.newContainerId,
       finalize(supervisorReady) {
@@ -156,7 +180,46 @@ export function relaunchManagedSupervisorSession(
           }
           return completed.outcome;
         }
-        const outcome = finalize({ result, supervisorReady });
+        if (!supervisorReady) {
+          const outcome = { ...finalize({ result, supervisorReady: false }), stateRestored: false };
+          completed = { supervisorReady, outcome };
+          return outcome;
+        }
+        let replacementOwned = false;
+        try {
+          replacementOwned = sameContainerId(
+            resolveContainer(sandboxName, driver),
+            result.newContainerId,
+          );
+        } catch {
+          replacementOwned = false;
+        }
+        if (!replacementOwned) {
+          const outcome = {
+            ...finalize({ result, supervisorReady: false }),
+            stateRestored: false,
+          };
+          completed = { supervisorReady, outcome };
+          return outcome;
+        }
+        let stateRestored = false;
+        try {
+          stateRestored = restoreState(sandboxName, backupManifest.backupPath).success;
+        } catch {
+          stateRestored = false;
+        }
+        if (!stateRestored) {
+          const outcome = {
+            ...finalize({ result, supervisorReady: false }),
+            stateRestored: false,
+          };
+          completed = { supervisorReady, outcome };
+          return outcome;
+        }
+        const outcome = {
+          ...finalize({ result, supervisorReady: true }),
+          stateRestored: true,
+        };
         completed = { supervisorReady, outcome };
         return outcome;
       },
