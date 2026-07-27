@@ -177,6 +177,11 @@ function projectOutcome(
     return { status: "incompatible", exitCode: 2 };
   }
   if (
+    capabilities.some((entry) => REQUIRED_CAPABILITY_IDS.has(entry.id) && entry.state === "absent")
+  ) {
+    return { status: "incompatible", exitCode: 2 };
+  }
+  if (
     capabilities.some((entry) => REQUIRED_CAPABILITY_IDS.has(entry.id) && entry.state === "unknown")
   ) {
     return { status: "inconclusive", exitCode: 3 };

@@ -130,6 +130,20 @@ describe("host system readiness projection", () => {
     expect(getSystemReadinessReferenceErrors(report)).toEqual([]);
   });
 
+  it("fails closed when a required capability is absent without an advisory", () => {
+    const report = projectHostAssessmentToSystemReadiness(
+      host({ nodeInstalled: false }),
+      [],
+      projectionOptions,
+    );
+
+    expect(report).toMatchObject({ status: "incompatible", exitCode: 2 });
+    expect(report.capabilities).toContainEqual({
+      id: "host.node",
+      state: "absent",
+    });
+  });
+
   it.each([
     {
       label: "unreachable daemon",
