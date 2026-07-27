@@ -3,6 +3,12 @@
 
 export type { SchemaCompatibility } from "./compatibility.js";
 export { checkSystemReadinessSchemaVersion } from "./compatibility.js";
+export {
+  type CollectHostReadinessOptions,
+  collectHostSystemReadiness,
+  type HostReadinessProjectionOptions,
+  projectHostAssessmentToSystemReadiness,
+} from "./host.js";
 export { getSystemReadinessReferenceErrors } from "./references.js";
 export type {
   EvidenceScalar,
