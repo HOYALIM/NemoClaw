@@ -264,6 +264,51 @@ describe("checkAndRecoverSandboxProcesses supervisor relaunch", () => {
     expect(runOpenshell).not.toHaveBeenCalled();
   });
 
+  it("prints generic recovery hints when state recovery and rollback both fail", () => {
+    mockOpenClawSandbox("restore-and-rollback-failed-box");
+    setImmediateRecoveryPolling();
+    const finalize = vi.fn(() => ({
+      backupRemoved: false,
+      rolledBack: false,
+      stateRestored: false,
+    }));
+    const relaunchManagedSupervisorSessionImpl = vi.fn(() => ({
+      containerId: "replacement-container-id",
+      finalize,
+    }));
+    const requestGatewaySupervisorAction = vi.fn((_name: string, action: string) =>
+      action === "recover" ? { status: 1, stdout: "", stderr: "SUPERVISOR_NOT_RUNNING" } : null,
+    );
+    const requestPinnedGatewaySupervisorAction = vi.fn(() => ({
+      status: 0,
+      stdout: "GATEWAY_PID=4242\n",
+      stderr: "",
+    }));
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const result = checkAndRecoverSandboxProcesses("restore-and-rollback-failed-box", {
+      quiet: false,
+      isSandboxGatewayRunningImpl: () => false,
+      requestGatewaySupervisorAction,
+      requestPinnedGatewaySupervisorAction,
+      relaunchManagedSupervisorSessionImpl,
+    });
+
+    expect(result).toMatchObject({
+      checked: true,
+      wasRunning: false,
+      recovered: false,
+      forwardRecovered: false,
+    });
+    const output = errorSpy.mock.calls.flat().join("\n");
+    expect(output).toContain(
+      "Sandbox recovery failed and the previous container could not be restored automatically.",
+    );
+    expect(output).toContain("rebuild --yes");
+    expect(output).not.toContain("Sandbox state restore failed");
+  });
+
   it("retries a busy pinned managed probe before starting the replacement forward", () => {
     mockOpenClawSandbox("busy-recovered-box");
     vi.stubEnv("NEMOCLAW_GATEWAY_RECOVERY_POLL_INTERVAL_SECONDS", "0");

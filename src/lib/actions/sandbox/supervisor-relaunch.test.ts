@@ -72,6 +72,7 @@ function baseDeps(overrides: ManagedSupervisorRelaunchDeps = {}) {
       restoredFiles: [],
       failedFiles: [],
     })),
+    removeBackup: vi.fn(() => true),
     recreate: vi.fn(() => patchResult()),
     finalize: vi.fn(({ supervisorReady }) =>
       supervisorReady
@@ -147,8 +148,10 @@ describe("relaunchManagedSupervisorSession", () => {
       backupRemoved: true,
       rolledBack: false,
       stateRestored: true,
+      stateBackupRemoved: true,
     });
     expect(deps.restoreState).toHaveBeenCalledWith("alpha", "/tmp/rebuild-backups/alpha/recovery");
+    expect(deps.removeBackup).toHaveBeenCalledWith("alpha", "/tmp/rebuild-backups/alpha/recovery");
     expect(deps.finalize).toHaveBeenCalledWith({
       result: expect.objectContaining({ newContainerId: "new-container-id" }),
       supervisorReady: true,
@@ -163,8 +166,10 @@ describe("relaunchManagedSupervisorSession", () => {
       backupRemoved: false,
       rolledBack: true,
       stateRestored: false,
+      stateBackupRemoved: true,
     });
     expect(deps.restoreState).not.toHaveBeenCalled();
+    expect(deps.removeBackup).toHaveBeenCalledWith("alpha", "/tmp/rebuild-backups/alpha/recovery");
     expect(deps.finalize).toHaveBeenCalledWith({
       result: expect.objectContaining({ backupContainerName: expect.any(String) }),
       supervisorReady: false,
@@ -202,7 +207,9 @@ describe("relaunchManagedSupervisorSession", () => {
       backupRemoved: false,
       rolledBack: true,
       stateRestored: false,
+      stateBackupRemoved: true,
     });
+    expect(deps.removeBackup).toHaveBeenCalledWith("alpha", "/tmp/rebuild-backups/alpha/recovery");
     expect(deps.finalize).toHaveBeenCalledWith({
       result: expect.objectContaining({ backupContainerName: expect.any(String) }),
       supervisorReady: false,
@@ -222,11 +229,39 @@ describe("relaunchManagedSupervisorSession", () => {
       backupRemoved: false,
       rolledBack: true,
       stateRestored: false,
+      stateBackupRemoved: true,
     });
     expect(deps.restoreState).not.toHaveBeenCalled();
+    expect(deps.removeBackup).toHaveBeenCalledWith("alpha", "/tmp/rebuild-backups/alpha/recovery");
     expect(deps.finalize).toHaveBeenCalledWith({
       result: expect.objectContaining({ backupContainerName: expect.any(String) }),
       supervisorReady: false,
+    });
+  });
+
+  it("retains the state backup when rollback fails", () => {
+    const deps = baseDeps({
+      finalize: vi.fn(() => ({ backupRemoved: false, rolledBack: false })),
+    });
+    const relaunch = relaunchManagedSupervisorSession("alpha", { quiet: true, deps });
+
+    expect(relaunch?.finalize(false)).toEqual({
+      backupRemoved: false,
+      rolledBack: false,
+      stateRestored: false,
+    });
+    expect(deps.removeBackup).not.toHaveBeenCalled();
+  });
+
+  it("reports best-effort state-backup cleanup failure after a successful restore", () => {
+    const deps = baseDeps({ removeBackup: vi.fn(() => false) });
+    const relaunch = relaunchManagedSupervisorSession("alpha", { quiet: true, deps });
+
+    expect(relaunch?.finalize(true)).toEqual({
+      backupRemoved: true,
+      rolledBack: false,
+      stateRestored: true,
+      stateBackupRemoved: false,
     });
   });
 

@@ -53,6 +53,17 @@ beforeEach(() => {
 });
 
 describe("prepared rebuild backup recovery validation (#6114)", () => {
+  it("removes only an exact backup child owned by the target sandbox", () => {
+    const manifest = writeBackup("alpha", "2026-07-01T06-50-42-043Z");
+    const outsidePath = path.join(TMP_HOME, "outside-backup");
+    fs.mkdirSync(outsidePath, { recursive: true });
+
+    expect(sandboxState.removeSandboxStateBackup("alpha", String(manifest.backupPath))).toBe(true);
+    expect(fs.existsSync(String(manifest.backupPath))).toBe(false);
+    expect(sandboxState.removeSandboxStateBackup("alpha", outsidePath)).toBe(false);
+    expect(fs.existsSync(outsidePath)).toBe(true);
+  });
+
   it("does not expose a latest backup with a missing or malformed manifest", () => {
     const backupPath = path.join(BACKUPS_ROOT, "alpha", "2026-07-01T06-50-41-044Z");
     fs.mkdirSync(backupPath, { recursive: true });

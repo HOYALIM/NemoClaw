@@ -35,7 +35,10 @@ const DOCKER_INSPECT_TIMEOUT_MS = 15000;
 
 export type ManagedSupervisorRelaunch = {
   containerId: string;
-  finalize(supervisorReady: boolean): DockerGpuPatchFinalizeOutcome & { stateRestored?: boolean };
+  finalize(supervisorReady: boolean): DockerGpuPatchFinalizeOutcome & {
+    stateRestored?: boolean;
+    stateBackupRemoved?: boolean;
+  };
 };
 
 export type ManagedSupervisorRelaunchDeps = {
@@ -47,6 +50,7 @@ export type ManagedSupervisorRelaunchDeps = {
   confirmMissingSupervisor?: (containerId: string) => boolean;
   backupState?: typeof sandboxState.backupSandboxState;
   restoreState?: typeof sandboxState.restoreSandboxState;
+  removeBackup?: typeof sandboxState.removeSandboxStateBackup;
   recreate?: typeof recreateOpenShellDockerSandboxWithStartupCommand;
   finalize?: typeof finalizeDockerGpuPatchBackup;
 };
@@ -134,6 +138,7 @@ export function relaunchManagedSupervisorSession(
   const confirmMissingSupervisor = deps.confirmMissingSupervisor;
   const backupState = deps.backupState ?? sandboxState.backupSandboxState;
   const restoreState = deps.restoreState ?? sandboxState.restoreSandboxState;
+  const removeBackup = deps.removeBackup ?? sandboxState.removeSandboxStateBackup;
   const recreate = deps.recreate ?? recreateOpenShellDockerSandboxWithStartupCommand;
   const finalize = deps.finalize ?? finalizeDockerGpuPatchBackup;
   try {
@@ -167,8 +172,18 @@ export function relaunchManagedSupervisorSession(
     });
     let completed: {
       supervisorReady: boolean;
-      outcome: DockerGpuPatchFinalizeOutcome & { stateRestored?: boolean };
+      outcome: DockerGpuPatchFinalizeOutcome & {
+        stateRestored?: boolean;
+        stateBackupRemoved?: boolean;
+      };
     } | null = null;
+    const removeSettledStateBackup = (): boolean => {
+      try {
+        return removeBackup(sandboxName, backupManifest.backupPath);
+      } catch {
+        return false;
+      }
+    };
     return {
       containerId: result.newContainerId,
       finalize(supervisorReady) {
@@ -181,7 +196,12 @@ export function relaunchManagedSupervisorSession(
           return completed.outcome;
         }
         if (!supervisorReady) {
-          const outcome = { ...finalize({ result, supervisorReady: false }), stateRestored: false };
+          const finalized = finalize({ result, supervisorReady: false });
+          const outcome = {
+            ...finalized,
+            stateRestored: false,
+            ...(finalized.rolledBack ? { stateBackupRemoved: removeSettledStateBackup() } : {}),
+          };
           completed = { supervisorReady, outcome };
           return outcome;
         }
@@ -195,9 +215,11 @@ export function relaunchManagedSupervisorSession(
           replacementOwned = false;
         }
         if (!replacementOwned) {
+          const finalized = finalize({ result, supervisorReady: false });
           const outcome = {
-            ...finalize({ result, supervisorReady: false }),
+            ...finalized,
             stateRestored: false,
+            ...(finalized.rolledBack ? { stateBackupRemoved: removeSettledStateBackup() } : {}),
           };
           completed = { supervisorReady, outcome };
           return outcome;
@@ -209,9 +231,11 @@ export function relaunchManagedSupervisorSession(
           stateRestored = false;
         }
         if (!stateRestored) {
+          const finalized = finalize({ result, supervisorReady: false });
           const outcome = {
-            ...finalize({ result, supervisorReady: false }),
+            ...finalized,
             stateRestored: false,
+            ...(finalized.rolledBack ? { stateBackupRemoved: removeSettledStateBackup() } : {}),
           };
           completed = { supervisorReady, outcome };
           return outcome;
@@ -219,6 +243,7 @@ export function relaunchManagedSupervisorSession(
         const outcome = {
           ...finalize({ result, supervisorReady: true }),
           stateRestored: true,
+          stateBackupRemoved: removeSettledStateBackup(),
         };
         completed = { supervisorReady, outcome };
         return outcome;

@@ -1282,9 +1282,19 @@ function checkAndRecoverSandboxProcessesWithoutHostLock(
           if (!quiet) {
             console.error(
               completion.rolledBack
-                ? "  Sandbox state restore failed; the previous container was restored."
-                : "  Sandbox state restore failed and the previous container could not be restored automatically.",
+                ? "  Sandbox recovery did not complete; the previous container was restored."
+                : "  Sandbox recovery failed and the previous container could not be restored automatically.",
             );
+            if (completion.rolledBack && completion.stateBackupRemoved === false) {
+              console.error("  Warning: the temporary sandbox state backup could not be removed.");
+            }
+            if (!completion.rolledBack) {
+              printHostManagedGatewayRecoveryHints(
+                sandboxName,
+                recoveryAgent,
+                managedRecoveryFailureLayer,
+              );
+            }
           }
           return {
             checked: true,
@@ -1296,6 +1306,11 @@ function checkAndRecoverSandboxProcessesWithoutHostLock(
         if (!completion.backupRemoved && !quiet) {
           console.error(
             "  Warning: the recovered sandbox is healthy, but its previous container backup could not be removed.",
+          );
+        }
+        if (completion.stateBackupRemoved === false && !quiet) {
+          console.error(
+            "  Warning: the recovered sandbox is healthy, but its temporary state backup could not be removed.",
           );
         }
       } catch {
