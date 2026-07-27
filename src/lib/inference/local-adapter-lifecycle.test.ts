@@ -158,10 +158,17 @@ describe("local adapter lifecycle", () => {
   });
 
   it("fails closed when a chunked health response exceeds the memory budget", async () => {
+    const expectedTokenHash = localAdapterTokenHash("secret-token");
+    const payload = Buffer.from(
+      JSON.stringify({
+        tokenHash: expectedTokenHash,
+        padding: " ".repeat(LOCAL_ADAPTER_HEALTH_MAX_RESPONSE_BYTES),
+      }),
+    );
     const server = http.createServer((_req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.write(Buffer.alloc(LOCAL_ADAPTER_HEALTH_MAX_RESPONSE_BYTES, 0x20));
-      res.end(Buffer.from([0x20]));
+      res.write(payload.subarray(0, LOCAL_ADAPTER_HEALTH_MAX_RESPONSE_BYTES));
+      res.end(payload.subarray(LOCAL_ADAPTER_HEALTH_MAX_RESPONSE_BYTES));
     });
     const port = await listen(server);
 
@@ -169,7 +176,7 @@ describe("local adapter lifecycle", () => {
       probeLocalAdapterHealth({
         host: "127.0.0.1",
         port,
-        expectedTokenHash: localAdapterTokenHash("secret-token"),
+        expectedTokenHash,
       }),
     ).resolves.toBe(false);
   });
