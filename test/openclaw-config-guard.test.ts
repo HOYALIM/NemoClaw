@@ -7,6 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { fileIdentityAndBytes } from "./helpers/file-identity.js";
 
 const GUARD_PATH = path.resolve("scripts/openclaw-config-guard.py");
 const fixtures: string[] = [];
@@ -395,12 +396,10 @@ describe("openclaw-config-guard", () => {
   it("keeps exact mutable and locked postures unchanged across idempotent transitions", () => {
     const mutable = fixture();
     const files = [mutable.configPath, mutable.hashPath];
-    const before = files.map((file) => [fs.statSync(file).ino, fs.readFileSync(file)]);
+    const before = files.map(fileIdentityAndBytes);
     expect(runGuard("unlock", mutable.configDir).status).toBe(0);
     expect([mode(mutable.root), mode(mutable.configDir)]).toEqual([0o755, 0o2770]);
-    for (const [index, file] of files.entries()) {
-      expect([fs.statSync(file).ino, fs.readFileSync(file)]).toEqual(before[index]);
-    }
+    expect(files.map(fileIdentityAndBytes)).toEqual(before);
 
     const { root, configDir, configPath, hashPath } = fixture();
     const first = runGuard("lock", configDir);
