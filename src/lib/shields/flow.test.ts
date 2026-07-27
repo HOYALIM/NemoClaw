@@ -41,11 +41,13 @@ type ShieldsHarness = {
 let tmpDir: string;
 
 type HarnessOptions = {
+  confirmOpenClawInodeFlags?: boolean;
   directSandboxUnavailable?: boolean;
   dockerExecFileSync?: (argv: unknown) => string;
   failOpenClawGuardActions?: Array<"lock" | "unlock">;
   initialOpenClawPosture?: "locked" | "mutable";
   invokedAs?: "nemoclaw" | "nemohermes";
+  timerAuthorityRevoked?: boolean;
   openClawGuardFailure?: {
     code: string;
     path: string;
@@ -88,6 +90,7 @@ function createHarness(options: HarnessOptions = {}): ShieldsHarness {
   const privilegedExec = requireDist("../sandbox/privileged-exec.js");
   const dockerExec = requireDist("../adapters/docker/exec.js");
   const audit = requireDist("./audit.js");
+  const timerControl = requireDist("./timer-control.js");
   const childProcess = requireDist("node:child_process");
   let openClawPosture: "locked" | "mutable" = options.initialOpenClawPosture ?? "mutable";
 
@@ -193,21 +196,35 @@ function createHarness(options: HarnessOptions = {}): ShieldsHarness {
       ? options.dockerExecFileSync(argv)
       : args.includes("sha256sum")
         ? "a".repeat(64) + "  /sandbox/.openclaw/openclaw.json\n"
-        : args.includes("stat")
-          ? args.at(-1) === "/sandbox"
-            ? openClawPosture === "locked"
-              ? "1775 root:sandbox\n"
-              : "755 sandbox:sandbox\n"
-            : args.at(-1) === "/sandbox/.openclaw"
+        : args.includes("lsattr") && options.confirmOpenClawInodeFlags
+          ? `${openClawPosture === "locked" ? "----i---------e-----" : "----------------------"} ${String(args.at(-1))}\n`
+          : args.includes("stat")
+            ? args.at(-1) === "/sandbox"
               ? openClawPosture === "locked"
-                ? "755 root:root\n"
-                : "2770 sandbox:sandbox\n"
-              : openClawPosture === "locked"
-                ? "444 root:root\n"
-                : "660 sandbox:sandbox\n"
-          : "";
+                ? "1775 root:sandbox\n"
+                : "755 sandbox:sandbox\n"
+              : args.at(-1) === "/sandbox/.openclaw"
+                ? openClawPosture === "locked"
+                  ? "755 root:root\n"
+                  : "2770 sandbox:sandbox\n"
+                : openClawPosture === "locked"
+                  ? "444 root:root\n"
+                  : "660 sandbox:sandbox\n"
+            : "";
   });
   const auditSpy = vi.spyOn(audit, "appendAuditEntry").mockImplementation(() => undefined);
+  if (options.timerAuthorityRevoked !== undefined) {
+    vi.spyOn(timerControl, "killTimer").mockReturnValue({
+      authorityRevoked: options.timerAuthorityRevoked,
+      markerFound: true,
+      markerPid: 4242,
+      wasAlive: false,
+      terminated: false,
+      warnings: options.timerAuthorityRevoked
+        ? []
+        : ["Failed to remove shields timer marker: permission denied"],
+    });
+  }
 
   const shields = requireDist(shieldsModulePath);
   logSpy.mockClear();
@@ -315,6 +332,7 @@ describe("shields command flow", () => {
     ).toThrow("Shields-down recovery ownership changed during the transition");
 
     expect(fs.existsSync(path.join(stateDir, "shields-openclaw.json"))).toBe(false);
+    expect(harness.getOpenClawPosture()).toBe("mutable");
     const output = harness.errorSpy.mock.calls.flat().map(String).join("\n");
     expect(output).toContain("Original mutable-default posture restored");
     expect(output).toContain(
@@ -322,6 +340,48 @@ describe("shields command flow", () => {
     );
     expect(output).not.toMatch(/lockdown (?:was )?restored/i);
     expect(output).not.toContain("scheduled auto-restore remains authoritative");
+  });
+
+  it("fails closed when mutable-default rollback cannot revoke timer authority", () => {
+    const stateDir = path.join(tmpDir, ".nemoclaw", "state");
+    const harness = createHarness({
+      confirmOpenClawInodeFlags: true,
+      timerAuthorityRevoked: false,
+      fork: () => ({
+        pid: 4242,
+        disconnect: vi.fn(),
+        unref: vi.fn(),
+        send: vi.fn(() => {
+          const transitionName = fs
+            .readdirSync(stateDir)
+            .find((entry) => entry.startsWith("shields-transition-openclaw-"));
+          const transitionPath = path.join(stateDir, transitionName!);
+          const transition = JSON.parse(fs.readFileSync(transitionPath, "utf-8"));
+          fs.writeFileSync(transitionPath, JSON.stringify({ ...transition, phase: "active" }));
+          return true;
+        }),
+        kill: vi.fn(() => true),
+      }),
+    });
+
+    expect(() =>
+      harness.shieldsDown("openclaw", {
+        timeout: "5m",
+        reason: "timer authority coverage",
+        throwOnError: true,
+      }),
+    ).toThrow("Shields-down recovery ownership changed during the transition");
+
+    expect(harness.getOpenClawPosture()).toBe("locked");
+    expect(
+      JSON.parse(fs.readFileSync(path.join(stateDir, "shields-openclaw.json"), "utf-8")),
+    ).toMatchObject({ shieldsDown: false });
+    const output = harness.errorSpy.mock.calls.flat().map(String).join("\n");
+    expect(output).toContain("Cannot revoke auto-restore timer authority");
+    expect(output).toContain(
+      "Fail-closed lockdown applied; the original mutable-default posture was not restored",
+    );
+    expect(output).not.toContain("Original mutable-default posture restored");
   });
 
   it("rejects corrupt state before weakening an initially locked config", () => {

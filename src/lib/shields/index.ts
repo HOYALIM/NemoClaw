@@ -2371,7 +2371,12 @@ function rollbackShieldsDown(
     if (initialMode === "mutable_default" && target.agentName === "openclaw") {
       try {
         unlockAgentConfig(sandboxName, target, false, allowLegacyHermesProtocol, cachedProtocol);
-        killTimer(sandboxName);
+        const timerCancellation = killTimer(sandboxName);
+        if (!timerCancellation.authorityRevoked) {
+          throw new Error(
+            `Cannot revoke auto-restore timer authority: ${timerCancellation.warnings.join("; ")}`,
+          );
+        }
         restoreShieldsStateSnapshot(sandboxName, initialState);
         console.error("  Original mutable-default posture restored.");
         return "mutable_default_restored";
