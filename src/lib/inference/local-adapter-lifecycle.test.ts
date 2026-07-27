@@ -13,6 +13,7 @@ import {
   isLocalAdapterProcess,
   killLocalAdapterPid,
   loadLocalAdapterPid,
+  LOCAL_ADAPTER_HEALTH_MAX_RESPONSE_BYTES,
   localAdapterTokenHash,
   persistLocalAdapterPid,
   probeLocalAdapterHealth,
@@ -152,6 +153,23 @@ describe("local adapter lifecycle", () => {
         host: "127.0.0.1",
         port,
         expectedTokenHash: localAdapterTokenHash("other-token"),
+      }),
+    ).resolves.toBe(false);
+  });
+
+  it("fails closed when a chunked health response exceeds the memory budget", async () => {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.write(Buffer.alloc(LOCAL_ADAPTER_HEALTH_MAX_RESPONSE_BYTES, 0x20));
+      res.end(Buffer.from([0x20]));
+    });
+    const port = await listen(server);
+
+    await expect(
+      probeLocalAdapterHealth({
+        host: "127.0.0.1",
+        port,
+        expectedTokenHash: localAdapterTokenHash("secret-token"),
       }),
     ).resolves.toBe(false);
   });
