@@ -186,6 +186,13 @@ describe("hasCompatibleEndpointReasoningDrift", () => {
         registryEntry: { name: "saved", compatibleEndpointReasoning: "true" },
       }),
     ).toBe(false);
+    expect(
+      hasCompatibleEndpointReasoningDrift({
+        provider: "compatible-endpoint",
+        compatibleEndpointReasoning: "true",
+        registryEntry: { name: "saved" },
+      }),
+    ).toBe(true);
   });
 
   it("ignores reasoning metadata for providers that do not support the capability", () => {
