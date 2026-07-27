@@ -14,6 +14,12 @@ export type ModelRouterProcessOwnershipDeps = {
   readCommandLine?: (pid: number) => string[] | null;
 };
 
+export type StopModelRouterProcessDeps = ModelRouterProcessOwnershipDeps & {
+  isHealthy?: (port: number, timeoutMs?: number) => Promise<boolean>;
+  kill?: (pid: number, signal: NodeJS.Signals) => void;
+  sleep?: (delayMs: number) => Promise<void>;
+};
+
 type ModelRouterCommandLineReaderDeps = {
   readProcCommandLine?: (pid: number) => string[] | null;
   readPsCommandLine?: (pid: number) => string[] | null;
@@ -118,25 +124,94 @@ export function doesModelRouterProcessOwnPort(
   return Array.isArray(args) && isModelRouterCommandLineForPort(args, port);
 }
 
-export async function stopModelRouterProcess(pid: number, port: number): Promise<void> {
+/**
+ * Stop the exact router process and return only after both its PID and health
+ * endpoint disappear. Ownership is checked again before SIGKILL to avoid
+ * signaling a PID that was reused during the graceful-shutdown window.
+ */
+export async function stopModelRouterProcess(
+  pid: number,
+  port: number,
+  deps: StopModelRouterProcessDeps = {},
+): Promise<void> {
+  const isRunning = deps.isRunning ?? isProcessRunning;
+  const readCommandLine = deps.readCommandLine ?? readModelRouterProcessCommandLine;
+  const isHealthy = deps.isHealthy ?? isRouterHealthy;
+  const kill = deps.kill ?? ((targetPid, signal) => process.kill(targetPid, signal));
+  const sleep =
+    deps.sleep ?? ((delayMs) => new Promise<void>((resolve) => setTimeout(resolve, delayMs)));
+
+  if (!isRunning(pid)) {
+    if (!(await isHealthy(port, 1000))) return;
+    throw new Error(
+      `Refusing to replace model router: PID ${pid} exited but port ${port} remains healthy.`,
+    );
+  }
+  if (
+    !doesModelRouterProcessOwnPort(pid, port, {
+      isRunning,
+      readCommandLine,
+    })
+  ) {
+    throw new Error(
+      `Refusing to stop PID ${pid}: it is not the model-router proxy for port ${port}.`,
+    );
+  }
+
   try {
-    process.kill(pid, "SIGTERM");
-  } catch {
-    return;
+    kill(pid, "SIGTERM");
+  } catch (error) {
+    if (!isRunning(pid) && !(await isHealthy(port, 1000))) return;
+    throw new Error(
+      `Failed to send SIGTERM to model router PID ${pid}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
   for (let _attempt = 0; _attempt < 10; _attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    if (!isProcessRunning(pid) && !(await isRouterHealthy(port, 1000))) return;
+    await sleep(500);
+    if (!isRunning(pid) && !(await isHealthy(port, 1000))) return;
   }
+
+  if (!isRunning(pid)) {
+    throw new Error(
+      `Model router PID ${pid} exited after SIGTERM, but port ${port} remains healthy.`,
+    );
+  }
+  if (
+    !doesModelRouterProcessOwnPort(pid, port, {
+      isRunning,
+      readCommandLine,
+    })
+  ) {
+    throw new Error(
+      `Refusing to send SIGKILL to PID ${pid}: model-router ownership changed during shutdown.`,
+    );
+  }
+
   try {
-    process.kill(pid, "SIGKILL");
-  } catch {
-    // already stopped
+    kill(pid, "SIGKILL");
+  } catch (error) {
+    if (!isRunning(pid) && !(await isHealthy(port, 1000))) return;
+    throw new Error(
+      `Failed to send SIGKILL to model router PID ${pid}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
   for (let _attempt = 0; _attempt < 5; _attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    if (!isProcessRunning(pid) && !(await isRouterHealthy(port, 1000))) return;
+    await sleep(500);
+    if (!isRunning(pid) && !(await isHealthy(port, 1000))) return;
   }
+
+  const processStillRunning = isRunning(pid);
+  const endpointStillHealthy = await isHealthy(port, 1000);
+  if (!processStillRunning && !endpointStillHealthy) return;
+  const survivors = [
+    processStillRunning ? `PID ${pid}` : null,
+    endpointStillHealthy ? `health endpoint on port ${port}` : null,
+  ].filter(Boolean);
+  throw new Error(`Model router shutdown did not converge; still active: ${survivors.join(", ")}.`);
 }
 
 /**
