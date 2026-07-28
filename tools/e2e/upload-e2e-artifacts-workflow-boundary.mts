@@ -68,6 +68,13 @@ type ExplicitUploadContract = {
 
 const EXPLICIT_UPLOAD_CONTRACTS = new Map<string, ExplicitUploadContract>([
   [
+    "generate-matrix",
+    {
+      name: "e2e-dispatch-${{ github.run_id }}-${{ github.run_attempt }}",
+      path: "${{ runner.temp }}/nemoclaw-e2e-dispatch/dispatch.json",
+    },
+  ],
+  [
     "retired-selector-compatibility",
     {
       name: "e2e-retired-selector-compatibility",
@@ -81,7 +88,7 @@ const EXPLICIT_UPLOAD_CONTRACTS = new Map<string, ExplicitUploadContract>([
       path: [
         "${{ steps.workspace.outputs.work_dir }}/lane.log",
         "${{ steps.workspace.outputs.work_dir }}/dispatch.json",
-        "${{ steps.workspace.outputs.work_dir }}/qualification.json",
+        "${{ steps.workspace.outputs.work_dir }}/launchable-e2e.json",
         "${{ steps.workspace.outputs.work_dir }}/full-e2e.log",
         "${{ steps.workspace.outputs.work_dir }}/cleanup.json",
         "",
@@ -227,6 +234,7 @@ const EXPLICIT_UPLOAD_CONTRACTS = new Map<string, ExplicitUploadContract>([
 ]);
 
 const EXPLICIT_CALLER_CONDITIONS = new Map<string, string>([
+  ["generate-matrix", "${{ github.event_name == 'workflow_dispatch' }}"],
   ["staging-brev-launchable", "${{ always() && steps.workspace.outputs.work_dir != '' }}"],
   ["mcp-bridge", MCP_SCANNED_UPLOAD_CONDITION],
   ["mcp-bridge-dev", MCP_SCANNED_UPLOAD_CONDITION],
@@ -353,6 +361,7 @@ export function validateUploadE2eArtifactsInvocations(workflow: WorkflowRecord):
         const env = record(job.env);
         return (
           jobName === "staging-brev-launchable" ||
+          jobName === "generate-matrix" ||
           jobName === "live" ||
           jobName === RETIRED_SELECTOR_COMPATIBILITY_JOB ||
           env.E2E_JOB === "1" ||
