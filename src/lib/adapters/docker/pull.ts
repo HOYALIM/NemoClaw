@@ -7,7 +7,7 @@ import { BoundedLineDecoder } from "../../core/bounded-line-transcript";
 import { ROOT } from "../../runner";
 import { buildSubprocessEnv } from "../../subprocess-env";
 import { dockerSpawn } from "./exec";
-import { dockerRun, type DockerRunOptions, type DockerRunResult } from "./run";
+import { type DockerRunOptions, type DockerRunResult, dockerRun } from "./run";
 
 export function dockerPull(imageRef: string, opts: DockerRunOptions = {}): DockerRunResult {
   return dockerRun(["pull", imageRef], opts);

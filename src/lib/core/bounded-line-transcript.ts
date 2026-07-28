@@ -18,6 +18,7 @@ export class BoundedLineDecoder {
   private readonly onLine: (line: string) => void;
   private pending = "";
   private omittedPendingChars = 0;
+  private skipLeadingLineFeed = false;
   private ended = false;
 
   constructor(options: BoundedLineDecoderOptions) {
@@ -36,18 +37,37 @@ export class BoundedLineDecoder {
   end(): void {
     if (this.ended) return;
     this.consume(this.decoder.end());
+    this.skipLeadingLineFeed = false;
     if (this.pending || this.omittedPendingChars > 0) this.flushLine();
     this.ended = true;
   }
 
   private consume(text: string): void {
     if (!text) return;
-    const parts = text.split(/\r\n|\r|\n/);
-    this.appendPending(parts[0] ?? "");
-    for (let index = 1; index < parts.length; index += 1) {
-      this.flushLine();
-      this.appendPending(parts[index] ?? "");
+
+    let start = 0;
+    if (this.skipLeadingLineFeed) {
+      this.skipLeadingLineFeed = false;
+      if (text.startsWith("\n")) start = 1;
     }
+
+    for (let index = start; index < text.length; index += 1) {
+      const character = text[index];
+      if (character !== "\r" && character !== "\n") continue;
+
+      this.appendPending(text.slice(start, index));
+      if (character === "\r" && index === text.length - 1) {
+        this.flushLine();
+        this.skipLeadingLineFeed = true;
+        return;
+      }
+
+      this.flushLine();
+      if (character === "\r" && text[index + 1] === "\n") index += 1;
+      start = index + 1;
+    }
+
+    this.appendPending(text.slice(start));
   }
 
   private appendPending(text: string): void {

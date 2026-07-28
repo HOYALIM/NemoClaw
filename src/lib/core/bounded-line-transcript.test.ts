@@ -22,6 +22,21 @@ describe("BoundedLineDecoder", () => {
     expect(lines).toEqual(["alpha", "안녕", "omega"]);
   });
 
+  it("treats a carriage return and line feed split across chunks as one boundary", () => {
+    const lines: string[] = [];
+    const decoder = new BoundedLineDecoder({
+      maxPendingChars: 32,
+      onLine: (line) => lines.push(line),
+    });
+
+    decoder.write("alpha\r");
+    decoder.write("\nbeta\r");
+    decoder.write("gamma\n");
+    decoder.end();
+
+    expect(lines).toEqual(["alpha", "beta", "gamma"]);
+  });
+
   it("bounds a child stream that never emits a line break", () => {
     const lines: string[] = [];
     const decoder = new BoundedLineDecoder({
