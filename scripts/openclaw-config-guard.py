@@ -3465,7 +3465,14 @@ def _transition(
         # Fresh and rebuilt sandboxes begin in this exact posture. Treating
         # unlock as a locked-only transition makes the first shields-down fail
         # and its rollback change the posture before a retry can succeed.
-        _preflight_restart(opened, identity)
+        pair = _snapshot_raw_pair(opened)
+        _verify_mutable_posture(opened, pair, identity)
+        _validate_runtime_config_json5(
+            pair[0].data,
+            posixpath.join(opened.config_path, "openclaw.json"),
+            identity,
+        )
+        _assert_config_binding(opened)
         return
 
     pair = _snapshot_pair(opened)

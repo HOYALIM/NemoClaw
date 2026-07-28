@@ -73,7 +73,7 @@ if failure in {"installed-nonroot-no-cap", "installed-nonroot-not-ready"}:
     module._pid1_effective_uid = lambda: identity.root_uid + 1
 if failure == "startup-owner":
     module.os.getppid = lambda: 1
-if failure == "pair-race":
+if failure in {"pair-race", "mutable-dir-drift"}:
     original_snapshot = module._snapshot_file
     raced = False
     def race_pair(opened, name):
@@ -81,6 +81,7 @@ if failure == "pair-race":
         snapshot = original_snapshot(opened, name)
         if name == "openclaw.json" and not raced:
             raced = True
+            if failure == "mutable-dir-drift": os.chmod(config_dir, 0o700); return snapshot
             updated = b'{"gateway":{"port":19001}}\n'
             with open(os.path.join(config_dir, "openclaw.json"), "wb") as stream:
                 stream.write(updated)
@@ -400,7 +401,7 @@ describe("openclaw-config-guard", () => {
     expect(runGuard("unlock", mutable.configDir).status).toBe(0);
     expect([mode(mutable.root), mode(mutable.configDir)]).toEqual([0o755, 0o2770]);
     expect(files.map(fileIdentityAndBytes)).toEqual(before);
-
+    expect(runGuard("unlock", mutable.configDir, "mutable-dir-drift").status).toBe(1);
     const { root, configDir, configPath, hashPath } = fixture();
     const first = runGuard("lock", configDir);
     expect(first.status, JSON.stringify(first.lines)).toBe(0);
