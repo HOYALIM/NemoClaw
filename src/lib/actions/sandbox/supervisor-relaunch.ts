@@ -141,6 +141,7 @@ export function relaunchManagedSupervisorSession(
   const removeBackup = deps.removeBackup ?? sandboxState.removeSandboxStateBackup;
   const recreate = deps.recreate ?? recreateOpenShellDockerSandboxWithStartupCommand;
   const finalize = deps.finalize ?? finalizeDockerGpuPatchBackup;
+  let pendingStateBackupPath: string | null = null;
   try {
     const containerId = resolveContainer(sandboxName, driver);
     if (!hasLegacyKeepaliveStartup(inspect(containerId))) return null;
@@ -168,6 +169,7 @@ export function relaunchManagedSupervisorSession(
       return null;
     }
     const backupManifest = backup.manifest;
+    pendingStateBackupPath = backupManifest.backupPath;
     if (!quiet) {
       console.log("  Recreating the sandbox container with its managed startup command...");
     }
@@ -177,6 +179,7 @@ export function relaunchManagedSupervisorSession(
       expectedOldContainerId: containerId,
       waitForSupervisor: false,
     });
+    pendingStateBackupPath = null;
     let completed: {
       supervisorReady: boolean;
       outcome: DockerGpuPatchFinalizeOutcome & {
@@ -257,6 +260,13 @@ export function relaunchManagedSupervisorSession(
       },
     };
   } catch (error) {
+    if (pendingStateBackupPath) {
+      try {
+        removeBackup(sandboxName, pendingStateBackupPath);
+      } catch {
+        // Preserve the recreation failure that stopped container recovery.
+      }
+    }
     if (!quiet) {
       const detail = error instanceof Error ? error.message : String(error);
       console.error(`  Trusted container recovery could not start: ${redactFull(redact(detail))}`);

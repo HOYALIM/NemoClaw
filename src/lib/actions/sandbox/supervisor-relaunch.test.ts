@@ -280,6 +280,25 @@ describe("relaunchManagedSupervisorSession", () => {
     });
 
     expect(relaunchManagedSupervisorSession("alpha", { quiet: true, deps })).toBeNull();
+    expect(deps.removeBackup).toHaveBeenCalledWith("alpha", "/tmp/rebuild-backups/alpha/recovery");
+  });
+
+  it("preserves the recreation diagnostic when state-backup cleanup throws", () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const deps = baseDeps({
+      removeBackup: vi.fn(() => {
+        throw new Error("backup cleanup failed");
+      }),
+      recreate: vi.fn(() => {
+        throw new Error("container identity changed");
+      }),
+    });
+
+    expect(relaunchManagedSupervisorSession("alpha", { quiet: false, deps })).toBeNull();
+    const output = errorSpy.mock.calls.flat().join("\n");
+    expect(output).toContain("container identity changed");
+    expect(output).not.toContain("backup cleanup failed");
   });
 
   it("redacts diagnostics when trusted recreation fails", () => {
