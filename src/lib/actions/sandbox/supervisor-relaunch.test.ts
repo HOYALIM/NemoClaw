@@ -182,7 +182,7 @@ describe("relaunchManagedSupervisorSession", () => {
         success: false,
         manifest: {
           backupPath: "/tmp/rebuild-backups/alpha/partial-recovery",
-        },
+        } as never,
         backedUpDirs: [],
         failedDirs: ["workspace"],
         backedUpFiles: [],
