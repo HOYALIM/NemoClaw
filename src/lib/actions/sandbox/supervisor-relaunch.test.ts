@@ -176,10 +176,13 @@ describe("relaunchManagedSupervisorSession", () => {
     });
   });
 
-  it("refuses recreation when sandbox state cannot be fully backed up", () => {
+  it("removes a partial state backup before it refuses recreation (#7404)", () => {
     const deps = baseDeps({
       backupState: vi.fn(() => ({
         success: false,
+        manifest: {
+          backupPath: "/tmp/rebuild-backups/alpha/partial-recovery",
+        },
         backedUpDirs: [],
         failedDirs: ["workspace"],
         backedUpFiles: [],
@@ -188,6 +191,10 @@ describe("relaunchManagedSupervisorSession", () => {
     });
 
     expect(relaunchManagedSupervisorSession("alpha", { quiet: true, deps })).toBeNull();
+    expect(deps.removeBackup).toHaveBeenCalledWith(
+      "alpha",
+      "/tmp/rebuild-backups/alpha/partial-recovery",
+    );
     expect(deps.recreate).not.toHaveBeenCalled();
   });
 

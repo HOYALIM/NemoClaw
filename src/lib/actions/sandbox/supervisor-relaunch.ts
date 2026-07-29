@@ -152,6 +152,13 @@ export function relaunchManagedSupervisorSession(
       backup.failedDirs.length > 0 ||
       backup.failedFiles.length > 0
     ) {
+      if (backup.manifest) {
+        try {
+          removeBackup(sandboxName, backup.manifest.backupPath);
+        } catch {
+          // Preserve the backup failure that stopped container recreation.
+        }
+      }
       if (!quiet) {
         console.error(
           "  Trusted container recovery stopped before recreation because sandbox state could not be fully backed up.",
