@@ -55,11 +55,22 @@ describe("uninstall gateway-port segregation (#3053)", () => {
     ["full", "systemd-user"],
     ["scoped", "systemd-system"],
     ["scoped", "systemd-user"],
-  ] as const)("preserves the gateway process, Docker resources, and OpenShell binaries during %s uninstall for a %s-supervised gateway (#6576)", (scope, kind) => {
+  ] as const)("preserves the gateway process, Docker resources, OpenShell binaries, and gateway state during %s uninstall for a %s-supervised gateway (#6576)", (scope, kind) => {
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-uninstall-external-"));
     try {
       const stateDir = path.join(tmpHome, ".nemoclaw");
+      const gatewayStatePath = path.join(
+        tmpHome,
+        ".local",
+        "state",
+        "nemoclaw",
+        "openshell-docker-gateway",
+        "openshell-gateway.toml",
+      );
+      const gatewayState = 'listen_address = "127.0.0.1:8080"\n';
       fs.mkdirSync(stateDir, { recursive: true });
+      fs.mkdirSync(path.dirname(gatewayStatePath), { recursive: true });
+      fs.writeFileSync(gatewayStatePath, gatewayState);
       const prepareScope = {
         full: () => undefined,
         scoped: () =>
@@ -129,6 +140,8 @@ describe("uninstall gateway-port segregation (#3053)", () => {
             command === "rm" && args.includes("/usr/local/bin/openshell-gateway"),
         ),
       ).toBe(false);
+      expect(fs.existsSync(gatewayStatePath)).toBe(true);
+      expect(fs.readFileSync(gatewayStatePath, "utf8")).toBe(gatewayState);
     } finally {
       fs.rmSync(tmpHome, { recursive: true, force: true });
     }
@@ -1059,6 +1072,11 @@ describe("uninstall gateway-port segregation (#3053)", () => {
           },
         }),
       );
+      const runtimeReceipt = path.join(stateDir, "dual-station-vllm-runtime.json");
+      const runtimeBinding = `${runtimeReceipt}.ssh-binding`;
+      fs.writeFileSync(runtimeReceipt, "{}\n", { mode: 0o600 });
+      fs.mkdirSync(runtimeBinding, { mode: 0o700 });
+      fs.writeFileSync(path.join(runtimeBinding, "known_hosts"), "host-key\n", { mode: 0o600 });
       const logs: string[] = [];
       const openshellCalls: string[][] = [];
       const result = runUninstallPlan(
@@ -1082,6 +1100,8 @@ describe("uninstall gateway-port segregation (#3053)", () => {
       expect(openshellCalls).toContainEqual(["gateway", "select", "nemoclaw"]);
       expect(openshellCalls).not.toContainEqual(["sandbox", "delete", "--all"]);
       expect(logs.join("\n")).toContain("Sibling gateways remain");
+      expect(fs.existsSync(runtimeReceipt)).toBe(true);
+      expect(fs.existsSync(runtimeBinding)).toBe(true);
     } finally {
       fs.rmSync(tmpHome, { recursive: true, force: true });
     }
@@ -1101,6 +1121,11 @@ describe("uninstall gateway-port segregation (#3053)", () => {
           },
         }),
       );
+      const runtimeReceipt = path.join(stateDir, "dual-station-vllm-runtime.json");
+      const runtimeBinding = `${runtimeReceipt}.ssh-binding`;
+      fs.writeFileSync(runtimeReceipt, "{}\n", { mode: 0o600 });
+      fs.mkdirSync(runtimeBinding, { mode: 0o700 });
+      fs.writeFileSync(path.join(runtimeBinding, "known_hosts"), "host-key\n", { mode: 0o600 });
       const openshellCalls: string[][] = [];
       const warnings: string[] = [];
       let gatewayListCalls = 0;
@@ -1136,6 +1161,8 @@ describe("uninstall gateway-port segregation (#3053)", () => {
       expect(openshellCalls).toContainEqual(["gateway", "select", "nemoclaw"]);
       expect(openshellCalls).not.toContainEqual(["sandbox", "delete", "--all"]);
       expect(warnings.join("\n")).toContain("switching to gateway-scoped cleanup");
+      expect(fs.existsSync(runtimeReceipt)).toBe(true);
+      expect(fs.existsSync(runtimeBinding)).toBe(true);
     } finally {
       fs.rmSync(tmpHome, { recursive: true, force: true });
     }
