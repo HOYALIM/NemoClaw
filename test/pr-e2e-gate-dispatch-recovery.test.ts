@@ -797,7 +797,7 @@ describe("PR E2E dispatch-not-observed recovery", () => {
       await expect(startPrGate(startCommand(workDir))).resolves.toBeUndefined();
       expect(requests.find((request) => request.url.endsWith("/dispatches"))?.body).toMatchObject({
         inputs: {
-          jobs: "cloud-onboard,credential-sanitization,security-posture",
+          jobs: "cloud-inference,cloud-onboard,security-posture",
           checkout_sha: HEAD_SHA,
           base_sha: BASE_SHA,
         },
@@ -808,7 +808,7 @@ describe("PR E2E dispatch-not-observed recovery", () => {
       });
       const outputs = fs.readFileSync(outputPath, "utf8");
       expect(outputs).toContain("dispatched=true");
-      expect(outputs).not.toContain("approval_mode=");
+      expect(outputs).not.toContain("approval_");
       expect(outputs).not.toContain("finalized=true");
     } finally {
       fs.rmSync(workDir, { recursive: true, force: true });
