@@ -232,7 +232,9 @@ export function probeLocalAdapterHealth(options: {
           const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
           chunks.push(buffer);
         });
-        res.on("aborted", () => settle(false));
+        res.on("close", () => {
+          if (!res.complete) settle(false);
+        });
         res.on("error", () => settle(false));
         res.on("end", () => {
           if (settled) return;

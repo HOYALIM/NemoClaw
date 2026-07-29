@@ -12,8 +12,8 @@ import {
   ensureLocalAdapterStateDir,
   isLocalAdapterProcess,
   killLocalAdapterPid,
-  loadLocalAdapterPid,
   LOCAL_ADAPTER_HEALTH_MAX_RESPONSE_BYTES,
+  loadLocalAdapterPid,
   localAdapterTokenHash,
   persistLocalAdapterPid,
   probeLocalAdapterHealth,
@@ -209,6 +209,27 @@ describe("local adapter lifecycle", () => {
         expectedTokenHash,
       }),
     ).resolves.toBe(true);
+  });
+
+  it("fails closed when a health response closes before completion", async () => {
+    const expectedTokenHash = localAdapterTokenHash("secret-token");
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, {
+        "Content-Length": "128",
+        "Content-Type": "application/json",
+      });
+      res.write('{"tokenHash":"');
+      res.socket?.destroy();
+    });
+    const port = await listen(server);
+
+    await expect(
+      probeLocalAdapterHealth({
+        host: "127.0.0.1",
+        port,
+        expectedTokenHash,
+      }),
+    ).resolves.toBe(false);
   });
 
   it("destroys a declared health response above the memory budget before buffering", async () => {
