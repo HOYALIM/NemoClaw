@@ -21,6 +21,7 @@ export interface SandboxResumeSignals {
   readonly sandboxGpuConfigChanged: boolean;
   readonly recreateSandboxRequested: boolean;
   readonly messagingChannelConfigChanged: boolean;
+  readonly messagingCredentialChanged: boolean;
   readonly hermesToolGatewayConfigChanged: boolean;
   readonly observabilityChanged?: boolean;
   readonly dcodeAutoApprovalChanged?: boolean;
@@ -138,6 +139,7 @@ function canReuseSandbox(signals: SandboxResumeSignals): boolean {
     !signals.sandboxGpuConfigChanged &&
     !signals.recreateSandboxRequested &&
     !signals.messagingChannelConfigChanged &&
+    !signals.messagingCredentialChanged &&
     !signals.hermesToolGatewayConfigChanged &&
     !signals.observabilityChanged &&
     !signals.dcodeAutoApprovalChanged &&
@@ -223,6 +225,13 @@ function runtimeConfigurationResumeDecision(
     return {
       kind: "recreate",
       note: "  [resume] Messaging channel configuration changed; recreating sandbox.",
+      removeRegistryEntry: true,
+    };
+  }
+  if (signals.messagingCredentialChanged) {
+    return {
+      kind: "recreate",
+      note: "  [resume] Messaging credential changed; validating and recreating sandbox.",
       removeRegistryEntry: true,
     };
   }

@@ -60,6 +60,18 @@ export interface ReconcileSandboxMessagingOptions<Agent> {
 
 const messagingManifestRegistry = createBuiltInChannelManifestRegistry();
 
+export function hasMessagingCredentialDrift(
+  plan: SandboxMessagingPlan | null,
+  env: NodeJS.ProcessEnv,
+): boolean {
+  return (
+    plan?.credentialBindings.some((binding) => {
+      const credentialHash = hashCredential(env[binding.providerEnvKey]);
+      return credentialHash !== null && credentialHash !== binding.credentialHash;
+    }) ?? false
+  );
+}
+
 function refreshCredentialHashesFromEnv(plan: SandboxMessagingPlan): {
   plan: SandboxMessagingPlan;
   changed: boolean;

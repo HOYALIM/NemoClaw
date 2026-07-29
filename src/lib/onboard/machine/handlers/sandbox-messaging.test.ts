@@ -11,7 +11,11 @@ import {
   type OnboardCheckpoint,
 } from "../../../state/onboard-checkpoint-types";
 import { createSession, type Session } from "../../../state/onboard-session";
-import { reconcileReusedSandboxMessaging, reconcileSandboxMessaging } from "./sandbox-messaging";
+import {
+  hasMessagingCredentialDrift,
+  reconcileReusedSandboxMessaging,
+  reconcileSandboxMessaging,
+} from "./sandbox-messaging";
 
 const channelIds = ["telegram", "unsupported"];
 
@@ -145,6 +149,21 @@ function telegramPlan(credentialHash: string): SandboxMessagingPlan {
     healthChecks: [],
   };
 }
+
+describe("hasMessagingCredentialDrift", () => {
+  const oldToken = "123456:old-telegram-token";
+  const plan = telegramPlan(hashCredential(oldToken) ?? "");
+
+  it("detects only an explicitly supplied replacement credential", () => {
+    expect(hasMessagingCredentialDrift(plan, {})).toBe(false);
+    expect(hasMessagingCredentialDrift(plan, { TELEGRAM_BOT_TOKEN: oldToken })).toBe(false);
+    expect(
+      hasMessagingCredentialDrift(plan, {
+        TELEGRAM_BOT_TOKEN: "123456:new-telegram-token",
+      }),
+    ).toBe(true);
+  });
+});
 
 function completedCheckpointSession(
   plan: SandboxMessagingPlan,

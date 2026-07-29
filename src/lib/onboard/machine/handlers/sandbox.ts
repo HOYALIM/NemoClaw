@@ -96,7 +96,11 @@ import { withSandboxPhaseTrace } from "../../tracing";
 import type { SandboxCreateIntent } from "../../types";
 import { branchTo, type OnboardStateTransitionResult } from "../result";
 import * as dcodeResume from "./sandbox-dcode-resume";
-import { reconcileReusedSandboxMessaging, reconcileSandboxMessaging } from "./sandbox-messaging";
+import {
+  hasMessagingCredentialDrift,
+  reconcileReusedSandboxMessaging,
+  reconcileSandboxMessaging,
+} from "./sandbox-messaging";
 import {
   applySandboxResumeDecision,
   decideSandboxResume,
@@ -537,6 +541,9 @@ class SandboxStateFlow<
     const registryEntry = state.sandboxName
       ? this.deps.getSandboxRegistryEntry(state.sandboxName)
       : null;
+    const registryMessagingPlan = state.sandboxName
+      ? this.deps.getRegistrySandboxMessagingPlan(state.sandboxName)
+      : null;
     const toolDisclosureSignals = resolveToolDisclosureResumeSignals(registryEntry, state.session);
     const sandboxReuseState = this.deps.getSandboxReuseState(state.sandboxName);
     const dcodeResumeSignals = dcodeResume.resolveSignals(
@@ -569,6 +576,10 @@ class SandboxStateFlow<
       messagingChannelConfigChanged: !this.deps.messagingChannelConfigsEqual(
         effectiveMessagingConfig,
         storedMessagingConfig,
+      ),
+      messagingCredentialChanged: hasMessagingCredentialDrift(
+        registryMessagingPlan ?? state.session?.messagingPlan ?? null,
+        this.options.env,
       ),
       hermesToolGatewayConfigChanged: !this.deps.stringSetsEqual(
         recordedToolGateways,
