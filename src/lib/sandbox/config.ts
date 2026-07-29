@@ -12,13 +12,13 @@
 // config set:          Host-initiated config mutation with validation.
 // config rotate-token: Credential rotation via stdin or env var.
 
-const readline = require("readline");
 const { createHash } = require("node:crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { promises: dnsPromises } = require("node:dns");
 const { isIP } = require("node:net");
+const { isErrnoException }: typeof import("../core/errno") = require("../core/errno");
 const { validateName } = require("../runner");
 const { shellQuote } = require("../core/shell-quote");
 const { dockerExecFileSync, dockerSpawnSync } = require("../adapters/docker/exec");
@@ -35,7 +35,11 @@ const {
   runOpenClawConfigGuard,
   validateOpenClawConfigCandidate,
 }: typeof import("../shields/openclaw-config-lock") = require("../shields/openclaw-config-lock");
-const { isPrivateHostname, isPrivateIp } = require("../private-networks");
+const {
+  isAllowedOpenShellSandboxBridgeUrl,
+  isPrivateHostname,
+  isPrivateIp,
+}: typeof import("../private-networks") = require("../private-networks");
 const {
   privilegedSandboxExecArgv,
   resolveDirectSandboxContainer,
@@ -96,6 +100,11 @@ interface DnsValidatedUrl {
   protocol: "http:" | "https:";
   originalUrl: string;
   pinnedUrl: string;
+}
+
+interface ConfigUrlValidationOptions {
+  allowOpenShellBridge?: boolean;
+  allowOpenShellBridgePath?: (path: readonly string[]) => boolean;
 }
 
 type ManagedGatewayRestart = (sandboxName: string) => { ok: boolean };
@@ -837,21 +846,43 @@ function hostnameForDnsLookup(hostname: string): string {
   return hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
 }
 
-function validateUrlValue(value: string): void {
+function validateUrlValue(
+  value: string,
+  options: ConfigUrlValidationOptions = {},
+  pathSegments: readonly string[] = [],
+): void {
   const parsed = parseHttpUrl(value);
   if (!parsed) return;
+  if (
+    (options.allowOpenShellBridge || options.allowOpenShellBridgePath?.(pathSegments)) &&
+    isAllowedOpenShellSandboxBridgeUrl(parsed)
+  ) {
+    return;
+  }
   assertPublicHost(parsed.hostname);
 }
 
 async function validateUrlValueWithDnsResult(
   value: string,
   lookup: LookupFn = dnsPromises.lookup as LookupFn,
+  options: ConfigUrlValidationOptions = {},
+  pathSegments: readonly string[] = [],
 ): Promise<DnsValidatedUrl | null> {
   const originalUrl = value.trim();
   const parsed = parseHttpUrl(originalUrl);
   if (!parsed) return null;
 
   const hostname = parsed.hostname;
+  if (
+    (options.allowOpenShellBridge || options.allowOpenShellBridgePath?.(pathSegments)) &&
+    isAllowedOpenShellSandboxBridgeUrl(parsed)
+  ) {
+    return {
+      protocol: parsed.protocol as "http:" | "https:",
+      originalUrl,
+      pinnedUrl: originalUrl,
+    };
+  }
   assertPublicHost(hostname);
   const lookupHostname = hostnameForDnsLookup(hostname);
   if (isIP(lookupHostname)) {
@@ -894,8 +925,9 @@ async function validateUrlValueWithDnsResult(
 async function validateUrlValueWithDns(
   value: string,
   lookup: LookupFn = dnsPromises.lookup as LookupFn,
+  options: ConfigUrlValidationOptions = {},
 ): Promise<void> {
-  await validateUrlValueWithDnsResult(value, lookup);
+  await validateUrlValueWithDnsResult(value, lookup, options);
 }
 
 function redactUrlForLogs(urlValue: string): string {
@@ -934,9 +966,37 @@ function formatConfigValueForLogs(value: ConfigValue | undefined): string {
   return JSON.stringify(redactConfigValueForPreview(value));
 }
 
+function configSetAllowsOpenShellBridge(
+  agentName: string,
+  key: string,
+  relativePath: readonly string[] = [],
+): boolean {
+  const segments = [...key.split("."), ...relativePath];
+  if (segments.some((segment) => UNSAFE_KEY_SEGMENTS.has(segment))) return false;
+
+  if (agentName === "hermes") {
+    return segments.length === 2 && segments[0] === "model" && segments[1] === "base_url";
+  }
+
+  if (agentName === "openclaw") {
+    return (
+      segments.length === 4 &&
+      segments[0] === "models" &&
+      segments[1] === "providers" &&
+      segments[2].length > 0 &&
+      !/^\d+$/.test(segments[2]) &&
+      segments[3] === "baseUrl"
+    );
+  }
+
+  return false;
+}
+
 async function rewriteConfigUrlsWithDnsPinning(
   value: ConfigValue,
   lookup: LookupFn = dnsPromises.lookup as LookupFn,
+  options: ConfigUrlValidationOptions = {},
+  pathSegments: readonly string[] = [],
 ): Promise<ConfigValue> {
   if (typeof value === "string") {
     const trimmed = value.trim();
@@ -944,7 +1004,7 @@ async function rewriteConfigUrlsWithDnsPinning(
     if (!lower.startsWith("http://") && !lower.startsWith("https://")) return value;
 
     try {
-      const validated = await validateUrlValueWithDnsResult(trimmed, lookup);
+      const validated = await validateUrlValueWithDnsResult(trimmed, lookup, options, pathSegments);
       if (!validated) return value;
       // HTTP has no TLS hostname binding, so persist the DNS-pinned URL to avoid
       // a config-time/public → runtime/private DNS-rebinding window. DNS-backed
@@ -973,13 +1033,20 @@ async function rewriteConfigUrlsWithDnsPinning(
   }
 
   if (Array.isArray(value)) {
-    return Promise.all(value.map((entry) => rewriteConfigUrlsWithDnsPinning(entry, lookup)));
+    return Promise.all(
+      value.map((entry, index) =>
+        rewriteConfigUrlsWithDnsPinning(entry, lookup, options, [...pathSegments, String(index)]),
+      ),
+    );
   }
 
   if (isConfigObject(value)) {
     const rewritten: ConfigObject = {};
     for (const [key, entry] of Object.entries(value)) {
-      rewritten[key] = await rewriteConfigUrlsWithDnsPinning(entry, lookup);
+      rewritten[key] = await rewriteConfigUrlsWithDnsPinning(entry, lookup, options, [
+        ...pathSegments,
+        key,
+      ]);
     }
     return rewritten;
   }
@@ -1082,6 +1149,7 @@ async function configSet(sandboxName: string, opts: ConfigSetOpts = {}): Promise
       "  Usage: nemoclaw <name> config set --key <dotpath> --value <value>",
     ]);
   }
+  const configKey = opts.key;
 
   if (opts.value === undefined || opts.value === null) {
     configFail([
@@ -1175,7 +1243,19 @@ async function configSet(sandboxName: string, opts: ConfigSetOpts = {}): Promise
       ]);
     }
     if (gate.mode === "prompt") {
-      const confirmed = await confirmYesNo("  Write this new key? [y/N] ");
+      let confirmed: boolean;
+      try {
+        confirmed = await confirmYesNo("  Write this new key? [y/N] ");
+      } catch (error) {
+        // The shared prompt re-raises SIGINT; only EOF needs config-specific remediation here.
+        if (isErrnoException(error) && error.code === "EOF") {
+          configFail([
+            "  No input available on stdin, so config set cannot confirm the new key.",
+            "  Re-run with --config-accept-new-path or set NEMOCLAW_CONFIG_ACCEPT_NEW_PATH=1.",
+          ]);
+        }
+        throw error;
+      }
       if (!confirmed) {
         configFail("  Aborted.");
       }
@@ -1187,7 +1267,10 @@ async function configSet(sandboxName: string, opts: ConfigSetOpts = {}): Promise
   // hostname to private/internal space after config-time validation succeeds.
   let safeValue: ConfigValue;
   try {
-    safeValue = await rewriteConfigUrlsWithDnsPinning(parsedValue);
+    safeValue = await rewriteConfigUrlsWithDnsPinning(parsedValue, dnsPromises.lookup as LookupFn, {
+      allowOpenShellBridgePath: (relativePath) =>
+        configSetAllowsOpenShellBridge(target.agentName, configKey, relativePath),
+    });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     const suffix =
@@ -1417,21 +1500,10 @@ function readStdin(): Promise<string> {
  * Ask a yes/no question on stderr. Returns true only when the answer matches
  * /^y(es)?$/i — empty, "no", or unparseable input is treated as no.
  */
-function confirmYesNo(prompt: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    // Re-attach stdin to the event loop — unref() on exit is sticky and
-    // would otherwise leave a follow-up prompt waiting on a detached handle.
-    if (typeof process.stdin.ref === "function") process.stdin.ref();
-    const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
-    rl.question(prompt, (answer: string) => {
-      rl.close();
-      // pause+unref so the process exits naturally after the last prompt.
-      // The matching ref() above keeps subsequent prompts working.
-      if (typeof process.stdin.pause === "function") process.stdin.pause();
-      if (typeof process.stdin.unref === "function") process.stdin.unref();
-      resolve(/^y(es)?$/i.test(answer.trim()));
-    });
-  });
+function confirmYesNo(question: string): Promise<boolean> {
+  const { prompt: askPrompt } =
+    require("../credentials/store") as typeof import("../credentials/store");
+  return askPrompt(question).then((answer) => /^y(es)?$/i.test(answer));
 }
 
 // ---------------------------------------------------------------------------
@@ -1442,6 +1514,7 @@ export {
   buildConfigSetRestartGuidance,
   buildRecomputeSandboxConfigHashScript,
   classifyNewKeyGate,
+  configSetAllowsOpenShellBridge,
   composeSandboxConfigBody,
   configGet,
   configRotateToken,

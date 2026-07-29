@@ -26,6 +26,7 @@ import { type McpBridgeShard, resolveMcpBridgeShard } from "./mcp-bridge-agent-s
 import {
   assertHermesConfig,
   assertHermesInspectionRejectsUnmanagedFields,
+  assertHermesManagedAddSurvivesLockedGatewayRestart,
   assertHermesRemovalSurvivesGatewayRestart,
 } from "./mcp-bridge-hermes-lifecycle.ts";
 import { buildMcpBridgeExactMainEnv, buildMcpBridgeOnboardEnv } from "./mcp-bridge-onboard-env.ts";
@@ -46,6 +47,10 @@ import {
   startFakeMcpHttpsServer,
   startPublicMcpHttpsTunnel,
 } from "./mcp-bridge-servers.ts";
+import {
+  assertAuthenticatedMcpDiscovery,
+  assertAuthenticatedMcpToolDiscovery,
+} from "./mcp-bridge-tool-discovery.ts";
 import { MCP_PROVIDER_REWRITE_PROBE_SOURCE } from "./mcp-provider-rewrite-probe.ts";
 import { assertRawOpenShellAllowedIpsRebindingDenied } from "./openshell-allowed-ips-rebinding.ts";
 import { prepareExactMainMcpProof } from "./openshell-exact-main-mcp-proof.ts";
@@ -409,6 +414,7 @@ async function addBridgeAndReadStatus(
   expect(statusJson.provider.name).toMatch(
     new RegExp(`^${options.sandboxName}-mcp-${SERVER_NAME}-[a-f0-9]{16}$`),
   );
+
   return statusJson.provider.name;
 }
 
@@ -706,42 +712,6 @@ async function assertDeepAgentsConfig(
   expectExitZero(result, "Deep Agents MCP config contains placeholder and no raw host secret");
 }
 
-async function assertAuthenticatedMcpDiscovery(
-  fakeMcp: Awaited<ReturnType<typeof startFakeMcpHttpsServer>>,
-  options: {
-    requestOffset: number;
-    expectedSecret: string;
-    label: string;
-  },
-): Promise<void> {
-  await expect
-    .poll(
-      () => {
-        const requests = fakeMcp.requests.slice(options.requestOffset);
-        const observed = (rpcMethod: "initialize" | "tools/list") =>
-          requests.some(
-            (request) =>
-              request.method === "POST" &&
-              request.path === "/mcp" &&
-              request.rpcMethod === rpcMethod &&
-              request.auth === `Bearer ${options.expectedSecret}`,
-          );
-        return {
-          initialized: observed("initialize"),
-          toolsListed: observed("tools/list"),
-          requests: requests.map((request) => ({
-            method: request.method,
-            path: request.path,
-            rpcMethod: request.rpcMethod,
-            credentialRewritten: request.auth === `Bearer ${options.expectedSecret}`,
-          })),
-        };
-      },
-      { interval: 500, timeout: 90_000, message: options.label },
-    )
-    .toMatchObject({ initialized: true, toolsListed: true });
-}
-
 async function assertRealAdapterToolCall(
   sandbox: SandboxClient,
   fakeMcp: Awaited<ReturnType<typeof startFakeMcpHttpsServer>>,
@@ -950,6 +920,11 @@ test("mcp-bridge", {
     mcpUrl,
     expectedAdapter: "mcporter",
     artifactPrefix: "openclaw",
+  });
+  await assertAuthenticatedMcpToolDiscovery(host, fakeMcp, {
+    sandboxName: OPENCLAW_SANDBOX_NAME,
+    artifactPrefix: "openclaw",
+    hostSecret: HOST_SECRET,
   });
   await assertBridgeInfrastructure(host, sandbox, {
     sandboxName: OPENCLAW_SANDBOX_NAME,
@@ -1248,6 +1223,11 @@ mcpBridgeShardTest("hermes")(
       expectedSecret: HOST_SECRET,
       label: "Hermes initial MCP discovery",
     });
+    await assertAuthenticatedMcpToolDiscovery(host, fakeMcp, {
+      sandboxName: HERMES_SANDBOX_NAME,
+      artifactPrefix: "hermes",
+      hostSecret: HOST_SECRET,
+    });
     await assertBridgeInfrastructure(host, sandbox, {
       sandboxName: HERMES_SANDBOX_NAME,
       artifactPrefix: "hermes",
@@ -1257,13 +1237,27 @@ mcpBridgeShardTest("hermes")(
     await assertHermesConfig(sandbox, HERMES_SANDBOX_NAME, mcpUrl);
     await assertHermesInspectionRejectsUnmanagedFields(sandbox, HERMES_SANDBOX_NAME);
     await assertSecretAbsentFromSandbox(sandbox, HERMES_SANDBOX_NAME, ["/sandbox/.hermes"]);
+    progress.phase("restore Hermes shields, restart, and prove rollback");
+    await assertHermesManagedAddSurvivesLockedGatewayRestart(
+      host,
+      sandbox,
+      HERMES_SANDBOX_NAME,
+      mcpUrl,
+    );
+    await assertSecretAbsentFromSandbox(
+      sandbox,
+      HERMES_SANDBOX_NAME,
+      ["/sandbox/.hermes", "/tmp/nemoclaw-start.log"],
+      [HOST_SECRET],
+      "hermes-assert-secret-absent-after-add-gateway-restart",
+    );
+    progress.phase("exercise lifecycle and confirm Hermes bridge removal");
     await assertAdapterDnsRebindingDenied(host, sandbox, cleanup, {
       adapter: "hermes-config",
       artifactPrefix: "hermes",
       sandboxName: HERMES_SANDBOX_NAME,
       secretPaths: ["/sandbox/.hermes"],
     });
-    progress.phase("exercise lifecycle and confirm Hermes bridge removal");
     await assertRealAdapterToolCall(sandbox, fakeMcp, {
       agent: "hermes",
       sandboxName: HERMES_SANDBOX_NAME,
@@ -1414,6 +1408,11 @@ mcpBridgeShardTest("deepagents")(
       mcpUrl,
       expectedAdapter: "deepagents-config",
       artifactPrefix: "deepagents",
+    });
+    await assertAuthenticatedMcpToolDiscovery(host, fakeMcp, {
+      sandboxName: DEEPAGENTS_SANDBOX_NAME,
+      artifactPrefix: "deepagents",
+      hostSecret: HOST_SECRET,
     });
     await assertBridgeInfrastructure(host, sandbox, {
       sandboxName: DEEPAGENTS_SANDBOX_NAME,
