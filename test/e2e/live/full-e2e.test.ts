@@ -32,7 +32,10 @@ import {
   securityPostureModeEnv,
 } from "../fixtures/security-posture.ts";
 import type { ShellProbeOutputEvent, ShellProbeResult } from "../fixtures/shell-probe.ts";
-import { extractOpenClawAgentPayloadText } from "./agent-turn-latency-helpers.ts";
+import {
+  buildOpenClawFirstTurnLatencyEvidence,
+  extractOpenClawAgentPayloadText,
+} from "./agent-turn-latency-helpers.ts";
 
 const SANDBOX_NAME = process.env.NEMOCLAW_SANDBOX_NAME ?? "e2e-full";
 const SETUP_MODE = process.env.NEMOCLAW_E2E_SETUP_MODE ?? "source-install";
@@ -238,11 +241,12 @@ async function assertColdOnboardPerformance(input: {
   );
   const turnText = resultText(turn);
   const assistantReply = extractOpenClawAgentPayloadText(turnText).trim();
+  const firstTurnLatency = buildOpenClawFirstTurnLatencyEvidence(turnText, firstTurnCommandMs);
   const compactAssistantReply = assistantReply.replace(/\s+/gu, "");
   const responseChars = assistantReply.length;
 
   await input.artifacts.writeJson("onboard-progress-budget.json", {
-    schemaVersion: "nemoclaw.full_e2e_cold_performance.v2",
+    schemaVersion: "nemoclaw.full_e2e_cold_performance.v3",
     sandbox: SANDBOX_NAME,
     installExitCode: input.install.exitCode,
     firstTurnExitCode: turn.exitCode,
@@ -250,7 +254,7 @@ async function assertColdOnboardPerformance(input: {
       onboardRootMs: traceWindow.durationMs,
       rootStartToFirstTurnCompletionMs: performanceEvaluation.rootStartToFirstTurnCompletionMs,
       rootEndToInstallCompletionMs,
-      firstTurnCommandMs,
+      ...firstTurnLatency,
       rootEndToFirstTurnCompletionMs: performanceEvaluation.rootEndToFirstTurnCompletionMs,
       tracePhasesMs: traceWindow.phaseDurationsMs,
     },
@@ -265,7 +269,6 @@ async function assertColdOnboardPerformance(input: {
     rootStartToFirstTurnCompletionSecs,
     budget: input.budget,
     performance: {
-      anomalies: performanceEvaluation.anomalies,
       passed: performanceEvaluation.passed,
       violations: performanceEvaluation.violations,
       usedAuthoritativeLocalBaseBuild,
@@ -294,11 +297,6 @@ async function assertColdOnboardPerformance(input: {
     compactAssistantReply,
     `expected the sentinel first agent reply, got: ${turnText}`,
   ).toContain(EXPECTED_FIRST_REPLY);
-  for (const anomaly of performanceEvaluation.anomalies) {
-    console.warn(
-      `::warning title=Hosted first-turn latency anomaly::root-end-to-first-turn-completion ${anomaly.measurementMs}ms exceeded ${anomaly.budgetMs}ms by ${anomaly.overageMs}ms after all deterministic cold-onboard budgets passed`,
-    );
-  }
   expect(
     performanceEvaluation.passed,
     `onboard-root-start-to-first-turn-completion took ${rootStartToFirstTurnCompletionSecs}s; ${performanceEvaluation.violations.join("; ")}`,

@@ -9,7 +9,11 @@ import {
   readColdOnboardPerformanceBudget,
   readOnboardTraceWindow,
 } from "../fixtures/onboard-performance.ts";
-import { extractOpenClawAgentPayloadText } from "../live/agent-turn-latency-helpers.ts";
+import {
+  buildOpenClawFirstTurnLatencyEvidence,
+  extractOpenClawAgentDurationEvidence,
+  extractOpenClawAgentPayloadText,
+} from "../live/agent-turn-latency-helpers.ts";
 
 const TRACE_ID = "0123456789abcdef0123456789abcdef";
 const FOREIGN_TRACE_ID = "fedcba9876543210fedcba9876543210";
@@ -206,7 +210,6 @@ describe("onboard performance evidence", () => {
 
     expect(evaluateColdOnboardPerformance(trace, 6_000, budget)).toEqual({
       appliedAuthoritativeLocalBaseBuildAllowanceMs: 0,
-      anomalies: [],
       passed: true,
       rootStartToFirstTurnCompletionMs: 5_000,
       rootEndToFirstTurnCompletionMs: 0,
@@ -214,7 +217,6 @@ describe("onboard performance evidence", () => {
     });
     expect(evaluateColdOnboardPerformance(trace, 7_500, budget)).toEqual({
       appliedAuthoritativeLocalBaseBuildAllowanceMs: 0,
-      anomalies: [],
       passed: false,
       rootStartToFirstTurnCompletionMs: 6_500,
       rootEndToFirstTurnCompletionMs: 1_500,
@@ -230,14 +232,13 @@ describe("onboard performance evidence", () => {
     ]);
     expect(evaluateColdOnboardPerformance(trace, 6_500, budget, true)).toMatchObject({
       appliedAuthoritativeLocalBaseBuildAllowanceMs: 500,
-      anomalies: [],
       passed: true,
       rootStartToFirstTurnCompletionMs: 5_500,
       violations: [],
     });
   });
 
-  it("classifies a sole hosted first-turn tail as a structured non-blocking anomaly (#6660)", () => {
+  it("keeps a sole hosted first-turn overage blocking until recurrence policy is defined", () => {
     const trace = readOnboardTraceWindow(traceArtifact());
     const budget = readColdOnboardPerformanceBudget({
       fullE2eColdPath: {
@@ -250,18 +251,10 @@ describe("onboard performance evidence", () => {
 
     expect(evaluateColdOnboardPerformance(trace, 7_500, budget)).toEqual({
       appliedAuthoritativeLocalBaseBuildAllowanceMs: 0,
-      anomalies: [
-        {
-          budgetMs: 1_000,
-          kind: "first-turn-latency-tail",
-          measurementMs: 1_500,
-          overageMs: 500,
-        },
-      ],
-      passed: true,
+      passed: false,
       rootStartToFirstTurnCompletionMs: 6_500,
       rootEndToFirstTurnCompletionMs: 1_500,
-      violations: [],
+      violations: ["root-end-to-first-turn-completion 1500ms exceeds 1000ms"],
     });
   });
 
@@ -278,7 +271,6 @@ describe("onboard performance evidence", () => {
     });
 
     expect(evaluateColdOnboardPerformance(trace, 7_500, budget)).toMatchObject({
-      anomalies: [],
       passed: false,
       violations: [
         "root-end-to-first-turn-completion 1500ms exceeds 1000ms",
@@ -389,5 +381,33 @@ describe("onboard performance evidence", () => {
         }),
       ),
     ).toBe("NEMOCLAW_\nE2E_READY_6002");
+  });
+
+  it("records OpenClaw internal-agent duration with an explicit availability state", () => {
+    expect(
+      buildOpenClawFirstTurnLatencyEvidence(
+        `progress\n${JSON.stringify({ result: { meta: { durationMs: 8_916 } } })}`,
+        10_125,
+      ),
+    ).toEqual({
+      firstTurnAgentDuration: { durationMs: 8_916, status: "available" },
+      firstTurnCommandMs: 10_125,
+    });
+  });
+
+  it("records missing OpenClaw duration metadata as unavailable", () => {
+    expect(
+      extractOpenClawAgentDurationEvidence(
+        JSON.stringify({ result: { payloads: [{ text: "NEMOCLAW_E2E_READY_6002" }] } }),
+      ),
+    ).toEqual({ reason: "missing", status: "unavailable" });
+  });
+
+  it("records malformed OpenClaw duration metadata as unavailable", () => {
+    expect(
+      extractOpenClawAgentDurationEvidence(
+        JSON.stringify({ result: { meta: { durationMs: "8916" } } }),
+      ),
+    ).toEqual({ reason: "malformed", status: "unavailable" });
   });
 });

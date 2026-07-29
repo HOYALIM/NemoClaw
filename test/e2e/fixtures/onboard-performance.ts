@@ -43,23 +43,10 @@ export interface ColdOnboardPerformanceBudget {
 
 export interface ColdOnboardPerformanceEvaluation {
   appliedAuthoritativeLocalBaseBuildAllowanceMs: number;
-  anomalies: ColdOnboardPerformanceAnomaly[];
   passed: boolean;
   rootEndToFirstTurnCompletionMs: number;
   rootStartToFirstTurnCompletionMs: number;
   violations: string[];
-}
-
-export interface ColdOnboardPerformanceAnomaly {
-  budgetMs: number;
-  kind: "first-turn-latency-tail";
-  measurementMs: number;
-  overageMs: number;
-}
-
-interface ColdOnboardPerformanceFinding {
-  kind: "phase" | "root-end-to-first-turn" | "root-start-to-first-turn";
-  message: string;
 }
 
 interface ParsedSpan {
@@ -279,18 +266,16 @@ export function evaluateColdOnboardPerformance(
   const sandboxBudgetMs =
     budget.phaseBudgetsMs["nemoclaw.onboard.phase.sandbox"] +
     appliedAuthoritativeLocalBaseBuildAllowanceMs;
-  const findings: ColdOnboardPerformanceFinding[] = [];
+  const violations: string[] = [];
   if (rootStartToFirstTurnCompletionMs > rootStartBudgetMs) {
-    findings.push({
-      kind: "root-start-to-first-turn",
-      message: `root-start-to-first-turn-completion ${rootStartToFirstTurnCompletionMs}ms exceeds ${rootStartBudgetMs}ms`,
-    });
+    violations.push(
+      `root-start-to-first-turn-completion ${rootStartToFirstTurnCompletionMs}ms exceeds ${rootStartBudgetMs}ms`,
+    );
   }
   if (rootEndToFirstTurnCompletionMs > budget.rootEndToFirstTurnCompletionBudgetMs) {
-    findings.push({
-      kind: "root-end-to-first-turn",
-      message: `root-end-to-first-turn-completion ${rootEndToFirstTurnCompletionMs}ms exceeds ${budget.rootEndToFirstTurnCompletionBudgetMs}ms`,
-    });
+    violations.push(
+      `root-end-to-first-turn-completion ${rootEndToFirstTurnCompletionMs}ms exceeds ${budget.rootEndToFirstTurnCompletionBudgetMs}ms`,
+    );
   }
   for (const phaseName of ONBOARD_PHASE_NAMES) {
     const phaseBudgetMs =
@@ -299,30 +284,12 @@ export function evaluateColdOnboardPerformance(
         : budget.phaseBudgetsMs[phaseName];
     const phaseDurationMs = trace.phaseDurationsMs[phaseName];
     if (phaseBudgetMs !== undefined && phaseDurationMs > phaseBudgetMs) {
-      findings.push({
-        kind: "phase",
-        message: `${phaseName} ${phaseDurationMs}ms exceeds ${phaseBudgetMs}ms`,
-      });
+      violations.push(`${phaseName} ${phaseDurationMs}ms exceeds ${phaseBudgetMs}ms`);
     }
   }
 
-  const soleFinding = findings.length === 1 ? findings[0] : null;
-  const anomalies: ColdOnboardPerformanceAnomaly[] =
-    soleFinding?.kind === "root-end-to-first-turn"
-      ? [
-          {
-            budgetMs: budget.rootEndToFirstTurnCompletionBudgetMs,
-            kind: "first-turn-latency-tail",
-            measurementMs: rootEndToFirstTurnCompletionMs,
-            overageMs: rootEndToFirstTurnCompletionMs - budget.rootEndToFirstTurnCompletionBudgetMs,
-          },
-        ]
-      : [];
-  const violations = anomalies.length === 0 ? findings.map((finding) => finding.message) : [];
-
   return {
     appliedAuthoritativeLocalBaseBuildAllowanceMs,
-    anomalies,
     passed: violations.length === 0,
     rootStartToFirstTurnCompletionMs,
     rootEndToFirstTurnCompletionMs,
