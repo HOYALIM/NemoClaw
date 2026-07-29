@@ -55,6 +55,7 @@ export interface ReconcileSandboxMessagingOptions<Agent> {
   readonly session: Session | null;
   readonly sandboxName: string;
   readonly agent: Agent;
+  readonly env?: NodeJS.ProcessEnv;
   readonly deps: SandboxMessagingDeps<Agent>;
 }
 
@@ -64,12 +65,13 @@ export function hasMessagingCredentialDrift(
   plan: SandboxMessagingPlan | null,
   env: NodeJS.ProcessEnv,
 ): boolean {
-  return (
-    plan?.credentialBindings.some((binding) => {
-      const credentialHash = hashCredential(env[binding.providerEnvKey]);
-      return credentialHash !== null && credentialHash !== binding.credentialHash;
-    }) ?? false
-  );
+  if (!plan) return false;
+  const activeChannels = new Set(getActiveChannelsFromPlan(plan));
+  return plan.credentialBindings.some((binding) => {
+    if (!activeChannels.has(binding.channelId)) return false;
+    const credentialHash = hashCredential(env[binding.providerEnvKey]);
+    return credentialHash !== null && credentialHash !== binding.credentialHash;
+  });
 }
 
 function refreshCredentialHashesFromEnv(plan: SandboxMessagingPlan): {
@@ -253,7 +255,13 @@ async function selectionFromRegistryPlan<Agent>(
   registryPlan: SandboxMessagingPlan,
   options: ReconcileSandboxMessagingOptions<Agent>,
 ): Promise<SandboxMessagingSelection> {
-  const detectedChannels = channelsForRegistryPlanRefresh(registryPlan, options.agent);
+  const activeChannels = filterChannelNamesForCurrentAgent(
+    getActiveChannelsFromPlan(registryPlan),
+    options.agent,
+  );
+  const detectedChannels = hasMessagingCredentialDrift(registryPlan, options.env ?? process.env)
+    ? activeChannels
+    : channelsForRegistryPlanRefresh(registryPlan, options.agent);
   if (!detectedChannels) {
     return selectionFromReusablePlan(registryPlan, options.agent, true, options.deps);
   }

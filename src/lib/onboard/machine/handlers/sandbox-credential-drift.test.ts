@@ -15,6 +15,7 @@ import {
   withTelegramCredentialHash,
 } from "./sandbox-test-fixtures";
 
+// Messaging discovery is mocked at import time to isolate credential-drift resume behavior.
 vi.mock("../../messaging-channel-setup", () => ({
   detectMessagingChannelsFromEnv: vi.fn(() => []),
 }));
@@ -30,7 +31,7 @@ describe("sandbox messaging credential drift", () => {
     const previousToken = "123456:previous-telegram-token";
     const replacementToken = "123456:replacement-telegram-token";
     const previousPlan = withTelegramCredentialHash(
-      makeMinimalPlan("saved", "openclaw", ["telegram"], ["telegram"]),
+      makeMinimalPlan("saved", "openclaw", ["telegram"]),
       hashCredential(previousToken),
     );
     const replacementPlan = withTelegramCredentialHash(

@@ -1565,6 +1565,7 @@ class SandboxStateFlow<
       session: nextState.session,
       sandboxName: requestedSandboxName,
       agent: this.options.agent,
+      env: this.options.env,
       deps: this.deps,
     });
     nextState = this.checkpointMessaging(nextState, messaging);

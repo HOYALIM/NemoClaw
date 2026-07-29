@@ -163,6 +163,15 @@ describe("hasMessagingCredentialDrift", () => {
       }),
     ).toBe(true);
   });
+
+  it("ignores replacement credentials for disabled channels", () => {
+    const disabledPlan = mixedChannelPlan();
+    expect(
+      hasMessagingCredentialDrift(disabledPlan, {
+        UNSUPPORTED_TOKEN: "replacement-disabled-channel-token",
+      }),
+    ).toBe(false);
+  });
 });
 
 function completedCheckpointSession(
