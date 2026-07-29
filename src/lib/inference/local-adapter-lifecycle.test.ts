@@ -181,11 +181,43 @@ describe("local adapter lifecycle", () => {
     ).resolves.toBe(false);
   });
 
-  it("fails closed when the declared health response exceeds the memory budget", async () => {
+  it("accepts a valid health response at the memory budget", async () => {
     const expectedTokenHash = localAdapterTokenHash("secret-token");
+    const emptyPayload = JSON.stringify({ tokenHash: expectedTokenHash, padding: "" });
+    const payload = Buffer.from(
+      JSON.stringify({
+        tokenHash: expectedTokenHash,
+        padding: " ".repeat(
+          LOCAL_ADAPTER_HEALTH_MAX_RESPONSE_BYTES - Buffer.byteLength(emptyPayload),
+        ),
+      }),
+    );
+    expect(payload).toHaveLength(LOCAL_ADAPTER_HEALTH_MAX_RESPONSE_BYTES);
     const server = http.createServer((_req, res) => {
       res.writeHead(200, {
-        "Content-Length": String(LOCAL_ADAPTER_HEALTH_MAX_RESPONSE_BYTES + 1),
+        "Content-Length": String(payload.length),
+        "Content-Type": "application/json",
+      });
+      res.end(payload);
+    });
+    const port = await listen(server);
+
+    await expect(
+      probeLocalAdapterHealth({
+        host: "127.0.0.1",
+        port,
+        expectedTokenHash,
+      }),
+    ).resolves.toBe(true);
+  });
+
+  it("destroys a declared health response above the memory budget before buffering", async () => {
+    const expectedTokenHash = localAdapterTokenHash("secret-token");
+    const declaredBytes = LOCAL_ADAPTER_HEALTH_MAX_RESPONSE_BYTES + 1;
+    const destroySpy = vi.spyOn(http.IncomingMessage.prototype, "destroy");
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, {
+        "Content-Length": String(declaredBytes),
         "Content-Type": "application/json",
       });
       res.end();
@@ -199,6 +231,16 @@ describe("local adapter lifecycle", () => {
         expectedTokenHash,
       }),
     ).resolves.toBe(false);
+    expect(
+      destroySpy.mock.calls.some((args, index) => {
+        const response = destroySpy.mock.contexts[index] as http.IncomingMessage;
+        return (
+          response.statusCode === 200 &&
+          response.headers["content-length"] === String(declaredBytes) &&
+          args.length === 0
+        );
+      }),
+    ).toBe(true);
   });
 });
 
