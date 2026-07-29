@@ -180,6 +180,26 @@ describe("local adapter lifecycle", () => {
       }),
     ).resolves.toBe(false);
   });
+
+  it("fails closed when the declared health response exceeds the memory budget", async () => {
+    const expectedTokenHash = localAdapterTokenHash("secret-token");
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, {
+        "Content-Length": String(LOCAL_ADAPTER_HEALTH_MAX_RESPONSE_BYTES + 1),
+        "Content-Type": "application/json",
+      });
+      res.end();
+    });
+    const port = await listen(server);
+
+    await expect(
+      probeLocalAdapterHealth({
+        host: "127.0.0.1",
+        port,
+        expectedTokenHash,
+      }),
+    ).resolves.toBe(false);
+  });
 });
 
 describe("ensureLocalAdapterStateDir", () => {
