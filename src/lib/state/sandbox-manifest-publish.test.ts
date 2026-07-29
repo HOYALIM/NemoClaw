@@ -47,7 +47,7 @@ describe("rebuild manifest publication", () => {
     expect(fs.readdirSync(backupPath)).toEqual(["rebuild-manifest.json"]);
   });
 
-  it("removes the unpublished temporary manifest when commit fails", () => {
+  it("removes the unpublished temporary manifest when rename fails", () => {
     const remove = vi.fn();
     const rename = vi.fn(() => {
       throw new Error("rename failed");
