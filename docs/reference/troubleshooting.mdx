@@ -723,9 +723,9 @@ Then re-run `$$nemoclaw onboard`.
 ### Updated messaging token is not picked up
 
 Re-running `$$nemoclaw onboard --non-interactive` with a new `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN`, or `SLACK_BOT_TOKEN` previously reported success while the sandbox kept polling with the old credential.
-Current NemoClaw stores SHA-256 hashes of messaging credentials in the sandbox registry at creation time and detects when a token for an active channel has changed.
-It validates the replacement credential before it backs up workspace state, deletes the sandbox, recreates it with the new credential, and restores the backup.
-A replacement token for a channel paused with `channels stop` does not trigger onboarding recreation because that channel is inactive.
+When you rerun onboarding, NemoClaw compares the token with the SHA-256 hash stored for the active channel.
+When you provide a replacement token, NemoClaw validates it before backing up workspace state, deleting the sandbox, recreating it, and restoring the backup.
+If you replace a token for a channel that you paused with `channels stop`, onboarding does not trigger recreation because that channel is inactive.
 
 If you suspect a sandbox is still using a stale token, re-run onboarding so the credential check runs:
 
