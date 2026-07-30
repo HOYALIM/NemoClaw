@@ -90,6 +90,8 @@ describe("hosted first-turn latency history", () => {
     const artifactDirectory = path.join(directory, "e2e-full-e2e");
     const artifactFile = path.join(artifactDirectory, "onboard-progress-budget.json");
     try {
+      expect(readCurrentFirstTurnLatencySample(directory)).toBeNull();
+
       fs.mkdirSync(artifactDirectory, { recursive: true });
       fs.writeFileSync(artifactFile, JSON.stringify(artifact(true)));
 

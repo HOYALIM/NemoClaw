@@ -162,12 +162,13 @@ function readCurrentArtifact(root: string): unknown {
 
 export function readCurrentFirstTurnLatencySample(root: string): FirstTurnLatencySample | null {
   const artifact = asRecord(readCurrentArtifact(root));
-  const performance = asRecord(artifact?.performance);
-  const phaseMeasurements = asRecord(artifact?.phaseMeasurements);
-  const budget = asRecord(artifact?.budget);
-  const cohort = normalizeCohort(artifact?.firstTurnCohort);
+  if (!artifact) return null;
+  const performance = asRecord(artifact.performance);
+  const phaseMeasurements = asRecord(artifact.phaseMeasurements);
+  const budget = asRecord(artifact.budget);
+  const cohort = normalizeCohort(artifact.firstTurnCohort);
   if (
-    artifact?.schemaVersion !== FIRST_TURN_ARTIFACT_SCHEMA ||
+    artifact.schemaVersion !== FIRST_TURN_ARTIFACT_SCHEMA ||
     artifact.installExitCode !== 0 ||
     artifact.firstTurnExitCode !== 0 ||
     artifact.firstTurnSentinelMatched !== true ||

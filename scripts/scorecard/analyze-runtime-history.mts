@@ -451,7 +451,7 @@ export function formatRuntimeHistory(
   const lines = [
     "## E2E Nightly Runtime Trend",
     "",
-    "Current timing compared with up to 10 prior completed scheduled runs; manual runs are excluded from history.",
+    `Current timing compared with up to ${RUNTIME_TREND_LIMIT} prior completed scheduled runs; manual runs are excluded from history.`,
     `Regression warnings require both +${seconds(RUNTIME_REGRESSION_MIN_DELTA_MS)} and +${RUNTIME_REGRESSION_MIN_PERCENT}%.`,
     "",
   ];
