@@ -56,6 +56,8 @@ export interface ReconcileSandboxMessagingOptions<Agent> {
   readonly sandboxName: string;
   readonly agent: Agent;
   readonly env?: NodeJS.ProcessEnv;
+  readonly credentialValidationPlan?: SandboxMessagingPlan | null;
+  readonly forceCredentialValidation?: boolean;
   readonly deps: SandboxMessagingDeps<Agent>;
 }
 
@@ -64,9 +66,10 @@ const messagingManifestRegistry = createBuiltInChannelManifestRegistry();
 export function hasMessagingCredentialDrift(
   plan: SandboxMessagingPlan | null,
   env: NodeJS.ProcessEnv,
+  activeChannelIds: readonly string[] = getActiveChannelsFromPlan(plan),
 ): boolean {
   if (!plan) return false;
-  const activeChannels = new Set(getActiveChannelsFromPlan(plan));
+  const activeChannels = new Set(activeChannelIds);
   return plan.credentialBindings.some((binding) => {
     if (!activeChannels.has(binding.channelId)) return false;
     const credentialHash = hashCredential(env[binding.providerEnvKey]);
@@ -324,8 +327,10 @@ async function selectionFromCompletedMessagingCheckpoint<Agent>(
   // A completed checkpoint makes the session copy authoritative. The process
   // plan may already have refreshed hashes, so it cannot prove that a newly
   // exported credential passed the channel's validation hooks.
-  const durablePlan = options.session?.messagingPlan ?? null;
-  const diverged = divergedCheckpointChannels(options.session, durablePlan);
+  const durablePlan = options.session?.messagingPlan ?? options.credentialValidationPlan ?? null;
+  const diverged = options.forceCredentialValidation
+    ? null
+    : divergedCheckpointChannels(options.session, durablePlan);
   if (diverged) {
     return selectionFromDivergedMessagingCheckpoint(diverged, options);
   }

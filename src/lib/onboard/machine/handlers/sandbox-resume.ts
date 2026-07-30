@@ -89,6 +89,7 @@ export type SandboxResumeDecision =
       readonly kind: "recreate";
       readonly note: string;
       readonly removeRegistryEntry: boolean;
+      readonly validateMessagingCredentialsBeforeRecreate?: boolean;
     }
   | { readonly kind: "repair-and-recreate" };
 

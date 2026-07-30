@@ -120,6 +120,26 @@ function isAdvisoryPeerRouteDifference(
   );
 }
 
+function hasEffectiveMessagingCredentialDrift(
+  registryPlan: SandboxMessagingPlan | null,
+  session: Session | null,
+  env: NodeJS.ProcessEnv,
+): boolean {
+  const plan = registryPlan ?? session?.messagingPlan ?? null;
+  const messagingDecision = session?.checkpoint?.messaging;
+  if (!messagingDecision || isDecisionUnset(messagingDecision)) {
+    return hasMessagingCredentialDrift(plan, env);
+  }
+  if (!isDecisionSelected(messagingDecision)) {
+    return false;
+  }
+  const disabledChannels = new Set(messagingDecision.value.disabledChannels);
+  const activeChannels = messagingDecision.value.selectedChannels.filter(
+    (channelId) => !disabledChannels.has(channelId),
+  );
+  return hasMessagingCredentialDrift(plan, env, activeChannels);
+}
+
 export interface SandboxStateOptions<
   Gpu,
   Agent,
@@ -554,6 +574,11 @@ class SandboxStateFlow<
       this.dcodeAutoApprovalMode,
       this.deps,
     );
+    const messagingCredentialChanged = hasEffectiveMessagingCredentialDrift(
+      registryMessagingPlan,
+      state.session,
+      this.options.env,
+    );
     const decision = decideSandboxResume({
       resume: this.options.resume,
       resumeAgentChanged: this.options.resumeAgentChanged,
@@ -577,10 +602,7 @@ class SandboxStateFlow<
         effectiveMessagingConfig,
         storedMessagingConfig,
       ),
-      messagingCredentialChanged: hasMessagingCredentialDrift(
-        registryMessagingPlan ?? state.session?.messagingPlan ?? null,
-        this.options.env,
-      ),
+      messagingCredentialChanged,
       hermesToolGatewayConfigChanged: !this.deps.stringSetsEqual(
         recordedToolGateways,
         effectiveToolGateways,
@@ -595,9 +617,13 @@ class SandboxStateFlow<
       ...toolDisclosureSignals,
       ...dcodeResumeSignals,
     });
+    const credentialValidatedDecision =
+      decision.kind === "recreate" && messagingCredentialChanged
+        ? { ...decision, validateMessagingCredentialsBeforeRecreate: true }
+        : decision;
     const managedDcodeDecision = dcodeResume.preserveManagedDcodeRegistryEntry(
       this.options,
-      decision,
+      credentialValidatedDecision,
     );
     return this.applyCheckpointCrashRecovery(managedDcodeDecision, state, sandboxReuseState);
   }
@@ -1560,12 +1586,17 @@ class SandboxStateFlow<
       "web_search_provider",
       nextState.session?.checkpoint ?? null,
     );
+    const registryMessagingPlan = this.deps.getRegistrySandboxMessagingPlan(requestedSandboxName);
+    const messagingCredentialChanged =
+      decision.kind === "recreate" && decision.validateMessagingCredentialsBeforeRecreate === true;
     const messaging = await reconcileSandboxMessaging({
       resume: this.options.resume,
       session: nextState.session,
       sandboxName: requestedSandboxName,
       agent: this.options.agent,
       env: this.options.env,
+      credentialValidationPlan: messagingCredentialChanged ? registryMessagingPlan : null,
+      forceCredentialValidation: messagingCredentialChanged,
       deps: this.deps,
     });
     nextState = this.checkpointMessaging(nextState, messaging);

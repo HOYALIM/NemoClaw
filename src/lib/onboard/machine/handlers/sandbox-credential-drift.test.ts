@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { hashCredential } from "../../../security/credential-hash";
 import { createSession } from "../../../state/onboard-session";
+import { recordCheckpointMessaging } from "../../checkpoint-record";
 import { detectMessagingChannelsFromEnv } from "../../messaging-channel-setup";
 import { handleSandboxState } from "./sandbox";
 import {
@@ -71,5 +72,81 @@ describe("sandbox messaging credential drift", () => {
     expect(getSession().messagingPlan?.credentialBindings[0]?.credentialHash).toBe(
       hashCredential(replacementToken),
     );
+  });
+
+  it("validates registry-only credential drift before removing the sandbox (#3631)", async () => {
+    const previousToken = "123456:previous-telegram-token";
+    const replacementToken = "123456:rejected-telegram-token";
+    const previousPlan = withTelegramCredentialHash(
+      makeMinimalPlan("saved", "openclaw", ["telegram"]),
+      hashCredential(previousToken),
+    );
+    const session = createSession({ sandboxName: "saved" });
+    session.steps.sandbox.status = "complete";
+    session.sandboxPromptProgress.messaging = true;
+    const { deps, calls } = createDeps(
+      {
+        getSandboxReuseState: () => "ready",
+        getRegistrySandboxMessagingPlan: () => previousPlan,
+        getRecordedMessagingChannelsForResume: () => null,
+      },
+      session,
+    );
+    calls.setupMessaging.mockRejectedValueOnce(new Error("Bot token was rejected by Telegram"));
+
+    await withEnv("TELEGRAM_BOT_TOKEN", replacementToken, async () => {
+      await expect(
+        handleSandboxState({
+          ...baseOptions(deps, session),
+          resume: true,
+          sandboxName: "saved",
+          env: { TELEGRAM_BOT_TOKEN: replacementToken },
+        }),
+      ).rejects.toThrow("Bot token was rejected by Telegram");
+    });
+
+    expect(calls.setupMessaging).toHaveBeenCalled();
+    expect(calls.removeSandbox).not.toHaveBeenCalled();
+    expect(calls.createSandbox).not.toHaveBeenCalled();
+  });
+
+  it("keeps an explicitly disabled checkpoint channel disabled when registry credentials drift (#3631)", async () => {
+    const previousToken = "123456:previous-telegram-token";
+    const replacementToken = "123456:replacement-telegram-token";
+    const registryPlan = withTelegramCredentialHash(
+      makeMinimalPlan("saved", "openclaw", ["telegram"]),
+      hashCredential(previousToken),
+    );
+    const disabledPlan = withTelegramCredentialHash(
+      makeMinimalPlan("saved", "openclaw", ["telegram"], ["telegram"]),
+      hashCredential(previousToken),
+    );
+    const session = createSession({ sandboxName: "saved", messagingPlan: disabledPlan });
+    session.steps.sandbox.status = "complete";
+    session.machine = { ...session.machine, state: "agent_setup" };
+    session.sandboxPromptProgress.messaging = true;
+    recordCheckpointMessaging(session, disabledPlan);
+    const { deps, calls, getSession } = createDeps(
+      {
+        getSandboxReuseState: () => "ready",
+        getRegistrySandboxMessagingPlan: () => registryPlan,
+        getRecordedMessagingChannelsForResume: () => null,
+      },
+      session,
+    );
+
+    await withEnv("TELEGRAM_BOT_TOKEN", replacementToken, async () => {
+      await handleSandboxState({
+        ...baseOptions(deps, session),
+        resume: true,
+        sandboxName: "saved",
+        env: { TELEGRAM_BOT_TOKEN: replacementToken },
+      });
+    });
+
+    expect(calls.setupMessaging).not.toHaveBeenCalled();
+    expect(calls.removeSandbox).not.toHaveBeenCalled();
+    expect(calls.createSandbox).not.toHaveBeenCalled();
+    expect(getSession().messagingPlan).toEqual(disabledPlan);
   });
 });
