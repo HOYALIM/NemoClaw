@@ -453,6 +453,7 @@ const releasePath = process.argv[3];
     const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
     fs.writeFileSync(lockPath, '{"version":1,"sandboxName":"alpha"');
+    const nowValues = [0, 0, 0, 0, 10, 10, 200];
     let nowCalls = 0;
 
     await expect(
@@ -462,12 +463,7 @@ const releasePath = process.argv[3];
         options({
           timeoutMs: 30,
           corruptLockGraceMs: 100,
-          monotonicNow: () => {
-            nowCalls += 1;
-            if (nowCalls <= 4) return 0;
-            if (nowCalls <= 6) return 10;
-            return 200;
-          },
+          monotonicNow: () => nowValues[Math.min(nowCalls++, nowValues.length - 1)],
         }),
       ),
     ).rejects.toThrow("Timed out waiting for the sandbox mutation lock");
