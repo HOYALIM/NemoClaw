@@ -8,6 +8,76 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const HELPER = path.resolve("agents/hermes/cron-restore-control.py");
+const RECEIPT_PREFIX = "NEMOCLAW_HERMES_CRON_RESTORE_V1:";
+const LIFECYCLE_HARNESS = String.raw`
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("cron_restore_control", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+scenario = sys.argv[2]
+module.HERMES_HOME = Path(sys.argv[3])
+module.validate_cron_tree = lambda: {
+    "profiles": 1,
+    "active_jobs": 1,
+    "script_jobs": 1,
+}
+
+class DrainControl:
+    requested = False
+
+    def write_drain_request(self, **_kwargs):
+        self.requested = True
+
+    def drain_requested(self, **_kwargs):
+        return self.requested
+
+    def clear_drain_request(self, **_kwargs):
+        if not self.requested:
+            return False
+        self.requested = False
+        return True
+
+class Status:
+    payload = {
+        "pid": 41,
+        "start_time": 902,
+        "gateway_state": "draining",
+        "active_agents": 0,
+    }
+
+    def read_runtime_status(self):
+        return self.payload
+
+    def get_runtime_status_running_pid(self, *, runtime, expected_home):
+        return runtime["pid"]
+
+    def parse_active_agents(self, value):
+        return int(value)
+
+drain = DrainControl()
+status = Status()
+module._load_gateway_modules = lambda: (drain, status)
+
+try:
+    if scenario == "success":
+        module.begin_drain()
+        module.validate_restore(41, 902)
+        status.payload["gateway_state"] = "running"
+        module.release_drain(41, 902)
+    elif scenario == "wrong-identity":
+        drain.requested = True
+        module.validate_restore(42, 902)
+    elif scenario == "missing-marker":
+        module.release_drain(41, 902)
+    else:
+        raise RuntimeError(f"unknown scenario: {scenario}")
+except module.ControlError as error:
+    print(str(error), file=sys.stderr)
+    raise SystemExit(1)
+`;
 
 function writeJson(target: string, payload: unknown): void {
   mkdirSync(path.dirname(target), { recursive: true });
@@ -32,6 +102,14 @@ describe("Hermes in-sandbox cron restore validator", () => {
     return spawnSync(
       process.env.PYTHON || "python3",
       ["-I", HELPER, "validate-tree", "--home", hermesHome, "--sandbox-home", root],
+      { encoding: "utf8" },
+    );
+  }
+
+  function runLifecycle(scenario: "success" | "wrong-identity" | "missing-marker") {
+    return spawnSync(
+      process.env.PYTHON || "python3",
+      ["-I", "-c", LIFECYCLE_HARNESS, HELPER, scenario, hermesHome],
       { encoding: "utf8" },
     );
   }
@@ -67,5 +145,37 @@ describe("Hermes in-sandbox cron restore validator", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("active job #1 script is not readable");
+  });
+
+  it("pins one gateway identity across begin, validation, and release", () => {
+    const result = runLifecycle("success");
+
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    const receipts = result.stdout
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line.slice(RECEIPT_PREFIX.length)));
+    expect(receipts.map((receipt) => receipt.action)).toEqual(["begin", "validate", "release"]);
+    expect(receipts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ pid: 41, start_time: 902 }),
+        expect.objectContaining({ active_jobs: 1, profiles: 1, script_jobs: 1 }),
+      ]),
+    );
+  });
+
+  it("rejects validation against a different gateway identity", () => {
+    const result = runLifecycle("wrong-identity");
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("gateway identity changed during cron restore");
+  });
+
+  it("rejects release after the drain marker disappears", () => {
+    const result = runLifecycle("missing-marker");
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("drain marker disappeared before release");
   });
 });

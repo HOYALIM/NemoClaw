@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import {
+  accessSync,
+  constants,
   type Dirent,
   lstatSync,
   readdirSync,
@@ -129,6 +131,11 @@ function validateBackupScript(
     throw new Error(`${profileLabel} active job #${jobIndex} script escapes its profile`);
   }
   if ((scriptMetadata.mode & 0o444) === 0) {
+    throw new Error(`${profileLabel} active job #${jobIndex} script is not readable`);
+  }
+  try {
+    accessSync(resolvedScript, constants.R_OK);
+  } catch {
     throw new Error(`${profileLabel} active job #${jobIndex} script is not readable`);
   }
 }
