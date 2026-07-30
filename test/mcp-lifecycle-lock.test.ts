@@ -10,6 +10,7 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { McpLifecycleLockOptions } from "../src/lib/state/mcp-lifecycle-lock";
 import "./helpers/mcp-lifecycle-lock-properties";
 
 type LifecycleLockModule = typeof import("../src/lib/state/mcp-lifecycle-lock");
@@ -24,7 +25,7 @@ const currentPidNamespaceIdentity = lifecycleLock.readMcpLockPidNamespaceIdentit
 let stateDir: string;
 const children = new Set<ChildProcess>();
 
-function options(overrides: Record<string, number> = {}) {
+function options(overrides: Partial<McpLifecycleLockOptions> = {}) {
   return {
     stateDir,
     pollIntervalMs: 5,
@@ -446,6 +447,56 @@ const releasePath = process.argv[3];
       ),
     ).resolves.toBe("acquired");
     expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("preserves a corrupt lock when observation crosses the acquisition deadline", async () => {
+    const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, '{"version":1,"sandboxName":"alpha"');
+    let nowCalls = 0;
+
+    await expect(
+      lifecycleLock.withMcpLifecycleLock(
+        "alpha",
+        () => undefined,
+        options({
+          timeoutMs: 30,
+          corruptLockGraceMs: 100,
+          monotonicNow: () => {
+            nowCalls += 1;
+            if (nowCalls <= 4) return 0;
+            if (nowCalls <= 6) return 10;
+            return 200;
+          },
+        }),
+      ),
+    ).rejects.toThrow("Timed out waiting for the sandbox mutation lock");
+
+    expect(fs.readFileSync(lockPath, "utf8")).toContain('"sandboxName":"alpha"');
+  });
+
+  it("does not enter the critical section when lock publication crosses the deadline", async () => {
+    let nowCalls = 0;
+    let entered = false;
+
+    await expect(
+      lifecycleLock.withMcpLifecycleLock(
+        "alpha",
+        () => {
+          entered = true;
+        },
+        options({
+          timeoutMs: 30,
+          monotonicNow: () => {
+            nowCalls += 1;
+            return nowCalls <= 3 ? 0 : 100;
+          },
+        }),
+      ),
+    ).rejects.toThrow("Timed out waiting for the sandbox mutation lock");
+
+    expect(entered).toBe(false);
+    expect(fs.existsSync(lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir))).toBe(false);
   });
 
   it("recovers a reaper whose owner was killed during stale-lock cleanup", async () => {
