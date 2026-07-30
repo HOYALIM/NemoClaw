@@ -243,6 +243,7 @@ async function assertColdOnboardPerformance(input: {
   const assistantReply = extractOpenClawAgentPayloadText(turnText).trim();
   const firstTurnLatency = buildOpenClawFirstTurnLatencyEvidence(turnText, firstTurnCommandMs);
   const compactAssistantReply = assistantReply.replace(/\s+/gu, "");
+  const firstTurnSentinelMatched = compactAssistantReply.includes(EXPECTED_FIRST_REPLY);
   const responseChars = assistantReply.length;
 
   await input.artifacts.writeJson("onboard-progress-budget.json", {
@@ -250,6 +251,7 @@ async function assertColdOnboardPerformance(input: {
     sandbox: SANDBOX_NAME,
     installExitCode: input.install.exitCode,
     firstTurnExitCode: turn.exitCode,
+    firstTurnSentinelMatched,
     phaseMeasurements: {
       onboardRootMs: traceWindow.durationMs,
       rootStartToFirstTurnCompletionMs: performanceEvaluation.rootStartToFirstTurnCompletionMs,
@@ -295,9 +297,9 @@ async function assertColdOnboardPerformance(input: {
   ).toBeLessThanOrEqual(MAX_SILENCE_SECS);
   expect(turn.exitCode, turnText).toBe(0);
   expect(
-    compactAssistantReply,
+    firstTurnSentinelMatched,
     `expected the sentinel first agent reply, got: ${turnText}`,
-  ).toContain(EXPECTED_FIRST_REPLY);
+  ).toBe(true);
   for (const anomaly of performanceEvaluation.anomalies) {
     console.warn(
       `::warning title=Hosted first-turn latency anomaly::root-end-to-first-turn-completion ${anomaly.measurementMs}ms exceeded ${anomaly.budgetMs}ms by ${anomaly.overageMs}ms after all deterministic cold-onboard budgets passed`,
