@@ -4,6 +4,31 @@
 import { CLI_NAME } from "../../cli/branding";
 import * as processRecovery from "./process-recovery";
 
+export {
+  type HermesCronRestorePlan,
+  validateHermesCronRestoreBackup,
+} from "./rebuild-hermes-cron-restore/backup";
+
+const HERMES_CRON_CONTROL = "/usr/local/lib/nemoclaw/hermes-cron-restore-control.py";
+const HERMES_PYTHON = "/opt/hermes/.venv/bin/python";
+const RECEIPT_PREFIX = "NEMOCLAW_HERMES_CRON_RESTORE_V1:";
+const BEGIN_TIMEOUT_MS = 70_000;
+const CONTROL_TIMEOUT_MS = 25_000;
+
+interface HermesCronRestoreReceipt {
+  version: 1;
+  action: "begin" | "validate" | "release";
+  pid: number;
+  start_time: number;
+}
+
+export class HermesCronRestoreIncompleteError extends Error {
+  constructor() {
+    super("Hermes state restore was incomplete while cron dispatch was drained");
+    this.name = "HermesCronRestoreIncompleteError";
+  }
+}
+
 export type HermesPostRestoreGatewayState =
   | "not-applicable"
   | "healthy"
@@ -64,4 +89,104 @@ export function printHermesGatewayRestoreRecovery(
   writeLine(
     `    Hermes gateway health was not verified after state restore — run \`${CLI_NAME} ${sandboxName} recover\` before relying on this sandbox`,
   );
+}
+
+function parseCronRestoreReceipt(
+  stdout: string,
+  expectedAction: HermesCronRestoreReceipt["action"],
+): HermesCronRestoreReceipt {
+  const receiptLines = stdout.split(/\r?\n/u).filter((line) => line.startsWith(RECEIPT_PREFIX));
+  if (receiptLines.length !== 1) {
+    throw new Error(`Hermes cron ${expectedAction} returned an invalid receipt`);
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(receiptLines[0].slice(RECEIPT_PREFIX.length));
+  } catch {
+    throw new Error(`Hermes cron ${expectedAction} returned malformed JSON`);
+  }
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    (payload as { version?: unknown }).version !== 1 ||
+    (payload as { action?: unknown }).action !== expectedAction ||
+    !Number.isSafeInteger((payload as { pid?: unknown }).pid) ||
+    Number((payload as { pid: number }).pid) <= 0 ||
+    !Number.isSafeInteger((payload as { start_time?: unknown }).start_time) ||
+    Number((payload as { start_time: number }).start_time) < 0
+  ) {
+    throw new Error(`Hermes cron ${expectedAction} receipt failed validation`);
+  }
+  return payload as HermesCronRestoreReceipt;
+}
+
+function runCronRestoreControl(
+  sandboxName: string,
+  action: HermesCronRestoreReceipt["action"],
+  identity?: Pick<HermesCronRestoreReceipt, "pid" | "start_time">,
+): HermesCronRestoreReceipt {
+  const identityArgs = identity
+    ? ` --pid ${String(identity.pid)} --start-time ${String(identity.start_time)}`
+    : "";
+  const command = `${HERMES_PYTHON} -I ${HERMES_CRON_CONTROL} ${action}${identityArgs}`;
+  const result = processRecovery.executeSandboxExecCommand(
+    sandboxName,
+    command,
+    action === "begin" ? BEGIN_TIMEOUT_MS : CONTROL_TIMEOUT_MS,
+  );
+  if (!result) {
+    throw new Error(`Hermes cron ${action} transport was unavailable`);
+  }
+  if (result.status !== 0) {
+    const detail = result.stderr.trim().split(/\r?\n/u).at(-1);
+    throw new Error(`Hermes cron ${action} failed${detail ? `: ${detail}` : ""}`);
+  }
+  return parseCronRestoreReceipt(result.stdout, action);
+}
+
+export function beginHermesCronRestore(
+  sandboxName: string,
+): Pick<HermesCronRestoreReceipt, "pid" | "start_time"> {
+  const receipt = runCronRestoreControl(sandboxName, "begin");
+  return { pid: receipt.pid, start_time: receipt.start_time };
+}
+
+export function validateHermesCronRestore(
+  sandboxName: string,
+  identity: Pick<HermesCronRestoreReceipt, "pid" | "start_time">,
+): void {
+  const receipt = runCronRestoreControl(sandboxName, "validate", identity);
+  if (receipt.pid !== identity.pid || receipt.start_time !== identity.start_time) {
+    throw new Error("Hermes cron validate receipt changed gateway identity");
+  }
+}
+
+export function releaseHermesCronRestore(
+  sandboxName: string,
+  identity: Pick<HermesCronRestoreReceipt, "pid" | "start_time">,
+): void {
+  const receipt = runCronRestoreControl(sandboxName, "release", identity);
+  if (receipt.pid !== identity.pid || receipt.start_time !== identity.start_time) {
+    throw new Error("Hermes cron release receipt changed gateway identity");
+  }
+}
+
+export function runHermesCronRestoreTransaction<T extends { restoreSucceeded: boolean }>(
+  sandboxName: string,
+  restore: () => T,
+  onGateTransition: (
+    state: "acquired" | "released",
+    identity: Pick<HermesCronRestoreReceipt, "pid" | "start_time">,
+  ) => void = () => {},
+): T {
+  const identity = beginHermesCronRestore(sandboxName);
+  onGateTransition("acquired", identity);
+  const result = restore();
+  if (!result.restoreSucceeded) {
+    throw new HermesCronRestoreIncompleteError();
+  }
+  validateHermesCronRestore(sandboxName, identity);
+  releaseHermesCronRestore(sandboxName, identity);
+  onGateTransition("released", identity);
+  return result;
 }

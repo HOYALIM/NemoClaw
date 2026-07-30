@@ -30,6 +30,13 @@ import {
 import { reapplyMessagingManifestAfterOpenClawDoctor } from "./rebuild-messaging-phase";
 import { reconcileStalePinnedSessionModelsAfterRebuild } from "./reconcile-session-models";
 
+export {
+  HermesCronRestoreIncompleteError,
+  type HermesCronRestorePlan,
+  runHermesCronRestoreTransaction,
+  validateHermesCronRestoreBackup,
+} from "./rebuild-hermes-post-restore";
+
 export interface RebuildPostRestorePhaseInput {
   sandboxName: string;
   sandboxEntry: RebuildSandboxEntry;
