@@ -269,6 +269,7 @@ async function assertColdOnboardPerformance(input: {
     rootStartToFirstTurnCompletionSecs,
     budget: input.budget,
     performance: {
+      anomalies: performanceEvaluation.anomalies,
       passed: performanceEvaluation.passed,
       violations: performanceEvaluation.violations,
       usedAuthoritativeLocalBaseBuild,
@@ -297,6 +298,11 @@ async function assertColdOnboardPerformance(input: {
     compactAssistantReply,
     `expected the sentinel first agent reply, got: ${turnText}`,
   ).toContain(EXPECTED_FIRST_REPLY);
+  for (const anomaly of performanceEvaluation.anomalies) {
+    console.warn(
+      `::warning title=Hosted first-turn latency anomaly::root-end-to-first-turn-completion ${anomaly.measurementMs}ms exceeded ${anomaly.budgetMs}ms by ${anomaly.overageMs}ms after all deterministic cold-onboard budgets passed`,
+    );
+  }
   expect(
     performanceEvaluation.passed,
     `onboard-root-start-to-first-turn-completion took ${rootStartToFirstTurnCompletionSecs}s; ${performanceEvaluation.violations.join("; ")}`,

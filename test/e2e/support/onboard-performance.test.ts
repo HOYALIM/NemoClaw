@@ -210,6 +210,7 @@ describe("onboard performance evidence", () => {
 
     expect(evaluateColdOnboardPerformance(trace, 6_000, budget)).toEqual({
       appliedAuthoritativeLocalBaseBuildAllowanceMs: 0,
+      anomalies: [],
       passed: true,
       rootStartToFirstTurnCompletionMs: 5_000,
       rootEndToFirstTurnCompletionMs: 0,
@@ -217,6 +218,7 @@ describe("onboard performance evidence", () => {
     });
     expect(evaluateColdOnboardPerformance(trace, 7_500, budget)).toEqual({
       appliedAuthoritativeLocalBaseBuildAllowanceMs: 0,
+      anomalies: [],
       passed: false,
       rootStartToFirstTurnCompletionMs: 6_500,
       rootEndToFirstTurnCompletionMs: 1_500,
@@ -232,13 +234,14 @@ describe("onboard performance evidence", () => {
     ]);
     expect(evaluateColdOnboardPerformance(trace, 6_500, budget, true)).toMatchObject({
       appliedAuthoritativeLocalBaseBuildAllowanceMs: 500,
+      anomalies: [],
       passed: true,
       rootStartToFirstTurnCompletionMs: 5_500,
       violations: [],
     });
   });
 
-  it("keeps a sole hosted first-turn overage blocking until recurrence policy is defined", () => {
+  it("classifies a sole hosted first-turn tail as a structured non-blocking anomaly (#6660)", () => {
     const trace = readOnboardTraceWindow(traceArtifact());
     const budget = readColdOnboardPerformanceBudget({
       fullE2eColdPath: {
@@ -251,10 +254,18 @@ describe("onboard performance evidence", () => {
 
     expect(evaluateColdOnboardPerformance(trace, 7_500, budget)).toEqual({
       appliedAuthoritativeLocalBaseBuildAllowanceMs: 0,
-      passed: false,
+      anomalies: [
+        {
+          budgetMs: 1_000,
+          kind: "first-turn-latency-tail",
+          measurementMs: 1_500,
+          overageMs: 500,
+        },
+      ],
+      passed: true,
       rootStartToFirstTurnCompletionMs: 6_500,
       rootEndToFirstTurnCompletionMs: 1_500,
-      violations: ["root-end-to-first-turn-completion 1500ms exceeds 1000ms"],
+      violations: [],
     });
   });
 
@@ -271,6 +282,7 @@ describe("onboard performance evidence", () => {
     });
 
     expect(evaluateColdOnboardPerformance(trace, 7_500, budget)).toMatchObject({
+      anomalies: [],
       passed: false,
       violations: [
         "root-end-to-first-turn-completion 1500ms exceeds 1000ms",

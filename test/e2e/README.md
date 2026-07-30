@@ -975,9 +975,14 @@ The artifact records the first-turn command wall clock and OpenClaw's internal
 agent duration separately. Older or malformed OpenClaw output records an
 explicit unavailable reason instead of fabricating a duration. The artifact
 also identifies the model, provider, inference mode, and prompt contract so
-same-cohort samples can support a later, documented recurrence policy. All
-configured performance violations remain blocking until that policy is
-accepted.
+same-cohort samples can support a later, documented recurrence policy. When
+every deterministic cold-onboard budget passes and the real first turn exits
+successfully with the expected sentinel, a sole root-end-to-first-turn overage
+is recorded as a structured, non-blocking hosted-latency anomaly rather than a
+PR regression. The same overage remains blocking when accompanied by a
+root-start or phase-budget failure. The artifact preserves the measurement,
+budget, and overage so recurring same-model, same-mode evidence can calibrate
+tail-latency enforcement without weakening functional or deterministic gates.
 
 When changed base-image inputs require the authoritative local OpenClaw base
 build, the target applies the separately calibrated 90-second allowance only to
