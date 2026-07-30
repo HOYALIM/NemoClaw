@@ -151,12 +151,16 @@ function findArtifactFiles(root: string): string[] {
 function readCurrentArtifact(root: string): unknown {
   const matches = findArtifactFiles(root);
   if (matches.length !== 1) return null;
+  let descriptor: number | null = null;
   try {
-    const stat = fs.statSync(matches[0]!);
+    descriptor = fs.openSync(matches[0]!, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    const stat = fs.fstatSync(descriptor);
     if (!stat.isFile() || stat.size < 1 || stat.size > MAX_ARTIFACT_BYTES) return null;
-    return JSON.parse(fs.readFileSync(matches[0]!, "utf8"));
+    return JSON.parse(fs.readFileSync(descriptor, "utf8"));
   } catch {
     return null;
+  } finally {
+    if (descriptor !== null) fs.closeSync(descriptor);
   }
 }
 
