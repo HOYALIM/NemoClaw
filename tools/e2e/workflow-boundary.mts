@@ -146,6 +146,7 @@ const COMMON_SECRET_ENV_NAMES = [
 const FREE_STANDING_SELECTOR_SPECIAL_CASES = new Set([
   "hermes-e2e",
   "hermes-gpu-startup",
+  "openshell-credential-generation-window",
   "staging-brev-launchable",
 ]);
 const ADAPTER_MANAGED_INFERENCE_JOBS = new Set(["hermes-e2e"]);
@@ -2159,8 +2160,8 @@ function validateUpgradeStaleSandboxJob(errors: string[], jobs: WorkflowRecord):
     errors.push("upgrade-stale-sandbox job must run on ubuntu-latest");
   }
   validateFreeStandingJobSelector(errors, jobs, jobName, targetName);
-  if (job["timeout-minutes"] !== 55) {
-    errors.push("upgrade-stale-sandbox job must keep the legacy 55 minute timeout");
+  if (job["timeout-minutes"] !== 85) {
+    errors.push("upgrade-stale-sandbox job must keep the two-sandbox 85 minute timeout");
   }
 
   const jobEnv = asRecord(job.env);
