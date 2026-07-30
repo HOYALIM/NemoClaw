@@ -51,6 +51,11 @@ const HERMES_INTEGRITY_FILES = [
     source: "agents/hermes/patch-cron-execution-runtime.py",
     target: "/opt/nemoclaw-hermes-config/patch-cron-execution-runtime.py",
   },
+  {
+    arg: "NEMOCLAW_HERMES_CRON_RESTORE_CONTROLLER_SHA256",
+    source: "agents/hermes/cron-restore-control.py",
+    target: "/usr/local/lib/nemoclaw/hermes-cron-restore-control.py",
+  },
 ] as const;
 
 type LegacyDataFixture =
@@ -360,6 +365,7 @@ describe("Hermes final image layout", () => {
 
       expect(dockerfile).toContain(`COPY ${entry.source} ${entry.target}`);
       expect(declaredDigest, `${entry.arg} must match ${entry.source}`).toBe(digest);
+      expect(dockerfile).toContain(`"$${entry.arg}" ${entry.target}`);
     }
   });
 

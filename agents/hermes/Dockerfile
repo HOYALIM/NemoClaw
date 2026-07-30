@@ -506,10 +506,11 @@ PY
 # accompanied by an updated hash below; otherwise the build fails. This blocks
 # silent supply-chain tampering of the build context (an attacker rewriting a
 # file has to also rewrite the Dockerfile-committed hash, which reviewers gate).
-# Regenerate with `sha256sum agents/hermes/{hermes-wrapper.py,validate-env-secret-boundary.py,finalize-tirith-marker.py}`.
+# Regenerate with `sha256sum agents/hermes/{hermes-wrapper.py,validate-env-secret-boundary.py,finalize-tirith-marker.py,cron-restore-control.py}`.
 ARG NEMOCLAW_HERMES_WRAPPER_SHA256=cd851746da14162ac4701d56c274dac20024ea6a11f6ffcf2ce7fb89dff388a0
 ARG NEMOCLAW_HERMES_VALIDATOR_SHA256=822c7e63d068c5d09f3291350771c1a42c9686f51bfa9bc9a1f41fbe15d163b1
 ARG NEMOCLAW_HERMES_TIRITH_FINALIZER_SHA256=a1e6b1c53ab297569abb87c29d15c294d729e46005bfd022136b4c447a791819
+ARG NEMOCLAW_HERMES_CRON_RESTORE_CONTROLLER_SHA256=34ef304eaeb3d67371e66364fee7a869bc00ba6a77c220e96e3da7482a48f5dd
 # hadolint ignore=DL4006
 RUN printf '%s  %s\n' \
         "$NEMOCLAW_HERMES_VALIDATOR_SHA256" /usr/local/lib/nemoclaw/validate-hermes-env-secret-boundary.py \
@@ -520,6 +521,11 @@ RUN printf '%s  %s\n' \
         "$NEMOCLAW_HERMES_TIRITH_FINALIZER_SHA256" /usr/local/lib/nemoclaw/finalize-tirith-marker.py \
     | sha256sum -c - \
     || { echo "ERROR: finalize-tirith-marker.py hash mismatch (update NEMOCLAW_HERMES_TIRITH_FINALIZER_SHA256)" >&2; exit 1; }
+# hadolint ignore=DL4006
+RUN printf '%s  %s\n' \
+        "$NEMOCLAW_HERMES_CRON_RESTORE_CONTROLLER_SHA256" /usr/local/lib/nemoclaw/hermes-cron-restore-control.py \
+    | sha256sum -c - \
+    || { echo "ERROR: hermes-cron-restore-control.py hash mismatch (update NEMOCLAW_HERMES_CRON_RESTORE_CONTROLLER_SHA256)" >&2; exit 1; }
 
 # Wrap the hermes CLI so the runtime env secret boundary is enforced for
 # `hermes gateway` no matter how it is invoked. The entrypoint guard alone left
