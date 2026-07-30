@@ -5,6 +5,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { validateHermesCronRestoreBackup } from "../../state/rebuild/hermes-cron-restore-backup";
 
 const processMocks = vi.hoisted(() => ({
   executeSandboxExecCommand: vi.fn(),
@@ -19,7 +20,6 @@ import {
   releaseHermesCronRestore,
   runHermesCronRestoreTransaction,
   validateHermesCronRestore,
-  validateHermesCronRestoreBackup,
 } from "./rebuild-hermes-post-restore";
 
 const RECEIPT_PREFIX = "NEMOCLAW_HERMES_CRON_RESTORE_V1:";

@@ -20,14 +20,15 @@ import { disposeRebuildAgentBaseImagePreflight } from "./rebuild-flow-helpers";
 import { stageMessagingManifestPlanForRebuild } from "./rebuild-messaging-phase";
 import {
   HermesCronRestoreIncompleteError,
-  type HermesCronRestorePlan,
   runHermesCronRestoreTransaction,
   runRebuildPostRestorePhase,
-  validateHermesCronRestoreBackup,
 } from "./rebuild-post-restore-phase";
 import { printRebuildPreflightFailure } from "./rebuild-preflight-error";
 import { blockRebuildOnPendingBaselineTransition } from "./rebuild-preflight-guards";
-import { runRebuildPreflightPhase } from "./rebuild-preflight-phase";
+import {
+  runHermesCronRestoreBackupPreflight,
+  runRebuildPreflightPhase,
+} from "./rebuild-preflight-phase";
 import {
   disposePreparedBuildContext,
   verifyPreparedBuildContext,
@@ -192,26 +193,15 @@ async function rebuildSandboxUnlocked(
       });
       if (!backup) return;
 
-      let hermesCronRestorePlan: HermesCronRestorePlan | null = null;
-      if (
-        rebuildAgent === "hermes" &&
-        backup.backupManifest?.backedUpDirs?.includes("cron") === true
-      ) {
-        try {
-          hermesCronRestorePlan = validateHermesCronRestoreBackup(backup.backupManifest.backupPath);
-          log(
-            `Hermes cron restore preflight: activeJobs=${String(hermesCronRestorePlan.activeJobs)}, scriptJobs=${String(hermesCronRestorePlan.scriptJobs)}, gate=${String(hermesCronRestorePlan.requiresDispatchGate)}`,
-          );
-        } catch (error) {
-          printRebuildPreflightFailure(
-            `the Hermes cron backup is not safe to activate: ${rebuildFailureDetail(error)}`,
-            `Repair or disable the affected job before rebuilding. Backup: ${backup.backupManifest.backupPath}`,
-            "Hermes cron restore preflight failed.",
-            bail,
-          );
-          return;
-        }
-      }
+      const hermesCronRestorePreflight = runHermesCronRestoreBackupPreflight({
+        rebuildAgent,
+        backupPath: backup.backupManifest?.backupPath ?? null,
+        backedUpDirs: backup.backupManifest?.backedUpDirs ?? [],
+        log,
+        bail,
+      });
+      if (!hermesCronRestorePreflight) return;
+      const hermesCronRestorePlan = hermesCronRestorePreflight.plan;
 
       // The post-delete create must consume the exact context that passed the
       // image preflight. Revalidate at the last safe point so mutation of the

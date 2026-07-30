@@ -32,9 +32,7 @@ import { reconcileStalePinnedSessionModelsAfterRebuild } from "./reconcile-sessi
 
 export {
   HermesCronRestoreIncompleteError,
-  type HermesCronRestorePlan,
   runHermesCronRestoreTransaction,
-  validateHermesCronRestoreBackup,
 } from "./rebuild-hermes-post-restore";
 
 export interface RebuildPostRestorePhaseInput {

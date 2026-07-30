@@ -4,11 +4,6 @@
 import { CLI_NAME } from "../../cli/branding";
 import * as processRecovery from "./process-recovery";
 
-export {
-  type HermesCronRestorePlan,
-  validateHermesCronRestoreBackup,
-} from "./rebuild-hermes-cron-restore/backup";
-
 const HERMES_CRON_CONTROL = "/usr/local/lib/nemoclaw/hermes-cron-restore-control.py";
 const HERMES_PYTHON = "/opt/hermes/.venv/bin/python";
 const RECEIPT_PREFIX = "NEMOCLAW_HERMES_CRON_RESTORE_V1:";
