@@ -3462,9 +3462,16 @@ def _transition(
             raise GuardError("transition-failed", opened.config_path, detail) from exc
 
     if _is_mutable_dir_posture(opened, identity):
-        # Fresh and rebuilt sandboxes begin in this exact posture. Treating
-        # unlock as a locked-only transition makes the first shields-down fail
-        # and its rollback change the posture before a retry can succeed.
+        # Unlock is idempotent, mirroring the already-locked short-circuits in
+        # the lock branch above. A config already in the exact mutable posture
+        # is the unlock target: on some platforms (DGX Spark/Station, macOS) an
+        # in-sandbox OpenClaw reconciler re-permissions the config back to
+        # sandbox-owned mutable *after* a host lock returns, and a freshly
+        # onboarded or snapshot-restored sandbox boots mutable before the lock
+        # settles. Requiring the locked posture there rejected a legitimate
+        # `shields down` with config-not-locked even though the config already
+        # holds the mutable target posture. Verify the exact mutable posture
+        # and treat the transition as a no-op instead of failing.
         pair = _snapshot_raw_pair(opened)
         _verify_mutable_posture(opened, pair, identity)
         _validate_runtime_config_json5(
@@ -3474,7 +3481,6 @@ def _transition(
         )
         _assert_config_binding(opened)
         return
-
     pair = _snapshot_pair(opened)
     _verify_locked_posture(opened, pair, identity, allow_blocking_flags=True)
     snapshots: list[FileSnapshot] = []
