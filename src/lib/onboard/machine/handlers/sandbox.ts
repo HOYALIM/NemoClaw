@@ -133,6 +133,8 @@ export interface SandboxStateOptions<
   authoritativePolicyTier?: string | null;
   /** Endpoint source to preserve during an authoritative rebuild. */
   endpointSource?: InferenceEndpointSource | null;
+  /** Internal rebuild target fingerprint recorded by the journal opened before deletion. */
+  recreateJournalTargetIntentFingerprint?: string | null;
   resumeAgentChanged: boolean;
   requestedObservabilityEnabled?: boolean | null;
   requestedDcodeAutoApprovalMode?: DcodeAutoApprovalMode | null;
@@ -1240,9 +1242,6 @@ class SandboxStateFlow<
     const sourceEntry = this.deps.getSandboxRegistryEntry(sandboxName);
     if (!existing && !sourceEntry) return null;
     const observation = this.deps.getSandboxRecreateObservation(sandboxName);
-    const targetIntentFingerprint = fingerprintSandboxRecreateValue(
-      this.currentSandboxCreateFingerprint(sandboxName, createIntent.resolved),
-    );
     const updated = this.deps.updateSession((current) => {
       beginSandboxRecreateTransaction(current, {
         sandboxName,
@@ -1250,11 +1249,25 @@ class SandboxStateFlow<
         gatewayPort: gateway.gatewayPort,
         sourceEntry,
         observation,
-        targetIntentFingerprint,
+        targetIntentFingerprint: this.sandboxRecreateTargetIntentFingerprint(
+          sandboxName,
+          createIntent,
+        ),
       });
       return current;
     });
     return updated.checkpoint?.sandboxRecreate ?? null;
+  }
+
+  private sandboxRecreateTargetIntentFingerprint(
+    sandboxName: string,
+    createIntent: CompleteSandboxCreateIntent,
+  ): string {
+    const journaled = this.options.recreateJournalTargetIntentFingerprint;
+    if (journaled) return journaled;
+    return fingerprintSandboxRecreateValue(
+      this.currentSandboxCreateFingerprint(sandboxName, createIntent.resolved),
+    );
   }
 
   private recordSandboxRecreatePhase(
