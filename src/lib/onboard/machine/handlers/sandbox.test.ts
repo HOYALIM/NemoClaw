@@ -17,6 +17,7 @@ import {
   baseOptions,
   createDeps,
   makeMinimalPlan,
+  selectTestGatewayAuthority,
   withEnv,
   withTelegramCredentialHash,
 } from "./sandbox-test-fixtures";
@@ -849,13 +850,21 @@ describe("handleSandboxState", () => {
   it("marks web search changed when recreate implicitly enables Tavily", async () => {
     const session = createSession({ sandboxName: "saved" });
     session.steps.sandbox.status = "complete";
-    const { deps } = createDeps({
-      getSandboxReuseState: () => "not_ready",
-      configureWebSearch: vi.fn(async () => ({
-        fetchEnabled: true as const,
-        provider: "tavily" as const,
-      })),
-    });
+    selectTestGatewayAuthority(session);
+    const { deps } = createDeps(
+      {
+        getSandboxReuseState: () => "not_ready",
+        getSandboxRecreateObservation: () => ({
+          state: "not_ready",
+          liveIdentityFingerprint: "a".repeat(64),
+        }),
+        configureWebSearch: vi.fn(async () => ({
+          fetchEnabled: true as const,
+          provider: "tavily" as const,
+        })),
+      },
+      session,
+    );
 
     const result = await handleSandboxState({
       ...baseOptions(deps, session),
@@ -890,49 +899,17 @@ describe("handleSandboxState", () => {
     expect(calls.createSandbox).toHaveBeenCalled();
   });
 
-  it("repairs not-ready resumed sandboxes before recreation", async () => {
+  it("fails closed when not-ready repair lacks a journal-bound source", async () => {
     const session = createSession({ sandboxName: "saved" });
     session.steps.sandbox.status = "complete";
     const { deps, calls } = createDeps({ getSandboxReuseState: () => "not_ready" });
 
-    await handleSandboxState({ ...baseOptions(deps, session), resume: true, sandboxName: "saved" });
-
-    expect(calls.repairEvent).toHaveBeenCalledWith("state.repair.started", {
-      state: "sandbox",
-      metadata: { repair: "recorded-sandbox-cleanup", sandboxName: "saved" },
-    });
-    expect(calls.repairSandbox).toHaveBeenCalledWith("saved");
-    expect(calls.repairEvent).toHaveBeenCalledWith("state.repair.completed", {
-      state: "sandbox",
-      metadata: { repair: "recorded-sandbox-cleanup", sandboxName: "saved" },
-    });
-    expect(calls.createSandbox).toHaveBeenCalled();
-  });
-
-  it("records failed sandbox repair events before propagating repair errors", async () => {
-    const session = createSession({ sandboxName: "saved" });
-    session.steps.sandbox.status = "complete";
-    const { deps, calls } = createDeps({
-      getSandboxReuseState: () => "not_ready",
-      repairRecordedSandbox: vi.fn(() => {
-        throw new Error("cleanup failed");
-      }),
-    });
-
     await expect(
       handleSandboxState({ ...baseOptions(deps, session), resume: true, sandboxName: "saved" }),
-    ).rejects.toThrow("cleanup failed");
+    ).rejects.toThrow("journal-bound recreate transaction");
 
-    expect(calls.repairEvent).toHaveBeenCalledWith("state.repair.started", {
-      state: "sandbox",
-      metadata: { repair: "recorded-sandbox-cleanup", sandboxName: "saved" },
-    });
-    expect(calls.repairEvent).toHaveBeenCalledWith("state.repair.failed", {
-      state: "sandbox",
-      error: "cleanup failed",
-      metadata: { repair: "recorded-sandbox-cleanup", sandboxName: "saved" },
-    });
-    expect(calls.repairEvent).not.toHaveBeenCalledWith("state.repair.completed", expect.anything());
+    expect(calls.repairEvent).not.toHaveBeenCalled();
+    expect(calls.removeSandbox).not.toHaveBeenCalled();
     expect(calls.createSandbox).not.toHaveBeenCalled();
   });
 
@@ -1056,7 +1033,6 @@ describe("handleSandboxState", () => {
     ).rejects.toThrow("Tavily credential rejected");
 
     expect(calls.removeSandbox).not.toHaveBeenCalled();
-    expect(calls.repairSandbox).not.toHaveBeenCalled();
     expect(calls.createSandbox).not.toHaveBeenCalled();
   });
 
@@ -1110,12 +1086,20 @@ describe("handleSandboxState", () => {
       webSearchConfig: { fetchEnabled: true },
     });
     session.steps.sandbox.status = "complete";
+    selectTestGatewayAuthority(session);
     const backToSelection = Object.freeze({ kind: "NEMOCLAW_BACK_TO_SELECTION" });
-    const { deps, calls } = createDeps({
-      getSandboxReuseState: () => "not_ready",
-      ensureValidatedWebSearchCredential: vi.fn(async () => backToSelection),
-      isBackToSelection: vi.fn((value: unknown) => value === backToSelection),
-    });
+    const { deps, calls } = createDeps(
+      {
+        getSandboxReuseState: () => "not_ready",
+        getSandboxRecreateObservation: () => ({
+          state: "not_ready",
+          liveIdentityFingerprint: "a".repeat(64),
+        }),
+        ensureValidatedWebSearchCredential: vi.fn(async () => backToSelection),
+        isBackToSelection: vi.fn((value: unknown) => value === backToSelection),
+      },
+      session,
+    );
 
     const result = await handleSandboxState({
       ...baseOptions(deps, session),
@@ -1143,6 +1127,7 @@ describe("handleSandboxState", () => {
       {
         resolved: expect.any(Object),
         recreate: true,
+        recreateTransaction: expect.any(Object),
         toolDisclosure: "progressive",
         observabilityEnabled: false,
         endpointSource: null,

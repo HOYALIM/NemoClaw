@@ -75,7 +75,6 @@ it("journals not-ready repair on the selected non-default gateway (#6492)", asyn
     gatewayName: "nemoclaw-31818",
   });
 
-  expect(calls.repairSandbox).not.toHaveBeenCalled();
   expect(createSandbox).toHaveBeenCalledOnce();
   const createIntent = createSandbox.mock.calls[0]?.at(-1);
   expect(createIntent).toMatchObject({
@@ -180,6 +179,5 @@ it("rejects an active recreate journal on a different gateway authority (#6492)"
   ).rejects.toThrow(/journaled gateway.*does not match the selected gateway authority/i);
   expect(getSandboxRecreateObservation).not.toHaveBeenCalled();
   expect(calls.createSandbox).not.toHaveBeenCalled();
-  expect(calls.repairSandbox).not.toHaveBeenCalled();
   expect(calls.removeSandbox).not.toHaveBeenCalled();
 });

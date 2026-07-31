@@ -156,8 +156,6 @@ function resumeDeps(overrides: Partial<SandboxResumeDeps> = {}): SandboxResumeDe
   return {
     note: vi.fn(),
     removeSandboxFromRegistry: vi.fn(() => null),
-    repairRecordedSandbox: vi.fn(),
-    recordRepairEvent: vi.fn(async () => undefined),
     ...overrides,
   };
 }
@@ -200,6 +198,17 @@ describe("applySandboxResumeDecision (#7194)", () => {
 
     expect(await applySandboxResumeDecision({ kind: "create" }, "saved", deps)).toBeNull();
     expect(await applySandboxResumeDecision({ kind: "reuse" }, "saved", deps)).toBeNull();
+    expect(deps.removeSandboxFromRegistry).not.toHaveBeenCalled();
+  });
+
+  it("rejects not-ready repair without a journal-bound recreate transaction", async () => {
+    const deps = resumeDeps();
+
+    await expect(
+      applySandboxResumeDecision({ kind: "repair-and-recreate" }, "saved", deps),
+    ).rejects.toThrow("journal-bound recreate transaction");
+
+    expect(deps.note).not.toHaveBeenCalled();
     expect(deps.removeSandboxFromRegistry).not.toHaveBeenCalled();
   });
 });

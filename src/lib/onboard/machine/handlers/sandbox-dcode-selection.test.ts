@@ -120,7 +120,7 @@ describe("handleSandboxState live DCode selection", () => {
     );
   });
 
-  it("repairs a not-ready DCode sandbox before recreating for mode drift (#6478)", async () => {
+  it("rejects not-ready DCode repair without journal authority (#6478)", async () => {
     const session = completedSession();
     const { deps, calls } = createDeps({
       getSandboxReuseState: () => "not_ready",
@@ -133,20 +133,15 @@ describe("handleSandboxState live DCode selection", () => {
       }),
     });
 
-    await handleSandboxState({
-      ...dcodeOptions(deps),
-      requestedDcodeAutoApprovalMode: "thread-opt-in",
-    });
+    await expect(
+      handleSandboxState({
+        ...dcodeOptions(deps),
+        requestedDcodeAutoApprovalMode: "thread-opt-in",
+      }),
+    ).rejects.toThrow("journal-bound recreate transaction");
 
-    expect(calls.repairSandbox).toHaveBeenCalledWith("saved");
-    expect(calls.repairEvent).toHaveBeenCalledWith("state.repair.completed", {
-      state: "sandbox",
-      metadata: { repair: "recorded-sandbox-cleanup", sandboxName: "saved" },
-    });
-    expect(calls.createSandbox.mock.calls[0]?.at(-1)).toMatchObject({
-      recreate: true,
-      dcodeAutoApprovalMode: "thread-opt-in",
-    });
+    expect(calls.repairEvent).not.toHaveBeenCalled();
+    expect(calls.createSandbox).not.toHaveBeenCalled();
   });
 
   it("rejects malformed recorded DCode auto-approval state (#6478)", async () => {

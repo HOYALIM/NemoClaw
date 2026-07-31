@@ -27,7 +27,11 @@ import {
 } from "../../state/onboard-session";
 import type { OnboardMachineEvent } from "./events";
 import { handleSandboxState } from "./handlers/sandbox";
-import { baseOptions, createDeps } from "./handlers/sandbox-test-fixtures";
+import {
+  baseOptions,
+  createDeps,
+  selectTestGatewayAuthority,
+} from "./handlers/sandbox-test-fixtures";
 import { advanceTo, branchTo, completeOnboardMachine, failOnboardMachine } from "./result";
 import { type OnboardStateHandlers, runOnboardMachine } from "./runner";
 import { OnboardRuntime, type OnboardRuntimeDeps } from "./runtime";
@@ -209,18 +213,22 @@ describe("onboard machine lifecycle traces (#6225)", () => {
     expect(run.session.steps.sandbox.status).toBe("complete");
   });
 
-  it("repairs and recreates through the sandbox handler before branching (#6225)", async () => {
+  it("recreates a not-ready sandbox through its journal before branching (#6225)", async () => {
     const resumedSession = createSession({
       sandboxName: "my-assistant",
       lastCompletedStep: "sandbox",
       machine: machineAt("sandbox", 5),
       steps: { sandbox: completedStep() },
     });
+    selectTestGatewayAuthority(resumedSession);
     const { runtime, events, updateSession } = createTracedRuntime(resumedSession);
     const { calls, deps } = createDeps({
       getSandboxReuseState: () => "not_ready",
+      getSandboxRecreateObservation: () => ({
+        state: "not_ready",
+        liveIdentityFingerprint: "a".repeat(64),
+      }),
       updateSession,
-      recordRepairEvent: (type, options) => runtime.emitRepairEvent(type, options),
       recordStepComplete: async (_stepName, updates) =>
         updateSession((current) => {
           Object.assign(current, filterSafeUpdates(updates));
@@ -246,12 +254,9 @@ describe("onboard machine lifecycle traces (#6225)", () => {
       stopStates: ["openclaw"],
     });
 
-    expect(calls.repairSandbox).toHaveBeenCalledWith("my-assistant");
     expect(calls.createSandbox).toHaveBeenCalledOnce();
     expect(traceOf(events)).toEqual([
       "onboard.resumed:sandbox",
-      "state.repair.started:sandbox",
-      "state.repair.completed:sandbox",
       "state.exited:sandbox",
       "state.entered:openclaw",
     ]);

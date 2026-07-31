@@ -4,6 +4,8 @@
 import { vi } from "vitest";
 
 import type { SandboxMessagingPlan } from "../../../messaging/manifest";
+import { decisionSelected } from "../../../state/onboard-checkpoint-decision";
+import { deriveCheckpointFromSession } from "../../../state/onboard-checkpoint-migrate";
 import type { CheckpointProviderBinding } from "../../../state/onboard-checkpoint-types";
 import { createSession, type Session, type SessionUpdates } from "../../../state/onboard-session";
 import type { BaselineExclusionEntry, SandboxRemovalReceipt } from "../../../state/registry";
@@ -84,6 +86,22 @@ type MessagingChannelConfig = Record<string, string>;
 type SandboxGpuConfig = { sandboxGpuEnabled: boolean; mode: string };
 type ResourceProfile = { cpu: string; memory: string };
 
+export function selectTestGatewayAuthority(session: Session): void {
+  session.checkpoint = {
+    ...deriveCheckpointFromSession(session),
+    gatewayAuthority: decisionSelected({
+      gatewayName: "nemoclaw",
+      gatewayPort: 8080,
+      mode: "nemoclaw-managed",
+      source: "standalone",
+      endpoint: null,
+      stateDir: null,
+      supervisor: null,
+      requiredCapabilities: [],
+    }),
+  };
+}
+
 export function createDeps(
   overrides: Partial<
     SandboxStateOptions<
@@ -109,7 +127,6 @@ export function createDeps(
     clearPlanEnv: vi.fn(),
     removeSandbox: vi.fn((): SandboxRemovalReceipt | null => null),
     restoreSandboxRegistryEntryIfMissing: vi.fn(() => false),
-    repairSandbox: vi.fn(),
     validateBrave: vi.fn(async () => "brave-key"),
     isBackToSelection: vi.fn(() => false),
     configureWebSearch: vi.fn(async () => null as WebSearchConfig | null),
@@ -225,7 +242,6 @@ export function createDeps(
         left.length === right.length && left.every((value) => right.includes(value)),
       removeSandboxFromRegistry: calls.removeSandbox,
       restoreSandboxRegistryEntryIfMissing: calls.restoreSandboxRegistryEntryIfMissing,
-      repairRecordedSandbox: calls.repairSandbox,
       ensureValidatedWebSearchCredential: calls.validateBrave,
       isBackToSelection: calls.isBackToSelection,
       configureWebSearch: calls.configureWebSearch,
