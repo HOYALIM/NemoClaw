@@ -213,8 +213,9 @@ function createHarness(options: HarnessOptions = {}): ShieldsHarness {
             : "";
   });
   const auditSpy = vi.spyOn(audit, "appendAuditEntry").mockImplementation(() => undefined);
-  const timerAuthorityRevocations = [...(options.timerAuthorityRevokedSequence ?? [])];
-  if (timerAuthorityRevocations.length > 0) {
+  for (const timerAuthorityRevocations of options.timerAuthorityRevokedSequence === undefined
+    ? []
+    : [[...options.timerAuthorityRevokedSequence]]) {
     const finalTimerAuthorityRevocation = timerAuthorityRevocations.at(-1) ?? true;
     vi.spyOn(timerControl, "killTimer").mockImplementation(() => {
       const authorityRevoked = timerAuthorityRevocations.shift() ?? finalTimerAuthorityRevocation;
