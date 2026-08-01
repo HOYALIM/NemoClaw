@@ -25,14 +25,21 @@ const REASONING_PROPAGATION_PROBE = String.raw`
 const fs = require("node:fs");
 const expectedModel = process.argv[1];
 const config = JSON.parse(fs.readFileSync("/sandbox/.openclaw/openclaw.json", "utf8"));
+const runtimeEnvironment = fs.readFileSync(
+  "/run/nemoclaw/managed-startup-runtime.env",
+  "utf8",
+);
+const runtimeReasoning = runtimeEnvironment.match(
+  /^export NEMOCLAW_REASONING='(true|false)'$/m,
+)?.[1];
 const models = config.models?.providers?.inference?.models ?? [];
 const model = models.find((entry) => entry?.id === expectedModel);
 const evidence = {
-  imageReasoning: process.env.NEMOCLAW_REASONING,
+  runtimeReasoning,
   modelReasoning: model?.reasoning,
 };
 console.log(JSON.stringify(evidence));
-process.exit(evidence.imageReasoning === "true" && evidence.modelReasoning === true ? 0 : 1);
+process.exit(evidence.runtimeReasoning === "true" && evidence.modelReasoning === true ? 0 : 1);
 `;
 
 validateSandboxName(SANDBOX_NAME);
@@ -139,7 +146,7 @@ test("cloud onboard: public installer creates healthy sandbox with security chec
       "successful onboard removes plaintext credentials.json",
       "sandbox appears healthy after cloud onboarding",
       "explicit corporate CA source is baked and merged with OpenShell trust inside the sandbox",
-      "validated compatible-endpoint reasoning reaches both the image environment and OpenClaw model metadata",
+      "validated compatible-endpoint reasoning reaches both the root-owned managed runtime environment and OpenClaw model metadata",
       "installed CLI creates a non-empty diagnostics archive for the registered sandbox",
       "cloud split checks cover inference.local, security leak checks, and Landlock/read-only behavior",
       "cleanup verifies sandbox removal",
@@ -263,10 +270,10 @@ test("cloud onboard: public installer creates healthy sandbox with security chec
   );
   expect(reasoningProbe.exitCode, resultText(reasoningProbe)).toBe(0);
   const reasoningEvidence = JSON.parse(reasoningProbe.stdout.trim()) as {
-    imageReasoning: string;
+    runtimeReasoning: string;
     modelReasoning: boolean;
   };
-  expect(reasoningEvidence).toEqual({ imageReasoning: "true", modelReasoning: true });
+  expect(reasoningEvidence).toEqual({ runtimeReasoning: "true", modelReasoning: true });
   await artifacts.writeJson("compatible-endpoint-reasoning.json", reasoningEvidence);
 
   progress.phase("collect scoped diagnostics from onboarded sandbox");
