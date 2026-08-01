@@ -1159,6 +1159,10 @@ If `shields up` reports that the config remains unlocked or drifted, confirm tha
 If the retry still fails, rebuild a known-good baseline with `$$nemoclaw <name> rebuild --yes`.
 
 Host-side config and inference writes, snapshot mutation, sandbox destruction, and shields transitions serialize per sandbox.
+Before `shields down` opens a new window, NemoClaw must revoke any stale auto-restore timer authority.
+If marker cleanup fails, the command reports `Cannot revoke stale auto-restore timer authority` and stops before policy capture, state writes, config unlock, replacement-timer startup, or audit writes.
+The sandbox retains its locked posture and the stale timer authority.
+Resolve the reported timer-marker error on the trusted host, then retry `shields down`.
 When a timed shields-down window reaches its deadline, auto-restore can interrupt the exact process tree holding that transition and restore lockdown.
 Retry an interrupted command in a new shields-down window.
 

@@ -47,7 +47,7 @@ type HarnessOptions = {
   failOpenClawGuardActions?: Array<"lock" | "unlock">;
   initialOpenClawPosture?: "locked" | "mutable";
   invokedAs?: "nemoclaw" | "nemohermes";
-  timerAuthorityRevoked?: boolean;
+  timerAuthorityRevokedSequence?: readonly boolean[];
   openClawGuardFailure?: {
     code: string;
     path: string;
@@ -213,18 +213,21 @@ function createHarness(options: HarnessOptions = {}): ShieldsHarness {
             : "";
   });
   const auditSpy = vi.spyOn(audit, "appendAuditEntry").mockImplementation(() => undefined);
-  for (const timerAuthorityRevoked of options.timerAuthorityRevoked === undefined
-    ? []
-    : [options.timerAuthorityRevoked]) {
-    vi.spyOn(timerControl, "killTimer").mockReturnValue({
-      authorityRevoked: timerAuthorityRevoked,
-      markerFound: true,
-      markerPid: 4242,
-      wasAlive: false,
-      terminated: false,
-      warnings: timerAuthorityRevoked
-        ? []
-        : ["Failed to remove shields timer marker: permission denied"],
+  const timerAuthorityRevocations = [...(options.timerAuthorityRevokedSequence ?? [])];
+  if (timerAuthorityRevocations.length > 0) {
+    const finalTimerAuthorityRevocation = timerAuthorityRevocations.at(-1) ?? true;
+    vi.spyOn(timerControl, "killTimer").mockImplementation(() => {
+      const authorityRevoked = timerAuthorityRevocations.shift() ?? finalTimerAuthorityRevocation;
+      return {
+        authorityRevoked,
+        markerFound: true,
+        markerPid: 4242,
+        wasAlive: false,
+        terminated: false,
+        warnings: authorityRevoked
+          ? []
+          : ["Failed to remove shields timer marker: permission denied"],
+      };
     });
   }
 
@@ -305,6 +308,40 @@ describe("shields command flow", () => {
     );
   });
 
+  it("rejects shields-down before mutation when stale timer authority remains", () => {
+    const fork = vi.fn(() => ({
+      pid: 4242,
+      disconnect: vi.fn(),
+      unref: vi.fn(),
+      send: vi.fn(() => true),
+      kill: vi.fn(() => true),
+    }));
+    const harness = createHarness({
+      fork,
+      initialOpenClawPosture: "locked",
+      timerAuthorityRevokedSequence: [false],
+    });
+
+    expect(() =>
+      harness.shieldsDown("openclaw", {
+        timeout: "5m",
+        reason: "stale timer coverage",
+        throwOnError: true,
+      }),
+    ).toThrow("Cannot revoke stale auto-restore timer authority for openclaw");
+
+    expect(harness.getOpenClawPosture()).toBe("locked");
+    expect(harness.runSpy).not.toHaveBeenCalled();
+    expect(harness.auditSpy).not.toHaveBeenCalled();
+    expect(fork).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(tmpDir, ".nemoclaw", "state", "shields-openclaw.json"))).toBe(
+      false,
+    );
+    expect(harness.errorSpy.mock.calls.flat().map(String).join("\n")).toContain(
+      "Failed to remove shields timer marker: permission denied",
+    );
+  });
+
   it("restores fresh mutable-default state when the timer handoff fails", () => {
     const stateDir = path.join(tmpDir, ".nemoclaw", "state");
     const harness = createHarness({
@@ -348,7 +385,7 @@ describe("shields command flow", () => {
     const stateDir = path.join(tmpDir, ".nemoclaw", "state");
     const harness = createHarness({
       confirmOpenClawInodeFlags: true,
-      timerAuthorityRevoked: false,
+      timerAuthorityRevokedSequence: [true, false],
       fork: () => ({
         pid: 4242,
         disconnect: vi.fn(),

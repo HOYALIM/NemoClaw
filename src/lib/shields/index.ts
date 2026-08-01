@@ -2675,7 +2675,15 @@ function shieldsDownWithoutHostLock(sandboxName: string, opts: ShieldsDownOpts =
   // Kill stale auto-restore markers only when this command will actually
   // transition into shields-down. A repeated shields-down must not cancel the
   // active timer and leave the sandbox unlocked indefinitely.
-  killTimer(sandboxName);
+  const timerCancellation = killTimer(sandboxName);
+  if (!timerCancellation.authorityRevoked) {
+    const detail = timerCancellation.warnings.join("; ");
+    console.error(`  Cannot revoke stale auto-restore timer authority: ${detail}`);
+    return failShieldsCommand(
+      `Cannot revoke stale auto-restore timer authority for ${sandboxName}`,
+      opts.throwOnError,
+    );
+  }
 
   const timeoutSeconds = parseDuration(opts.timeout || `${DEFAULT_TIMEOUT_SECONDS}`);
   const reason = opts.reason || null;
