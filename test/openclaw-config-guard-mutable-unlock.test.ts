@@ -48,6 +48,10 @@ function fileIdentity(filePath: string): [number, Buffer] {
   }
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
 afterEach(() => {
   for (const root of fixtures.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
@@ -63,7 +67,9 @@ it("rejects malformed JSON without mutating the idempotent mutable unlock postur
   const nodePath = path.join(root, ".nemoclaw-test-node");
   const malformedConfig = Buffer.from('{"gateway":\n');
   fs.mkdirSync(configDir);
-  fs.writeFileSync(nodePath, `#!/bin/sh\nexec '${process.execPath}' "$@"\n`, { mode: 0o500 });
+  fs.writeFileSync(nodePath, `#!/bin/sh\nexec ${shellQuote(process.execPath)} "$@"\n`, {
+    mode: 0o500,
+  });
   fs.writeFileSync(configPath, malformedConfig, { mode: 0o660 });
   fs.writeFileSync(
     hashPath,
