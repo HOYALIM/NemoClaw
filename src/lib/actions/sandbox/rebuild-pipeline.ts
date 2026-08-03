@@ -29,6 +29,7 @@ import {
   revalidateRebuildRouteBeforeDelete,
 } from "./rebuild-preflight-guards";
 import {
+  finalizePreparedRebuildImageMessagingPlan,
   runHermesCronRestoreBackupPreflight,
   runRebuildPreflightPhase,
 } from "./rebuild-preflight-phase";
@@ -41,6 +42,10 @@ import {
   revalidatePreparedRecoveryBeforeDelete,
 } from "./rebuild-prepared-recovery";
 import { inspectRebuildGatewayProviderRegistration } from "./rebuild-provider-preflight";
+import {
+  fingerprintRebuildRecreateTargetIntent,
+  openRebuildRecreateJournal,
+} from "./rebuild-recreate-journal";
 import { runRebuildRecreatePhase } from "./rebuild-recreate-phase";
 import { createRebuildRegistryRollback } from "./rebuild-registry-rollback";
 import { runRebuildRestorePhase } from "./rebuild-restore-phase";
@@ -115,7 +120,7 @@ async function rebuildSandboxUnlocked(
     liveState,
     recoveryManifest: validatedRecoveryManifest,
     dcodePreflight,
-    preparedImage,
+    preparedImage: initiallyPreparedImage,
     routePreflightReceipt,
     releaseOnboardLock,
     log,
@@ -132,6 +137,7 @@ async function rebuildSandboxUnlocked(
     fromDockerfile,
   } = targetConfig;
   const { staleRecovery } = liveState;
+  let preparedImage = initiallyPreparedImage;
   const preservedCustomPolicies = (sandboxEntry.customPolicies ?? []).map((entry) => ({
     ...entry,
   }));
@@ -207,6 +213,29 @@ async function rebuildSandboxUnlocked(
       if (!hermesCronRestorePreflight) return;
       const hermesCronRestorePlan = hermesCronRestorePreflight.plan;
 
+      const preservedEnv = backup.backupManifest?.preservedEnv ?? [];
+      if (preparedImage && messagingPlan?.agent === "hermes" && preservedEnv.length > 0) {
+        const finalizedImage = finalizePreparedRebuildImageMessagingPlan(
+          preparedImage,
+          messagingPlan,
+          preservedEnv,
+        );
+        if (!finalizedImage.ok) {
+          printRebuildPreflightFailure(
+            `the retained replacement image could not include preserved Hermes messaging state: ${finalizedImage.detail}`,
+            "The existing sandbox is untouched. Retry the rebuild after checking the replacement image inputs.",
+            "Replacement sandbox image finalization failed",
+            bail,
+          );
+          return;
+        }
+        preparedImage = finalizedImage.prepared;
+        recreateOptions.preparedImageRebuild = {
+          buildContext: preparedImage,
+          gatewayName: recreateOptions.targetGatewayName,
+        };
+      }
+
       // The post-delete create must consume the exact context that passed the
       // image preflight. Revalidate at the last safe point so mutation of the
       // retained copy cannot cross the destructive boundary.
@@ -235,10 +264,37 @@ async function rebuildSandboxUnlocked(
         return;
       }
 
+      const recreateJournal = openRebuildRecreateJournal({
+        target: {
+          sandboxName,
+          gatewayName: recreateOptions.targetGatewayName,
+          gatewayPort: recreateOptions.targetGatewayPort,
+        },
+        agentName: rebuildAgent || "openclaw",
+        targetIntentFingerprint: fingerprintRebuildRecreateTargetIntent(recreateOptions),
+        log,
+      });
+
+      // An earlier run of this rebuild already registered and proved the
+      // replacement. Retire its journal and stop before the destroy phase so a
+      // restart converges to that sandbox instead of deleting it.
+      if (recreateJournal.acceptedTarget) {
+        recreateJournal.completeAcceptedTarget();
+        log(`Recovered journaled replacement ${recreateJournal.id} for '${sandboxName}'`);
+        console.log(
+          `  Sandbox '${sandboxName}' already holds the replacement from the interrupted rebuild.`,
+        );
+        if (backup.backupManifest) {
+          console.log(`  State backup is preserved at: ${backup.backupManifest.backupPath}`);
+        }
+        return;
+      }
+
       const mcpPreparation = await runRebuildDestroyPhase({
         sandboxName,
         sandboxEntry,
         staleRecovery,
+        recreateJournal,
         backupManifest: backup.backupManifest,
         force: normalized.force,
         log,
@@ -298,6 +354,7 @@ async function rebuildSandboxUnlocked(
           durableConfig,
           resumeConfig,
           recreateOptions,
+          recreateJournal,
           fromDockerfile,
           rebuildAgent,
           messagingPlan,
@@ -409,8 +466,9 @@ async function rebuildSandboxUnlocked(
       "  Warning: temporary rebuild base-image handoff could not be removed.",
     );
     if (preparedImage) {
+      const retainedPreparedImage = preparedImage;
       runBestEffortRebuildCleanup(
-        () => disposePreparedBuildContext(preparedImage),
+        () => disposePreparedBuildContext(retainedPreparedImage),
         "  Warning: temporary rebuild image inputs could not be fully removed.",
       );
     }
