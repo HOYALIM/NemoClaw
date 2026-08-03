@@ -46,7 +46,13 @@ export async function readMcpLifecycleLockObservation(
     try {
       const stat = await fs.promises.lstat(lockPath);
       if (!stat.isFile() || stat.isSymbolicLink()) {
-        return { owner: null, mtimeMs: stat.mtimeMs, dev: stat.dev, ino: stat.ino };
+        return {
+          owner: null,
+          mtimeMs: stat.mtimeMs,
+          dev: stat.dev,
+          ino: stat.ino,
+          reclaimable: !stat.isDirectory(),
+        };
       }
     } catch (statError) {
       if (isErrnoException(statError) && statError.code === "ENOENT") return null;
@@ -58,7 +64,13 @@ export async function readMcpLifecycleLockObservation(
   try {
     const stat = await handle.stat();
     if (!stat.isFile()) {
-      return { owner: null, mtimeMs: stat.mtimeMs, dev: stat.dev, ino: stat.ino };
+      return {
+        owner: null,
+        mtimeMs: stat.mtimeMs,
+        dev: stat.dev,
+        ino: stat.ino,
+        reclaimable: !stat.isDirectory(),
+      };
     }
     try {
       const parsed: unknown = JSON.parse(await handle.readFile("utf8"));
@@ -67,9 +79,16 @@ export async function readMcpLifecycleLockObservation(
         mtimeMs: stat.mtimeMs,
         dev: stat.dev,
         ino: stat.ino,
+        reclaimable: true,
       };
     } catch {
-      return { owner: null, mtimeMs: stat.mtimeMs, dev: stat.dev, ino: stat.ino };
+      return {
+        owner: null,
+        mtimeMs: stat.mtimeMs,
+        dev: stat.dev,
+        ino: stat.ino,
+        reclaimable: true,
+      };
     }
   } finally {
     await handle.close();

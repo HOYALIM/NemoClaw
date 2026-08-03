@@ -515,7 +515,10 @@ const releasePath = process.argv[3];
     let now = 0;
     const renameSpy = vi.spyOn(fs.promises, "rename").mockImplementation(async (from, to) => {
       await rename(from, to);
-      if (String(from) === lockPath) now = 100;
+      switch (String(from)) {
+        case lockPath:
+          now = 100;
+      }
     });
     let entered = false;
 
@@ -558,7 +561,10 @@ const releasePath = process.argv[3];
     let now = 0;
     const renameSpy = vi.spyOn(fs.promises, "rename").mockImplementation(async (from, to) => {
       await rename(from, to);
-      if (String(from) === reaperPath) now = 100;
+      switch (String(from)) {
+        case reaperPath:
+          now = 100;
+      }
     });
     let entered = false;
 
@@ -578,6 +584,21 @@ const releasePath = process.argv[3];
 
     expect(entered).toBe(false);
     expect(JSON.parse(fs.readFileSync(reaperPath, "utf8")).token).toBe("stale-reaper-token");
+  });
+
+  it("does not reclaim a corrupt directory at the lock path", async () => {
+    const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
+    fs.mkdirSync(lockPath, { recursive: true });
+
+    await expect(
+      lifecycleLock.withMcpLifecycleLock(
+        "alpha",
+        () => undefined,
+        options({ timeoutMs: 30, corruptLockGraceMs: 1 }),
+      ),
+    ).rejects.toThrow("Timed out waiting for the sandbox mutation lock");
+
+    expect(fs.lstatSync(lockPath).isDirectory()).toBe(true);
   });
 
   it("recovers a reaper whose owner was killed during stale-lock cleanup", async () => {

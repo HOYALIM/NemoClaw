@@ -76,7 +76,10 @@ function classifyObservedMcpLifecycleLock(
   corruptTracker: CorruptGenerationTracker,
   now: number,
 ): McpLifecycleLockDisposition {
-  if (!observation.owner || observation.owner.sandboxName !== sandboxName) {
+  if (
+    (!observation.owner || observation.owner.sandboxName !== sandboxName) &&
+    observation.reclaimable
+  ) {
     const generation = `${observation.dev}:${observation.ino}:${observation.mtimeMs}`;
     if (corruptTracker.generation !== generation) {
       corruptTracker.generation = generation;
@@ -87,12 +90,9 @@ function classifyObservedMcpLifecycleLock(
   }
   resetCorruptGenerationTracker(corruptTracker);
   // The wall-clock arguments are irrelevant for a structurally valid owner.
-  return classifyMcpLifecycleLock(
-    observation,
-    sandboxName,
-    observation.mtimeMs,
-    corruptLockGraceMs,
-  );
+  return observation.owner === null
+    ? "wait"
+    : classifyMcpLifecycleLock(observation, sandboxName, observation.mtimeMs, corruptLockGraceMs);
 }
 
 async function tryReapStaleLock(
