@@ -495,6 +495,91 @@ const releasePath = process.argv[3];
     expect(fs.existsSync(lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir))).toBe(false);
   });
 
+  it("restores a stale main lock when reclamation crosses the deadline", async () => {
+    const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(
+      lockPath,
+      `${JSON.stringify({
+        version: 1,
+        sandboxName: "alpha",
+        pid: 2_147_483_647,
+        processIdentity: "dead-process",
+        hostIdentity: currentHostIdentity,
+        pidNamespaceIdentity: currentPidNamespaceIdentity,
+        token: "stale-main-token",
+        acquiredAt: "2026-01-01T00:00:00.000Z",
+      })}\n`,
+    );
+    const rename = fs.promises.rename.bind(fs.promises);
+    let now = 0;
+    const renameSpy = vi.spyOn(fs.promises, "rename").mockImplementation(async (from, to) => {
+      await rename(from, to);
+      if (String(from) === lockPath) now = 100;
+    });
+    let entered = false;
+
+    try {
+      await expect(
+        lifecycleLock.withMcpLifecycleLock(
+          "alpha",
+          () => {
+            entered = true;
+          },
+          options({ timeoutMs: 30, monotonicNow: () => now }),
+        ),
+      ).rejects.toThrow("Timed out waiting for the sandbox mutation lock");
+    } finally {
+      renameSpy.mockRestore();
+    }
+
+    expect(entered).toBe(false);
+    expect(JSON.parse(fs.readFileSync(lockPath, "utf8")).token).toBe("stale-main-token");
+  });
+
+  it("restores a stale reaper when reclamation crosses the deadline", async () => {
+    const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
+    const reaperPath = `${lockPath}.reaper`;
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(
+      reaperPath,
+      `${JSON.stringify({
+        version: 1,
+        sandboxName: "alpha",
+        pid: 2_147_483_647,
+        processIdentity: "dead-reaper",
+        hostIdentity: currentHostIdentity,
+        pidNamespaceIdentity: currentPidNamespaceIdentity,
+        token: "stale-reaper-token",
+        acquiredAt: "2026-01-01T00:00:00.000Z",
+      })}\n`,
+    );
+    const rename = fs.promises.rename.bind(fs.promises);
+    let now = 0;
+    const renameSpy = vi.spyOn(fs.promises, "rename").mockImplementation(async (from, to) => {
+      await rename(from, to);
+      if (String(from) === reaperPath) now = 100;
+    });
+    let entered = false;
+
+    try {
+      await expect(
+        lifecycleLock.withMcpLifecycleLock(
+          "alpha",
+          () => {
+            entered = true;
+          },
+          options({ timeoutMs: 30, monotonicNow: () => now }),
+        ),
+      ).rejects.toThrow("Timed out waiting for the sandbox mutation lock");
+    } finally {
+      renameSpy.mockRestore();
+    }
+
+    expect(entered).toBe(false);
+    expect(JSON.parse(fs.readFileSync(reaperPath, "utf8")).token).toBe("stale-reaper-token");
+  });
+
   it("recovers a reaper whose owner was killed during stale-lock cleanup", async () => {
     const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
     const reaperPath = `${lockPath}.reaper`;

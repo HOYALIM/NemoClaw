@@ -97,9 +97,22 @@ export async function safelyReleaseMcpLifecycleLock(
   await reclaimStaleMcpLifecycleLockGeneration(lockPath, observation);
 }
 
+async function restoreClaimedMcpLifecycleLockGeneration(
+  targetPath: string,
+  quarantinePath: string,
+): Promise<void> {
+  try {
+    await fs.promises.link(quarantinePath, targetPath);
+    await fs.promises.rm(quarantinePath, { force: true });
+  } catch (error) {
+    if (!isErrnoException(error) || error.code !== "EEXIST") throw error;
+  }
+}
+
 export async function reclaimStaleMcpLifecycleLockGeneration(
   targetPath: string,
   expected: LockObservation,
+  assertAfterClaim?: () => void,
 ): Promise<boolean> {
   const quarantinePath = `${targetPath}.reclaim-${process.pid}-${crypto.randomUUID()}`;
   try {
@@ -122,6 +135,12 @@ export async function reclaimStaleMcpLifecycleLockGeneration(
         claimed.ino === expected.ino
       : claimed?.owner?.token === expectedToken;
   if (claimedExpectedGeneration) {
+    try {
+      assertAfterClaim?.();
+    } catch (error) {
+      await restoreClaimedMcpLifecycleLockGeneration(targetPath, quarantinePath);
+      throw error;
+    }
     await fs.promises.rm(quarantinePath, { force: true, recursive: true });
     return true;
   }
@@ -131,12 +150,7 @@ export async function reclaimStaleMcpLifecycleLockGeneration(
   // quarantine name. If another generation already occupies the canonical
   // path, preserve the displaced owner record for diagnosis rather than ever
   // deleting an owner we did not claim.
-  try {
-    await fs.promises.link(quarantinePath, targetPath);
-    await fs.promises.rm(quarantinePath, { force: true });
-  } catch (error) {
-    if (!isErrnoException(error) || error.code !== "EEXIST") throw error;
-  }
+  await restoreClaimedMcpLifecycleLockGeneration(targetPath, quarantinePath);
   return false;
 }
 

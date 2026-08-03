@@ -125,7 +125,7 @@ async function tryReapStaleLock(
     }
 
     assertBeforeDeadline();
-    return reclaimStaleMcpLifecycleLockGeneration(lockPath, latest);
+    return reclaimStaleMcpLifecycleLockGeneration(lockPath, latest, assertBeforeDeadline);
   } finally {
     await safelyReleaseMcpLifecycleLock(reaperPath, reaperToken);
   }
@@ -178,7 +178,11 @@ async function acquireMcpLifecycleLock(
         // main lock. A SIGKILL at any point in stale-lock cleanup is therefore
         // recoverable without age-expiring a legitimate long operation.
         assertBeforeDeadline();
-        await reclaimStaleMcpLifecycleLockGeneration(reaperPath, reaperObservation);
+        await reclaimStaleMcpLifecycleLockGeneration(
+          reaperPath,
+          reaperObservation,
+          assertBeforeDeadline,
+        );
         continue;
       }
       await sleep(pollIntervalMs);
