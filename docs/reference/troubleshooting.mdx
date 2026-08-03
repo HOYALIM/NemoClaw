@@ -134,6 +134,27 @@ docker info
 The managed default gateway service accepts `DOCKER_HOST` only as an absolute local `unix://` socket path.
 It rejects remote endpoints and relative socket paths before service startup.
 
+### Onboarding reports `invalid_docker_host`
+
+The `invalid_docker_host` advisory means that `DOCKER_HOST` is not an absolute local `unix://` socket path that NemoClaw can write to the managed OpenShell gateway service environment.
+NemoClaw does not use the standalone gateway fallback when this validation fails.
+Remove the override to use Docker's default local socket:
+
+```bash
+unset DOCKER_HOST
+$$nemoclaw onboard
+```
+
+If your Docker daemon uses another local socket, set an absolute `unix://` path before you retry:
+
+```bash
+export DOCKER_HOST=unix:///var/run/docker.sock
+$$nemoclaw onboard
+```
+
+NemoClaw rejects TCP and SSH endpoints, relative socket paths, values that contain single quotes, and values that contain line breaks.
+Do not wrap the socket path in single quotes inside the variable value.
+
 ### macOS first-run failures
 
 The two most common first-run failures on macOS are missing developer tools and Docker connection errors.
@@ -725,6 +746,7 @@ Then re-run `$$nemoclaw onboard`.
 Re-running `$$nemoclaw onboard --non-interactive` with a new `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN`, or `SLACK_BOT_TOKEN` previously reported success while the sandbox kept polling with the old credential.
 When you rerun onboarding, NemoClaw compares the token with the SHA-256 hash stored for the active channel.
 When you provide a replacement token, NemoClaw validates it before backing up workspace state, deleting the sandbox, recreating it, and restoring the backup.
+If validation fails, onboarding stops before it backs up or deletes the existing sandbox.
 If you replace a token for a channel that you paused with `channels stop`, onboarding does not trigger recreation because that channel is inactive.
 
 If you suspect a sandbox is still using a stale token, re-run onboarding so the credential check runs:
@@ -912,14 +934,26 @@ Follow these steps to reconnect.
    brew services restart openshell
    ```
 
-   If Homebrew is present but `openshell` is missing or comes from another tap, rerun the NemoClaw installer.
-   Onboarding does not use the standalone fallback while Homebrew is present.
+   During onboarding, NemoClaw uses the standalone fallback when the `openshell` formula is missing.
+   If the installed service fails inspection, startup, or its health check, NemoClaw prints this log command:
+
+   ```bash
+   tail -n 200 "$(brew --prefix)/var/log/openshell/openshell-gateway.out.log" "$(brew --prefix)/var/log/openshell/openshell-gateway.err.log"
+   ```
+
+   Rerun the NemoClaw installer to restore the managed service for later onboarding runs.
 
    On Linux package installs, inspect and restart the upstream service.
 
    ```bash
    systemctl --user status openshell-gateway
    systemctl --user restart openshell-gateway
+   ```
+
+   If the service fails inspection, startup, or its health check, NemoClaw prints this log command:
+
+   ```bash
+   journalctl --user --unit openshell-gateway --no-pager --lines=200
    ```
 
    On Linux tarball installs, inspect and restart the marked NemoClaw service.
@@ -929,8 +963,23 @@ Follow these steps to reconnect.
    systemctl --user restart nemoclaw-openshell-gateway
    ```
 
+   If the service fails inspection, startup, or its health check, NemoClaw prints this log command:
+
+   ```bash
+   journalctl --user --unit nemoclaw-openshell-gateway --no-pager --lines=200
+   ```
+
    The tarball unit is under `$XDG_CONFIG_HOME/systemd/user`, or `~/.config/systemd/user` when `XDG_CONFIG_HOME` is not absolute.
    It starts with your user session; NemoClaw does not enable lingering.
+   If a managed service fails inspection, startup, or its health check, NemoClaw attempts the standalone fallback on either platform.
+   The standalone gateway starts only after NemoClaw verifies exclusive ownership of the gateway port.
+   The fallback does not bypass managed-service trust validation or unsafe environment configuration.
+   These conditions remain hard failures:
+
+   - Homebrew formula identity query, metadata, or official-tap validation errors
+   - Foreign or symlinked systemd units, or an untrusted systemd executable identity
+   - An invalid `DOCKER_HOST` or a symlinked service environment file
+
    Without Homebrew on macOS, or without a reachable systemd user manager on Linux, continue with the standalone recovery step below.
 
 1. Check sandbox state.
@@ -993,6 +1042,31 @@ If the sandbox was intentionally deleted and you want a clean setup instead, run
 Create a snapshot first when the sandbox is reachable enough to back up state.
 For details, refer to [Create and Restore Snapshots](../manage-sandboxes/state-and-backups/create-and-restore-snapshots).
 </Warning>
+
+### Gateway Port Stays Bound After Destroying the Last Sandbox
+
+Destroying the final sandbox with `--cleanup-gateway` stops the packaged OpenShell gateway service before it reaps host gateway processes, so the gateway port is released.
+The service is stopped, not disabled or removed, and the next onboarding run starts it again.
+If the service cannot be stopped, `destroy` exits non-zero and prints the status command for the service.
+Stop the service yourself, then rerun `destroy`.
+
+On Apple Silicon macOS with Homebrew:
+
+```bash
+brew services stop openshell
+```
+
+On Linux, use the service name that matches the install. For package installs:
+
+```bash
+systemctl --user stop openshell-gateway
+```
+
+For tarball installs:
+
+```bash
+systemctl --user stop nemoclaw-openshell-gateway
+```
 
 <AgentOnly variant="openclaw,hermes">
 
@@ -1371,7 +1445,8 @@ The tool's own stdout/stderr bytes and its exit code are left unchanged. The bre
 The first interactive `$$nemoclaw <name> connect` shell also prints a one-line reminder of this denial signature and the `logs` command below.
 The reminder is shown once per top-level interactive session, and only when all of these hold: an egress proxy is configured, the shell is interactive with a terminal attached to stderr, and it is a top-level shell (not a nested subshell or pane).
 Suppress it with `NEMOCLAW_NO_POLICY_HINT=1`.
-On OpenShell 0.0.44 or newer the reminder names your real sandbox; on older OpenShell it shows `<name>` as a placeholder — run `$$nemoclaw list` to see your sandbox names.
+The reminder names the sandbox when NemoClaw receives a valid sandbox name during sandbox creation.
+If no valid name is available, it shows `<name>`; run `$$nemoclaw list` to see your sandbox names.
 If the reported sandbox name contains characters that are not valid in a sandbox name (uppercase letters, underscores, control characters, and similar) or exceeds 63 characters, the reminder shows the `<name>` placeholder for safety rather than echoing the untrusted value.
 The reminder is intentionally proactive: the denial itself is surfaced by the OpenShell proxy, so the `curl`/`git` error text is left unchanged and the reminder points you to the logs instead.
 
@@ -2692,8 +2767,11 @@ If the command succeeds because the dashboard profile is missing, the dashboard 
 
 ### Shields Reports Drift for the Hermes Configuration Root
 
-The Hermes configuration root holds the agent's top-level runtime state, not only its configuration: `auth.json`, the drain request, and the temporary files that back every atomic `gateway_state.json` and `gateway.pid` replace are created directly in `/sandbox/.hermes`.
-Lockdown therefore moves that directory to `root:sandbox` mode `3770`, keeping the set-id and sticky bits, so the gateway can still manage its own runtime files while the sticky bit stops the sandbox identity from unlinking or renaming the sealed root-owned configuration.
+The Hermes configuration root holds the agent's top-level runtime state, not only its configuration.
+The configuration root stores `auth.json`, the drain request, and temporary files for atomic `gateway_state.json` and `gateway.pid` replacement.
+Lockdown moves that directory to `root:sandbox` mode `3770`, which preserves the set-group-ID and sticky bits.
+The gateway can still manage its runtime files.
+The sticky bit prevents the sandbox identity from unlinking or renaming sealed root-owned configuration.
 Run the following command to inspect a locked root:
 
 ```bash
