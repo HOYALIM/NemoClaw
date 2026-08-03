@@ -34,12 +34,14 @@ function writeScript(target: string): void {
   writeFileSync(target, "print('ok')\n", { mode: 0o600 });
 }
 
-function receipt(action: string, pid = 41, startTime = 902): string {
+function receipt(action: string, pid = 41, startTime = 902, drainToken = "restore-token"): string {
   return `${RECEIPT_PREFIX}${JSON.stringify({
     version: 1,
     action,
     pid,
     start_time: startTime,
+    drain_acquired: true,
+    drain_token: drainToken,
   })}`;
 }
 
@@ -120,10 +122,13 @@ describe("Hermes cron rebuild restore contract", () => {
     validateHermesCronRestore("alpha", identity);
     releaseHermesCronRestore("alpha", identity);
 
-    expect(identity).toEqual({ pid: 41, start_time: 902 });
+    expect(identity).toEqual({ pid: 41, start_time: 902, drain_token: "restore-token" });
     expect(processMocks.executeSandboxExecCommand).toHaveBeenCalledTimes(3);
     expect(processMocks.executeSandboxExecCommand.mock.calls[1]?.[1]).toContain(
       "validate --pid 41 --start-time 902",
+    );
+    expect(processMocks.executeSandboxExecCommand.mock.calls[1]?.[1]).toContain(
+      "--drain-token restore-token",
     );
     expect(processMocks.executeSandboxExecCommand.mock.calls[2]?.[1]).toContain(
       "release --pid 41 --start-time 902",

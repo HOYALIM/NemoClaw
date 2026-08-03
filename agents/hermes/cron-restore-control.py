@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import stat
 import sys
 import time
@@ -16,6 +17,7 @@ from typing import Any
 HERMES_HOME = Path("/sandbox/.hermes")
 SANDBOX_HOME = Path("/sandbox")
 RECEIPT_PREFIX = "NEMOCLAW_HERMES_CRON_RESTORE_V1:"
+DRAIN_PRINCIPAL_PREFIX = "nemoclaw-cron-restore:"
 BEGIN_TIMEOUT_SECONDS = 60.0
 RELEASE_TIMEOUT_SECONDS = 15.0
 POLL_SECONDS = 0.1
@@ -223,25 +225,47 @@ def _wait_for_state(
     raise ControlError(f"Hermes gateway did not reach {state} from {observed_state}")
 
 
-def _receipt(action: str, pid: int, start_time: int, **fields: Any) -> None:
+def _receipt(
+    action: str,
+    pid: int,
+    start_time: int,
+    drain_token: str | None,
+    **fields: Any,
+) -> None:
     payload = {
         "version": 1,
         "action": action,
         "pid": pid,
         "start_time": start_time,
+        "drain_acquired": drain_token is not None,
         **fields,
     }
+    if drain_token is not None:
+        payload["drain_token"] = drain_token
     print(f"{RECEIPT_PREFIX}{json.dumps(payload, separators=(',', ':'), sort_keys=True)}")
 
 
-def begin_drain() -> None:
+def _require_owned_drain(drain_control: Any, drain_token: str) -> None:
+    marker = drain_control.read_drain_request(home=HERMES_HOME)
+    if not isinstance(marker, dict) or marker.get("principal") != (
+        f"{DRAIN_PRINCIPAL_PREFIX}{drain_token}"
+    ):
+        raise ControlError("Hermes cron restore drain ownership changed")
+
+
+def begin_drain() -> str | None:
     drain_control, status_module = _load_gateway_modules()
     _, pid, start_time = _gateway_identity(status_module)
-    drain_control.write_drain_request(
-        principal="nemoclaw-cron-restore",
-        suppress_notification=True,
-        home=HERMES_HOME,
-    )
+    drain_token: str | None = None
+    if not drain_control.drain_requested(home=HERMES_HOME):
+        drain_token = secrets.token_urlsafe(24)
+        marker = drain_control.write_drain_request(
+            principal=f"{DRAIN_PRINCIPAL_PREFIX}{drain_token}",
+            suppress_notification=True,
+            home=HERMES_HOME,
+        )
+        if marker.get("principal") != f"{DRAIN_PRINCIPAL_PREFIX}{drain_token}":
+            raise ControlError("Hermes cron restore drain ownership was not recorded")
     payload = _wait_for_state(
         status_module,
         pid=pid,
@@ -254,28 +278,36 @@ def begin_drain() -> None:
         "begin",
         pid,
         start_time,
+        drain_token,
         active_agents=status_module.parse_active_agents(payload.get("active_agents")),
     )
+    return drain_token
 
 
-def validate_restore(pid: int, start_time: int) -> None:
+def validate_restore(pid: int, start_time: int, drain_token: str | None) -> None:
     drain_control, status_module = _load_gateway_modules()
     if not drain_control.drain_requested(home=HERMES_HOME):
         raise ControlError("Hermes cron restore drain marker is not active")
+    if drain_token is not None:
+        _require_owned_drain(drain_control, drain_token)
     payload = _require_identity(status_module, pid, start_time)
     if payload.get("gateway_state") != "draining":
         raise ControlError("Hermes gateway is not draining during cron validation")
     if status_module.parse_active_agents(payload.get("active_agents")) != 0:
         raise ControlError("Hermes gateway became active during cron validation")
     counts = validate_cron_tree()
-    _receipt("validate", pid, start_time, **counts)
+    _receipt("validate", pid, start_time, drain_token, **counts)
 
 
-def release_drain(pid: int, start_time: int) -> None:
+def release_drain(pid: int, start_time: int, drain_token: str | None) -> None:
     drain_control, status_module = _load_gateway_modules()
     _require_identity(status_module, pid, start_time)
     if not drain_control.drain_requested(home=HERMES_HOME):
         raise ControlError("Hermes cron restore drain marker disappeared before release")
+    if drain_token is None:
+        _receipt("release", pid, start_time, None, preserved_drain=True)
+        return
+    _require_owned_drain(drain_control, drain_token)
     if not drain_control.clear_drain_request(home=HERMES_HOME):
         raise ControlError("Hermes cron restore drain marker could not be cleared")
     try:
@@ -290,16 +322,18 @@ def release_drain(pid: int, start_time: int) -> None:
     except Exception:
         # Re-engage the same pinned marker contract before failing so dispatch
         # cannot resume without a verified running receipt.
-        drain_control.write_drain_request(
-            principal="nemoclaw-cron-restore-recovery",
-            suppress_notification=True,
-            home=HERMES_HOME,
-        )
+        if not drain_control.drain_requested(home=HERMES_HOME):
+            drain_control.write_drain_request(
+                principal=f"{DRAIN_PRINCIPAL_PREFIX}{drain_token}",
+                suppress_notification=True,
+                home=HERMES_HOME,
+            )
         raise
     _receipt(
         "release",
         pid,
         start_time,
+        drain_token,
         active_agents=status_module.parse_active_agents(payload.get("active_agents")),
     )
 
@@ -312,6 +346,7 @@ def _parser() -> argparse.ArgumentParser:
         subparser = subparsers.add_parser(action)
         subparser.add_argument("--pid", required=True, type=int)
         subparser.add_argument("--start-time", required=True, type=int)
+        subparser.add_argument("--drain-token")
     tree = subparsers.add_parser("validate-tree")
     tree.add_argument("--home", required=True, type=Path)
     tree.add_argument("--sandbox-home", required=True, type=Path)
@@ -324,9 +359,9 @@ def main() -> int:
         if args.action == "begin":
             begin_drain()
         elif args.action == "validate":
-            validate_restore(args.pid, args.start_time)
+            validate_restore(args.pid, args.start_time, args.drain_token)
         elif args.action == "release":
-            release_drain(args.pid, args.start_time)
+            release_drain(args.pid, args.start_time, args.drain_token)
         else:
             counts = validate_cron_tree(args.home, args.sandbox_home)
             print(json.dumps(counts, separators=(",", ":"), sort_keys=True))

@@ -15,7 +15,14 @@ interface HermesCronRestoreReceipt {
   action: "begin" | "validate" | "release";
   pid: number;
   start_time: number;
+  drain_acquired: boolean;
+  drain_token?: string;
 }
+
+type HermesCronRestoreIdentity = Pick<
+  HermesCronRestoreReceipt,
+  "pid" | "start_time" | "drain_token"
+>;
 
 export class HermesCronRestoreIncompleteError extends Error {
   constructor() {
@@ -108,7 +115,12 @@ function parseCronRestoreReceipt(
     !Number.isSafeInteger((payload as { pid?: unknown }).pid) ||
     Number((payload as { pid: number }).pid) <= 0 ||
     !Number.isSafeInteger((payload as { start_time?: unknown }).start_time) ||
-    Number((payload as { start_time: number }).start_time) < 0
+    Number((payload as { start_time: number }).start_time) < 0 ||
+    typeof (payload as { drain_acquired?: unknown }).drain_acquired !== "boolean" ||
+    ((payload as { drain_acquired: boolean }).drain_acquired
+      ? typeof (payload as { drain_token?: unknown }).drain_token !== "string" ||
+        !(payload as { drain_token: string }).drain_token
+      : "drain_token" in payload)
   ) {
     throw new Error(`Hermes cron ${expectedAction} receipt failed validation`);
   }
@@ -118,10 +130,10 @@ function parseCronRestoreReceipt(
 function runCronRestoreControl(
   sandboxName: string,
   action: HermesCronRestoreReceipt["action"],
-  identity?: Pick<HermesCronRestoreReceipt, "pid" | "start_time">,
+  identity?: HermesCronRestoreIdentity,
 ): HermesCronRestoreReceipt {
   const identityArgs = identity
-    ? ` --pid ${String(identity.pid)} --start-time ${String(identity.start_time)}`
+    ? ` --pid ${String(identity.pid)} --start-time ${String(identity.start_time)}${identity.drain_token ? ` --drain-token ${identity.drain_token}` : ""}`
     : "";
   const command = `${HERMES_PYTHON} -I ${HERMES_CRON_CONTROL} ${action}${identityArgs}`;
   const result = processRecovery.executeSandboxExecCommand(
@@ -139,29 +151,39 @@ function runCronRestoreControl(
   return parseCronRestoreReceipt(result.stdout, action);
 }
 
-export function beginHermesCronRestore(
-  sandboxName: string,
-): Pick<HermesCronRestoreReceipt, "pid" | "start_time"> {
+export function beginHermesCronRestore(sandboxName: string): HermesCronRestoreIdentity {
   const receipt = runCronRestoreControl(sandboxName, "begin");
-  return { pid: receipt.pid, start_time: receipt.start_time };
+  return {
+    pid: receipt.pid,
+    start_time: receipt.start_time,
+    ...(receipt.drain_token ? { drain_token: receipt.drain_token } : {}),
+  };
 }
 
 export function validateHermesCronRestore(
   sandboxName: string,
-  identity: Pick<HermesCronRestoreReceipt, "pid" | "start_time">,
+  identity: HermesCronRestoreIdentity,
 ): void {
   const receipt = runCronRestoreControl(sandboxName, "validate", identity);
-  if (receipt.pid !== identity.pid || receipt.start_time !== identity.start_time) {
+  if (
+    receipt.pid !== identity.pid ||
+    receipt.start_time !== identity.start_time ||
+    receipt.drain_token !== identity.drain_token
+  ) {
     throw new Error("Hermes cron validate receipt changed gateway identity");
   }
 }
 
 export function releaseHermesCronRestore(
   sandboxName: string,
-  identity: Pick<HermesCronRestoreReceipt, "pid" | "start_time">,
+  identity: HermesCronRestoreIdentity,
 ): void {
   const receipt = runCronRestoreControl(sandboxName, "release", identity);
-  if (receipt.pid !== identity.pid || receipt.start_time !== identity.start_time) {
+  if (
+    receipt.pid !== identity.pid ||
+    receipt.start_time !== identity.start_time ||
+    receipt.drain_token !== identity.drain_token
+  ) {
     throw new Error("Hermes cron release receipt changed gateway identity");
   }
 }
@@ -171,7 +193,7 @@ export function runHermesCronRestoreTransaction<T extends { restoreSucceeded: bo
   restore: () => T,
   onGateTransition: (
     state: "acquired" | "released",
-    identity: Pick<HermesCronRestoreReceipt, "pid" | "start_time">,
+    identity: HermesCronRestoreIdentity,
   ) => void = () => {},
 ): T {
   const identity = beginHermesCronRestore(sandboxName);

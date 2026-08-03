@@ -26,18 +26,22 @@ module.validate_cron_tree = lambda: {
 }
 
 class DrainControl:
-    requested = False
+    marker = None
 
-    def write_drain_request(self, **_kwargs):
-        self.requested = True
+    def write_drain_request(self, **kwargs):
+        self.marker = {"principal": kwargs["principal"]}
+        return self.marker
 
     def drain_requested(self, **_kwargs):
-        return self.requested
+        return self.marker is not None
+
+    def read_drain_request(self, **_kwargs):
+        return self.marker
 
     def clear_drain_request(self, **_kwargs):
-        if not self.requested:
+        if self.marker is None:
             return False
-        self.requested = False
+        self.marker = None
         return True
 
 class Status:
@@ -63,15 +67,38 @@ module._load_gateway_modules = lambda: (drain, status)
 
 try:
     if scenario == "success":
-        module.begin_drain()
-        module.validate_restore(41, 902)
+        token = module.begin_drain()
+        module.validate_restore(41, 902, token)
         status.payload["gateway_state"] = "running"
-        module.release_drain(41, 902)
+        module.release_drain(41, 902, token)
     elif scenario == "wrong-identity":
-        drain.requested = True
-        module.validate_restore(42, 902)
+        drain.marker = {"principal": "operator"}
+        module.validate_restore(42, 902, None)
     elif scenario == "missing-marker":
-        module.release_drain(41, 902)
+        module.release_drain(41, 902, None)
+    elif scenario == "preserve-operator":
+        drain.marker = {"principal": "operator"}
+        token = module.begin_drain()
+        module.validate_restore(41, 902, token)
+        module.release_drain(41, 902, token)
+        print("FINAL_MARKER:" + drain.marker["principal"])
+    elif scenario == "replacement-operator":
+        token = module.begin_drain()
+        drain.marker = {"principal": "operator"}
+        try:
+            module.release_drain(41, 902, token)
+        finally:
+            print("FINAL_MARKER:" + drain.marker["principal"])
+    elif scenario == "rollback-operator":
+        token = module.begin_drain()
+        def fail_after_operator_replaces_marker(*_args, **_kwargs):
+            drain.marker = {"principal": "operator"}
+            raise module.ControlError("simulated reactivation failure")
+        module._wait_for_state = fail_after_operator_replaces_marker
+        try:
+            module.release_drain(41, 902, token)
+        finally:
+            print("FINAL_MARKER:" + drain.marker["principal"])
     else:
         raise RuntimeError(f"unknown scenario: {scenario}")
 except module.ControlError as error:
@@ -106,7 +133,15 @@ describe("Hermes in-sandbox cron restore validator", () => {
     );
   }
 
-  function runLifecycle(scenario: "success" | "wrong-identity" | "missing-marker") {
+  function runLifecycle(
+    scenario:
+      | "success"
+      | "wrong-identity"
+      | "missing-marker"
+      | "preserve-operator"
+      | "replacement-operator"
+      | "rollback-operator",
+  ) {
     return spawnSync(
       process.env.PYTHON || "python3",
       ["-I", "-c", LIFECYCLE_HARNESS, HELPER, scenario, hermesHome],
@@ -177,5 +212,35 @@ describe("Hermes in-sandbox cron restore validator", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("drain marker disappeared before release");
+  });
+
+  it("preserves an operator-owned drain across begin, validation, and release", () => {
+    const result = runLifecycle("preserve-operator");
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("FINAL_MARKER:operator");
+    const receipts = result.stdout
+      .split("\n")
+      .filter((line) => line.startsWith(RECEIPT_PREFIX))
+      .map((line) => JSON.parse(line.slice(RECEIPT_PREFIX.length)));
+    expect(receipts).toHaveLength(3);
+    expect(receipts.every((receipt) => receipt.drain_acquired === false)).toBe(true);
+    expect(receipts.every((receipt) => receipt.drain_token === undefined)).toBe(true);
+  });
+
+  it("does not clear an operator marker that replaces its owned drain", () => {
+    const result = runLifecycle("replacement-operator");
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("drain ownership changed");
+    expect(result.stdout).toContain("FINAL_MARKER:operator");
+  });
+
+  it("does not overwrite an operator marker during failed release rollback", () => {
+    const result = runLifecycle("rollback-operator");
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("simulated reactivation failure");
+    expect(result.stdout).toContain("FINAL_MARKER:operator");
   });
 });
