@@ -10,6 +10,7 @@ import os
 import secrets
 import stat
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -253,19 +254,43 @@ def _require_owned_drain(drain_control: Any, drain_token: str) -> None:
         raise ControlError("Hermes cron restore drain ownership changed")
 
 
+def _acquire_drain(drain_control: Any) -> str | None:
+    drain_token = secrets.token_urlsafe(24)
+    principal = f"{DRAIN_PRINCIPAL_PREFIX}{drain_token}"
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=".nemoclaw-cron-restore-", dir=HERMES_HOME
+        ) as staged_home_raw:
+            staged_home = Path(staged_home_raw)
+            marker = drain_control.write_drain_request(
+                principal=principal,
+                suppress_notification=True,
+                home=staged_home,
+            )
+            staged_path = drain_control.drain_request_path(home=staged_home)
+            live_path = drain_control.drain_request_path(home=HERMES_HOME)
+            try:
+                os.link(staged_path, live_path)
+            except FileExistsError:
+                if drain_control.drain_requested(home=HERMES_HOME):
+                    return None
+                raise ControlError(
+                    "a stale Hermes drain marker prevents cron restore drain acquisition"
+                ) from None
+    except ControlError:
+        raise
+    except OSError as error:
+        raise ControlError("Hermes cron restore drain could not be acquired") from error
+    if marker.get("principal") != principal:
+        raise ControlError("Hermes cron restore drain ownership was not recorded")
+    _require_owned_drain(drain_control, drain_token)
+    return drain_token
+
+
 def begin_drain() -> str | None:
     drain_control, status_module = _load_gateway_modules()
     _, pid, start_time = _gateway_identity(status_module)
-    drain_token: str | None = None
-    if not drain_control.drain_requested(home=HERMES_HOME):
-        drain_token = secrets.token_urlsafe(24)
-        marker = drain_control.write_drain_request(
-            principal=f"{DRAIN_PRINCIPAL_PREFIX}{drain_token}",
-            suppress_notification=True,
-            home=HERMES_HOME,
-        )
-        if marker.get("principal") != f"{DRAIN_PRINCIPAL_PREFIX}{drain_token}":
-            raise ControlError("Hermes cron restore drain ownership was not recorded")
+    drain_token = _acquire_drain(drain_control)
     payload = _wait_for_state(
         status_module,
         pid=pid,

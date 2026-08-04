@@ -26,22 +26,45 @@ module.validate_cron_tree = lambda: {
 }
 
 class DrainControl:
-    marker = None
+    @staticmethod
+    def drain_request_path(home):
+        return Path(home) / ".drain_request.json"
+
+    @property
+    def marker(self):
+        return self.read_drain_request(home=module.HERMES_HOME)
+
+    @marker.setter
+    def marker(self, value):
+        path = self.drain_request_path(module.HERMES_HOME)
+        if value is None:
+            path.unlink(missing_ok=True)
+            return
+        path.write_text(__import__("json").dumps(value), encoding="utf-8")
 
     def write_drain_request(self, **kwargs):
-        self.marker = {"principal": kwargs["principal"]}
-        return self.marker
+        payload = {"principal": kwargs["principal"]}
+        path = self.drain_request_path(kwargs["home"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(__import__("json").dumps(payload), encoding="utf-8")
+        return payload
 
-    def drain_requested(self, **_kwargs):
-        return self.marker is not None
+    def drain_requested(self, **kwargs):
+        marker = self.read_drain_request(**kwargs)
+        return marker is not None and marker.get("principal") != "stale"
 
-    def read_drain_request(self, **_kwargs):
-        return self.marker
+    def read_drain_request(self, **kwargs):
+        path = self.drain_request_path(kwargs["home"])
+        try:
+            return __import__("json").loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
 
-    def clear_drain_request(self, **_kwargs):
-        if self.marker is None:
+    def clear_drain_request(self, **kwargs):
+        path = self.drain_request_path(kwargs["home"])
+        if not path.exists():
             return False
-        self.marker = None
+        path.unlink()
         return True
 
 class Status:
@@ -82,6 +105,27 @@ try:
         module.validate_restore(41, 902, token)
         module.release_drain(41, 902, token)
         print("FINAL_MARKER:" + drain.marker["principal"])
+    elif scenario == "concurrent-operator":
+        original_link = module.os.link
+        def operator_wins(source, destination):
+            drain.marker = {"principal": "operator"}
+            return original_link(source, destination)
+        module.os.link = operator_wins
+        token = module.begin_drain()
+        module.validate_restore(41, 902, token)
+        module.release_drain(41, 902, token)
+        print("FINAL_MARKER:" + drain.marker["principal"])
+    elif scenario == "stale-marker":
+        drain.marker = {"principal": "stale"}
+        try:
+            module.begin_drain()
+        finally:
+            print("FINAL_MARKER:" + drain.marker["principal"])
+    elif scenario == "link-failure":
+        def fail_link(*_args):
+            raise OSError("unsupported")
+        module.os.link = fail_link
+        module.begin_drain()
     elif scenario == "replacement-operator":
         token = module.begin_drain()
         drain.marker = {"principal": "operator"}
@@ -139,6 +183,9 @@ describe("Hermes in-sandbox cron restore validator", () => {
       | "wrong-identity"
       | "missing-marker"
       | "preserve-operator"
+      | "concurrent-operator"
+      | "stale-marker"
+      | "link-failure"
       | "replacement-operator"
       | "rollback-operator",
   ) {
@@ -226,6 +273,34 @@ describe("Hermes in-sandbox cron restore validator", () => {
     expect(receipts).toHaveLength(3);
     expect(receipts.every((receipt) => receipt.drain_acquired === false)).toBe(true);
     expect(receipts.every((receipt) => receipt.drain_token === undefined)).toBe(true);
+  });
+
+  it("preserves an operator drain created during acquisition", () => {
+    const result = runLifecycle("concurrent-operator");
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("FINAL_MARKER:operator");
+    const receipts = result.stdout
+      .split("\n")
+      .filter((line) => line.startsWith(RECEIPT_PREFIX))
+      .map((line) => JSON.parse(line.slice(RECEIPT_PREFIX.length)));
+    expect(receipts).toHaveLength(3);
+    expect(receipts.every((receipt) => receipt.drain_acquired === false)).toBe(true);
+  });
+
+  it("fails closed without replacing a stale drain marker", () => {
+    const result = runLifecycle("stale-marker");
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("stale Hermes drain marker prevents");
+    expect(result.stdout).toContain("FINAL_MARKER:stale");
+  });
+
+  it("fails closed when atomic drain acquisition is unavailable", () => {
+    const result = runLifecycle("link-failure");
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("drain could not be acquired");
   });
 
   it("does not clear an operator marker that replaces its owned drain", () => {

@@ -162,6 +162,17 @@ Before post-restore repairs, NemoClaw verifies that the recreated sandbox still 
 After state restore, NemoClaw restores managed MCP configuration through the normal lifecycle, then re-proves or recovers gateway health and performs final MCP reconciliation.
 `rebuild` exits nonzero instead of reporting success when it cannot verify final gateway health or managed MCP state.
 Follow the printed recovery guidance, using `$$nemoclaw <sandbox-name> recover` for gateway health and `$$nemoclaw <sandbox-name> mcp restart` for incomplete managed MCP restoration.
+
+When the rebuild backup contains active Hermes cron jobs that reference scripts, NemoClaw validates those script references before it deletes the existing sandbox.
+The check covers the default profile and named profiles.
+Each referenced script must exist, be readable, be a regular file, and remain inside its profile's `scripts` directory.
+Disabled and paused jobs do not require their referenced scripts.
+If this validation fails, the rebuild keeps the existing sandbox and reports the preserved backup path.
+
+After NemoClaw creates the replacement, it blocks new Hermes gateway dispatch and waits for active agent work to finish before restoring state.
+It validates the restored jobs and scripts against the same running gateway before it releases the drain.
+If an operator already drained the gateway, NemoClaw preserves that drain instead of clearing it.
+If state restore or cron validation fails, the command exits nonzero, preserves the backup, and leaves the Hermes gateway drained in the replacement sandbox.
 </AgentOnly>
 
 <AgentOnly variant="deepagents">

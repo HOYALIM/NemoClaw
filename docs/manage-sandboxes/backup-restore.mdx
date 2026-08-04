@@ -49,7 +49,7 @@ If a copied file or parent directory changes identity during the operation, snap
 <AgentOnly variant="hermes">
 Hermes snapshots include `SOUL.md`, the Web Dashboard profile under `.hermes/dashboard-home/`, the SQLite database behind `.hermes/state.db`, and the default kanban board in `.hermes/kanban.db`.
 The default-profile snapshot also includes cron execution history in `.hermes/runtime/cron-executions.db` and Discord replay state in `.hermes/gateway/discord_message_recovery.db`.
-NemoClaw captures cron job definitions from `.hermes/cron` as directory state.
+NemoClaw captures cron job definitions from `.hermes/cron` and user-authored cron scripts from `.hermes/scripts` as directory state.
 NemoClaw uses SQLite's online backup API and restores these databases through SQLite instead of copying live raw database files.
 After it replaces a database, NemoClaw opens a write transaction against the result and fails the restore when the database cannot be written.
 Named-profile cron and Discord databases under `.hermes/profiles/<name>/` use raw directory capture and can be inconsistent if a write overlaps the snapshot.

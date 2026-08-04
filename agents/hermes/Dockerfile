@@ -508,7 +508,7 @@ RUN node --experimental-strip-types \
 
 # Cryptographic integrity gate for the security-critical entrypoints: the
 # wrapper, its CLI adapter, the runtime env validator, the descriptor-safe
-# Tirith marker finalizer, and the cron restore controller. Any content change MUST be
+# Tirith marker finalizer, and the cron restore controller. Any content change must be
 # accompanied by an updated hash below; otherwise the build fails. This blocks
 # silent supply-chain tampering of the build context (an attacker rewriting a
 # file has to also rewrite the Dockerfile-committed hash, which reviewers gate).
@@ -518,7 +518,7 @@ ARG NEMOCLAW_HERMES_CLI_ADAPTER_SHA256=989edf54a8c09c6efb348600a8aa2f264c0b71408
 ARG NEMOCLAW_HERMES_CLI_ADAPTER_VALIDATOR_SHA256=db4046e79e513eab67b069a8eda20167b8b65529cf26842531d2ad673c670330
 ARG NEMOCLAW_HERMES_VALIDATOR_SHA256=822c7e63d068c5d09f3291350771c1a42c9686f51bfa9bc9a1f41fbe15d163b1
 ARG NEMOCLAW_HERMES_TIRITH_FINALIZER_SHA256=a1e6b1c53ab297569abb87c29d15c294d729e46005bfd022136b4c447a791819
-ARG NEMOCLAW_HERMES_CRON_RESTORE_CONTROLLER_SHA256=68e1c7f108b7e6787bb50099704fd7b975b66cd6cf7c35dbf87ff9b800de288f
+ARG NEMOCLAW_HERMES_CRON_RESTORE_CONTROLLER_SHA256=22f7195bad0d249f9ddd78fa8c3145b1d5d8e617fa4286ac4b3fd8c693aea2b0
 # hadolint ignore=DL4006
 RUN printf '%s  %s\n' \
         "$NEMOCLAW_HERMES_VALIDATOR_SHA256" /usr/local/lib/nemoclaw/validate-hermes-env-secret-boundary.py \
