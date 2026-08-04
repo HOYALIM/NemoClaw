@@ -1227,6 +1227,10 @@ Mutable config under the managed topology has no durable root-owned hash anchor 
 If the boundary validator or supervisor helper is missing, recovery fails closed, names the sandbox, explains that `/sandbox/.hermes/.env` could not be re-evaluated, and leaves an otherwise healthy gateway untouched.
 Rebuild an older sandbox image with `$$nemoclaw <name> rebuild --yes` before retrying.
 
+After gateway and forward recovery, Hermes `recover` also checks for a NemoClaw cron restore gate retained by an interrupted rebuild.
+It validates the restored cron jobs and scripts before it clears that gate, and it leaves an independent Hermes operator drain active.
+A validation failure leaves the NemoClaw gate in place so new dispatch remains blocked.
+
 </AgentOnly>
 
 <AgentOnly variant="openclaw,hermes">

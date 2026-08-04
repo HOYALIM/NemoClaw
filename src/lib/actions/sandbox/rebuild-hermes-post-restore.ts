@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { CLI_NAME } from "../../cli/branding";
+import { isDirectSandboxFallbackUnavailableError } from "../../sandbox/privileged-exec";
 import * as processRecovery from "./process-recovery";
 
 const HERMES_CRON_CONTROL = "/usr/local/lib/nemoclaw/hermes-cron-restore-control.py";
@@ -9,20 +10,42 @@ const HERMES_PYTHON = "/opt/hermes/.venv/bin/python";
 const RECEIPT_PREFIX = "NEMOCLAW_HERMES_CRON_RESTORE_V1:";
 const BEGIN_TIMEOUT_MS = 70_000;
 const CONTROL_TIMEOUT_MS = 25_000;
+const RECOVERY_TIMEOUT_MS = BEGIN_TIMEOUT_MS + CONTROL_TIMEOUT_MS * 2 + 10_000;
+
+type HermesCronRestoreAction = "begin" | "validate" | "release" | "recover";
+type HermesCronRestoreDisposition =
+  | "drain-acquired"
+  | "restore-validated"
+  | "dispatch-reactivated"
+  | "operator-drain-preserved"
+  | "not-required";
 
 interface HermesCronRestoreReceipt {
   version: 1;
-  action: "begin" | "validate" | "release";
+  action: HermesCronRestoreAction;
   pid: number;
   start_time: number;
   drain_acquired: boolean;
   drain_token?: string;
+  active_agents?: number;
+  profiles?: number;
+  active_jobs?: number;
+  script_jobs?: number;
+  disposition: HermesCronRestoreDisposition;
+  operator_drain_active: boolean;
+  preserved_drain?: boolean;
 }
 
 type HermesCronRestoreIdentity = Pick<
   HermesCronRestoreReceipt,
   "pid" | "start_time" | "drain_token"
 >;
+
+export type HermesCronRestoreRecoveryOutcome =
+  | "dispatch-reactivated"
+  | "operator-drain-preserved"
+  | "not-required"
+  | "unsupported";
 
 export class HermesCronRestoreIncompleteError extends Error {
   constructor() {
@@ -93,9 +116,34 @@ export function printHermesGatewayRestoreRecovery(
   );
 }
 
+function hasExactReceiptFields(
+  payload: Record<string, unknown>,
+  fields: readonly string[],
+): boolean {
+  const expected = new Set(fields);
+  return (
+    Object.keys(payload).length === expected.size &&
+    Object.keys(payload).every((key) => expected.has(key))
+  );
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function isReleaseDispositionValid(payload: Record<string, unknown>): boolean {
+  const operatorDrainActive = payload.operator_drain_active;
+  return (
+    typeof operatorDrainActive === "boolean" &&
+    payload.preserved_drain === operatorDrainActive &&
+    payload.disposition ===
+      (operatorDrainActive ? "operator-drain-preserved" : "dispatch-reactivated")
+  );
+}
+
 function parseCronRestoreReceipt(
   stdout: string,
-  expectedAction: HermesCronRestoreReceipt["action"],
+  expectedAction: HermesCronRestoreAction,
 ): HermesCronRestoreReceipt {
   const receiptLines = stdout.split(/\r?\n/u).filter((line) => line.startsWith(RECEIPT_PREFIX));
   if (receiptLines.length !== 1) {
@@ -107,46 +155,146 @@ function parseCronRestoreReceipt(
   } catch {
     throw new Error(`Hermes cron ${expectedAction} returned malformed JSON`);
   }
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error(`Hermes cron ${expectedAction} receipt failed validation`);
+  }
+  const receipt = payload as Record<string, unknown>;
   if (
-    !payload ||
-    typeof payload !== "object" ||
-    (payload as { version?: unknown }).version !== 1 ||
-    (payload as { action?: unknown }).action !== expectedAction ||
-    !Number.isSafeInteger((payload as { pid?: unknown }).pid) ||
-    Number((payload as { pid: number }).pid) <= 0 ||
-    !Number.isSafeInteger((payload as { start_time?: unknown }).start_time) ||
-    Number((payload as { start_time: number }).start_time) < 0 ||
-    typeof (payload as { drain_acquired?: unknown }).drain_acquired !== "boolean" ||
-    ((payload as { drain_acquired: boolean }).drain_acquired
-      ? typeof (payload as { drain_token?: unknown }).drain_token !== "string" ||
-        !(payload as { drain_token: string }).drain_token
-      : "drain_token" in payload)
+    receipt.version !== 1 ||
+    receipt.action !== expectedAction ||
+    !Number.isSafeInteger(receipt.pid) ||
+    Number(receipt.pid) <= 0 ||
+    !isNonNegativeInteger(receipt.start_time) ||
+    typeof receipt.drain_acquired !== "boolean" ||
+    typeof receipt.operator_drain_active !== "boolean" ||
+    (receipt.drain_acquired
+      ? typeof receipt.drain_token !== "string" || receipt.drain_token.length === 0
+      : "drain_token" in receipt)
   ) {
     throw new Error(`Hermes cron ${expectedAction} receipt failed validation`);
   }
-  return payload as HermesCronRestoreReceipt;
+
+  const baseFields = [
+    "version",
+    "action",
+    "pid",
+    "start_time",
+    "drain_acquired",
+    "disposition",
+    "operator_drain_active",
+  ];
+  const tokenFields = receipt.drain_acquired ? ["drain_token"] : [];
+  let actionValid = false;
+  switch (expectedAction) {
+    case "begin":
+      actionValid =
+        receipt.drain_acquired === true &&
+        receipt.disposition === "drain-acquired" &&
+        receipt.active_agents === 0 &&
+        hasExactReceiptFields(receipt, [...baseFields, ...tokenFields, "active_agents"]);
+      break;
+    case "validate":
+      actionValid =
+        receipt.drain_acquired === true &&
+        receipt.disposition === "restore-validated" &&
+        isNonNegativeInteger(receipt.profiles) &&
+        isNonNegativeInteger(receipt.active_jobs) &&
+        isNonNegativeInteger(receipt.script_jobs) &&
+        hasExactReceiptFields(receipt, [
+          ...baseFields,
+          ...tokenFields,
+          "profiles",
+          "active_jobs",
+          "script_jobs",
+        ]);
+      break;
+    case "release":
+      actionValid =
+        receipt.drain_acquired === true &&
+        receipt.active_agents === 0 &&
+        isReleaseDispositionValid(receipt) &&
+        hasExactReceiptFields(receipt, [
+          ...baseFields,
+          ...tokenFields,
+          "active_agents",
+          "preserved_drain",
+        ]);
+      break;
+    case "recover":
+      if (receipt.drain_acquired) {
+        actionValid =
+          receipt.active_agents === 0 &&
+          isNonNegativeInteger(receipt.profiles) &&
+          isNonNegativeInteger(receipt.active_jobs) &&
+          isNonNegativeInteger(receipt.script_jobs) &&
+          isReleaseDispositionValid(receipt) &&
+          hasExactReceiptFields(receipt, [
+            ...baseFields,
+            ...tokenFields,
+            "active_agents",
+            "profiles",
+            "active_jobs",
+            "script_jobs",
+            "preserved_drain",
+          ]);
+      } else {
+        actionValid =
+          receipt.disposition === "not-required" &&
+          isNonNegativeInteger(receipt.active_agents) &&
+          receipt.preserved_drain === receipt.operator_drain_active &&
+          hasExactReceiptFields(receipt, [...baseFields, "active_agents", "preserved_drain"]);
+      }
+      break;
+  }
+  if (!actionValid) {
+    throw new Error(`Hermes cron ${expectedAction} receipt failed validation`);
+  }
+  return receipt as unknown as HermesCronRestoreReceipt;
+}
+
+class HermesCronRestoreControlFailure extends Error {
+  constructor(
+    action: HermesCronRestoreAction,
+    readonly stderr: string,
+  ) {
+    const detail = stderr.trim().split(/\r?\n/u).at(-1);
+    super(`Hermes cron ${action} failed${detail ? `: ${detail}` : ""}`);
+    this.name = "HermesCronRestoreControlFailure";
+  }
 }
 
 function runCronRestoreControl(
   sandboxName: string,
-  action: HermesCronRestoreReceipt["action"],
+  action: HermesCronRestoreAction,
   identity?: HermesCronRestoreIdentity,
 ): HermesCronRestoreReceipt {
-  const identityArgs = identity
-    ? ` --pid ${String(identity.pid)} --start-time ${String(identity.start_time)}${identity.drain_token ? ` --drain-token ${identity.drain_token}` : ""}`
-    : "";
-  const command = `${HERMES_PYTHON} -I ${HERMES_CRON_CONTROL} ${action}${identityArgs}`;
-  const result = processRecovery.executeSandboxExecCommand(
-    sandboxName,
-    command,
-    action === "begin" ? BEGIN_TIMEOUT_MS : CONTROL_TIMEOUT_MS,
-  );
+  const command = [HERMES_PYTHON, "-I", HERMES_CRON_CONTROL, action];
+  if (identity) {
+    command.push("--pid", String(identity.pid), "--start-time", String(identity.start_time));
+    if (identity.drain_token) command.push("--drain-token", identity.drain_token);
+  }
+  let result: processRecovery.SandboxCommandResult | null;
+  try {
+    result = processRecovery.executePrivilegedSandboxCommand(
+      sandboxName,
+      command,
+      action === "begin"
+        ? BEGIN_TIMEOUT_MS
+        : action === "recover"
+          ? RECOVERY_TIMEOUT_MS
+          : CONTROL_TIMEOUT_MS,
+    );
+  } catch (error) {
+    if (isDirectSandboxFallbackUnavailableError(error)) {
+      throw new Error(`Hermes cron ${action} privileged transport was unavailable`);
+    }
+    throw error;
+  }
   if (!result) {
     throw new Error(`Hermes cron ${action} transport was unavailable`);
   }
   if (result.status !== 0) {
-    const detail = result.stderr.trim().split(/\r?\n/u).at(-1);
-    throw new Error(`Hermes cron ${action} failed${detail ? `: ${detail}` : ""}`);
+    throw new HermesCronRestoreControlFailure(action, result.stderr);
   }
   return parseCronRestoreReceipt(result.stdout, action);
 }
@@ -186,6 +334,33 @@ export function releaseHermesCronRestore(
   ) {
     throw new Error("Hermes cron release receipt changed gateway identity");
   }
+}
+
+function isLegacyCronRestoreControl(error: unknown): boolean {
+  if (!(error instanceof HermesCronRestoreControlFailure)) return false;
+  return (
+    /can't open file ['"]\/usr\/local\/lib\/nemoclaw\/hermes-cron-restore-control\.py['"]: \[Errno 2\] No such file or directory/u.test(
+      error.stderr,
+    ) || /argument action: invalid choice: ['"]recover['"]/u.test(error.stderr)
+  );
+}
+
+export function recoverHermesCronRestore(sandboxName: string): HermesCronRestoreRecoveryOutcome {
+  let receipt: HermesCronRestoreReceipt;
+  try {
+    receipt = runCronRestoreControl(sandboxName, "recover");
+  } catch (error) {
+    if (isLegacyCronRestoreControl(error)) return "unsupported";
+    throw error;
+  }
+  if (
+    receipt.disposition === "dispatch-reactivated" ||
+    receipt.disposition === "operator-drain-preserved" ||
+    receipt.disposition === "not-required"
+  ) {
+    return receipt.disposition;
+  }
+  throw new Error("Hermes cron recover returned an invalid disposition");
 }
 
 export function runHermesCronRestoreTransaction<T extends { restoreSucceeded: boolean }>(

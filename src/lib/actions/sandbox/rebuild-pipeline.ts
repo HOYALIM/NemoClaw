@@ -203,6 +203,9 @@ async function rebuildSandboxUnlocked(
       });
       if (!backup) return;
 
+      // Validate the immutable artifact produced above, not the mutable live
+      // tree. This gate therefore follows backup creation and precedes every
+      // destructive rebuild phase.
       const hermesCronRestorePreflight = runHermesCronRestoreBackupPreflight({
         rebuildAgent,
         backupPath: backup.backupManifest?.backupPath ?? null,

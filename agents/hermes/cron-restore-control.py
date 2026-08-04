@@ -1,10 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Gate Hermes cron dispatch while NemoClaw restores durable state."""
+"""Control Hermes cron dispatch while NemoClaw restores durable state.
+
+Cron restore control is the rebuild-time gate that keeps dispatch disabled until
+backed-up scripts and job definitions are valid and the gateway identity is
+unchanged. The gateway identity is the (PID, start_time) tuple pinned across
+begin, validate, and release. A drain token is the client-side secret proving
+ownership of the server-side persisted drain marker.
+"""
 
 from __future__ import annotations
 
 import argparse
+import fcntl
+import hmac
 import json
 import os
 import secrets
@@ -12,21 +21,189 @@ import stat
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 HERMES_HOME = Path("/sandbox/.hermes")
 SANDBOX_HOME = Path("/sandbox")
+NEMOCLAW_HOME = SANDBOX_HOME / ".nemoclaw"
+CONTROL_LOCK_PATH = Path("/run/nemoclaw/hermes-cron-restore-control.lock")
+CONTROL_MARKER_NAME = "hermes-cron-restore-drain.json"
 RECEIPT_PREFIX = "NEMOCLAW_HERMES_CRON_RESTORE_V1:"
-DRAIN_PRINCIPAL_PREFIX = "nemoclaw-cron-restore:"
 BEGIN_TIMEOUT_SECONDS = 60.0
 RELEASE_TIMEOUT_SECONDS = 15.0
 POLL_SECONDS = 0.1
 MAX_JOBS_BYTES = 8 * 1024 * 1024
+MAX_MARKER_BYTES = 4096
+ROOT_UID = 0
+ROOT_GID = 0
 
 
 class ControlError(RuntimeError):
     """Expected fail-closed control or validation error."""
+
+
+def _marker_path() -> Path:
+    return NEMOCLAW_HOME / CONTROL_MARKER_NAME
+
+
+def _require_root() -> None:
+    if os.geteuid() != ROOT_UID or os.getegid() != ROOT_GID:
+        raise ControlError("Hermes cron restore control requires root")
+
+
+def _require_secure_directory(path: Path, label: str) -> None:
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise ControlError(f"{label} is unavailable") from error
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise ControlError(f"{label} is not a regular directory")
+    if metadata.st_uid != ROOT_UID or metadata.st_gid != ROOT_GID:
+        raise ControlError(f"{label} is not root-owned")
+    if stat.S_IMODE(metadata.st_mode) & 0o022:
+        raise ControlError(f"{label} is writable outside root")
+
+
+@contextmanager
+def _control_lock() -> Iterator[None]:
+    _require_root()
+    _require_secure_directory(CONTROL_LOCK_PATH.parent, "cron restore lock directory")
+    flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(CONTROL_LOCK_PATH, flags, 0o600)
+    except OSError as error:
+        raise ControlError("Hermes cron restore control lock is unavailable") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != ROOT_UID
+            or metadata.st_gid != ROOT_GID
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_nlink != 1
+        ):
+            raise ControlError("Hermes cron restore control lock metadata is unsafe")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    except OSError as error:
+        raise ControlError("Hermes cron restore control lock failed") from error
+    finally:
+        os.close(descriptor)
+
+
+def _validate_marker_metadata(metadata: os.stat_result) -> None:
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != ROOT_UID
+        or metadata.st_gid != ROOT_GID
+        or stat.S_IMODE(metadata.st_mode) != 0o400
+        or metadata.st_nlink != 1
+    ):
+        raise ControlError("NemoClaw cron restore drain marker metadata is unsafe")
+    if metadata.st_size <= 0 or metadata.st_size > MAX_MARKER_BYTES:
+        raise ControlError("NemoClaw cron restore drain marker size is invalid")
+
+
+def _read_owned_drain_token(*, required: bool = True) -> str | None:
+    _require_secure_directory(NEMOCLAW_HOME, "NemoClaw state root")
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(_marker_path(), flags)
+    except FileNotFoundError as error:
+        if not required:
+            return None
+        raise ControlError("NemoClaw cron restore drain marker is not active") from error
+    except OSError as error:
+        raise ControlError("NemoClaw cron restore drain marker is unreadable") from error
+    try:
+        metadata = os.fstat(descriptor)
+        _validate_marker_metadata(metadata)
+        raw = os.read(descriptor, MAX_MARKER_BYTES + 1)
+    except OSError as error:
+        raise ControlError("NemoClaw cron restore drain marker is unreadable") from error
+    finally:
+        os.close(descriptor)
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError) as error:
+        raise ControlError("NemoClaw cron restore drain marker is invalid") from error
+    if not isinstance(payload, dict) or set(payload) != {"token", "version"}:
+        raise ControlError("NemoClaw cron restore drain marker has an invalid schema")
+    token = payload.get("token")
+    if (
+        payload.get("version") != 1
+        or not isinstance(token, str)
+        or len(token) != 32
+        or not token.isascii()
+        or not all(character.isalnum() or character in "-_" for character in token)
+    ):
+        raise ControlError("NemoClaw cron restore drain marker has an invalid token")
+    return token
+
+
+def _require_owned_drain(drain_token: str) -> None:
+    observed_token = _read_owned_drain_token()
+    if observed_token is None:
+        raise ControlError("NemoClaw cron restore drain marker is not active")
+    if not hmac.compare_digest(observed_token, drain_token):
+        raise ControlError("NemoClaw cron restore drain ownership changed")
+
+
+def _write_owned_drain(drain_token: str) -> None:
+    _require_secure_directory(NEMOCLAW_HOME, "NemoClaw state root")
+    payload = json.dumps(
+        {"token": drain_token, "version": 1},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    descriptor = -1
+    staged_path: Path | None = None
+    try:
+        descriptor, staged_raw = tempfile.mkstemp(
+            prefix=".hermes-cron-restore-drain-",
+            dir=NEMOCLAW_HOME,
+        )
+        staged_path = Path(staged_raw)
+        os.fchown(descriptor, ROOT_UID, ROOT_GID)
+        os.fchmod(descriptor, 0o400)
+        written = os.write(descriptor, payload)
+        if written != len(payload):
+            raise OSError("short marker write")
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        try:
+            os.link(staged_path, _marker_path())
+        except FileExistsError as error:
+            raise ControlError(
+                "a NemoClaw cron restore drain already requires recovery"
+            ) from error
+        staged_path.unlink()
+        staged_path = None
+        _require_owned_drain(drain_token)
+    except ControlError:
+        raise
+    except OSError as error:
+        raise ControlError("NemoClaw cron restore drain could not be acquired") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if staged_path is not None:
+            staged_path.unlink(missing_ok=True)
+
+
+def _remove_owned_drain(drain_token: str) -> None:
+    _require_owned_drain(drain_token)
+    try:
+        _marker_path().unlink()
+    except OSError as error:
+        raise ControlError("NemoClaw cron restore drain could not be released") from error
 
 
 def _profile_homes(home: Path) -> list[tuple[str, Path]]:
@@ -246,132 +423,202 @@ def _receipt(
     print(f"{RECEIPT_PREFIX}{json.dumps(payload, separators=(',', ':'), sort_keys=True)}")
 
 
-def _require_owned_drain(drain_control: Any, drain_token: str) -> None:
-    marker = drain_control.read_drain_request(home=HERMES_HOME)
-    if not isinstance(marker, dict) or marker.get("principal") != (
-        f"{DRAIN_PRINCIPAL_PREFIX}{drain_token}"
-    ):
-        raise ControlError("Hermes cron restore drain ownership changed")
-
-
-def _acquire_drain(drain_control: Any) -> str | None:
-    drain_token = secrets.token_urlsafe(24)
-    principal = f"{DRAIN_PRINCIPAL_PREFIX}{drain_token}"
+def _operator_drain_active(drain_control: Any) -> bool:
+    predicate = getattr(drain_control, "operator_drain_requested", None)
+    if not callable(predicate):
+        raise ControlError("patched Hermes operator drain predicate is unavailable")
     try:
-        with tempfile.TemporaryDirectory(
-            prefix=".nemoclaw-cron-restore-", dir=HERMES_HOME
-        ) as staged_home_raw:
-            staged_home = Path(staged_home_raw)
-            marker = drain_control.write_drain_request(
-                principal=principal,
-                suppress_notification=True,
-                home=staged_home,
-            )
-            staged_path = drain_control.drain_request_path(home=staged_home)
-            live_path = drain_control.drain_request_path(home=HERMES_HOME)
-            try:
-                os.link(staged_path, live_path)
-            except FileExistsError:
-                if drain_control.drain_requested(home=HERMES_HOME):
-                    return None
-                raise ControlError(
-                    "a stale Hermes drain marker prevents cron restore drain acquisition"
-                ) from None
-    except ControlError:
+        return bool(predicate(home=HERMES_HOME))
+    except Exception as error:
+        raise ControlError("Hermes operator drain state is unavailable") from error
+
+
+def _require_drained_idle(
+    status_module: Any,
+    pid: int,
+    start_time: int,
+) -> dict[str, Any]:
+    payload = _require_identity(status_module, pid, start_time)
+    if payload.get("gateway_state") != "draining":
+        raise ControlError("Hermes gateway is not draining during cron restore")
+    if status_module.parse_active_agents(payload.get("active_agents")) != 0:
+        raise ControlError("Hermes gateway became active during cron restore")
+    return payload
+
+
+def _wait_for_release_disposition(
+    drain_control: Any,
+    status_module: Any,
+    *,
+    pid: int,
+    start_time: int,
+) -> tuple[dict[str, Any], bool, str]:
+    deadline = time.monotonic() + RELEASE_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        payload = _require_identity(status_module, pid, start_time)
+        active_agents = status_module.parse_active_agents(payload.get("active_agents"))
+        operator_drain_active = _operator_drain_active(drain_control)
+        if (
+            operator_drain_active
+            and payload.get("gateway_state") == "draining"
+            and active_agents == 0
+        ):
+            return payload, True, "operator-drain-preserved"
+        if not operator_drain_active and payload.get("gateway_state") == "running":
+            return payload, False, "dispatch-reactivated"
+        time.sleep(POLL_SECONDS)
+    raise ControlError("Hermes gateway did not prove cron restore drain release")
+
+
+def _complete_release(
+    action: str,
+    drain_control: Any,
+    status_module: Any,
+    *,
+    pid: int,
+    start_time: int,
+    drain_token: str,
+    **fields: Any,
+) -> None:
+    _remove_owned_drain(drain_token)
+    try:
+        payload, operator_drain_active, disposition = _wait_for_release_disposition(
+            drain_control,
+            status_module,
+            pid=pid,
+            start_time=start_time,
+        )
+    except Exception as release_error:
+        try:
+            _write_owned_drain(drain_token)
+        except ControlError as rollback_error:
+            raise ControlError(
+                "Hermes cron restore drain release failed and its marker could not be restored"
+            ) from rollback_error
+        if isinstance(release_error, ControlError):
+            raise release_error
         raise
-    except OSError as error:
-        raise ControlError("Hermes cron restore drain could not be acquired") from error
-    if marker.get("principal") != principal:
-        raise ControlError("Hermes cron restore drain ownership was not recorded")
-    _require_owned_drain(drain_control, drain_token)
-    return drain_token
-
-
-def begin_drain() -> str | None:
-    drain_control, status_module = _load_gateway_modules()
-    _, pid, start_time = _gateway_identity(status_module)
-    drain_token = _acquire_drain(drain_control)
-    payload = _wait_for_state(
-        status_module,
-        pid=pid,
-        start_time=start_time,
-        state="draining",
-        require_idle=True,
-        timeout_seconds=BEGIN_TIMEOUT_SECONDS,
-    )
     _receipt(
-        "begin",
+        action,
         pid,
         start_time,
         drain_token,
         active_agents=status_module.parse_active_agents(payload.get("active_agents")),
+        disposition=disposition,
+        operator_drain_active=operator_drain_active,
+        preserved_drain=operator_drain_active,
+        **fields,
     )
-    return drain_token
 
 
-def validate_restore(pid: int, start_time: int, drain_token: str | None) -> None:
-    drain_control, status_module = _load_gateway_modules()
-    if not drain_control.drain_requested(home=HERMES_HOME):
-        raise ControlError("Hermes cron restore drain marker is not active")
-    if drain_token is not None:
-        _require_owned_drain(drain_control, drain_token)
-    payload = _require_identity(status_module, pid, start_time)
-    if payload.get("gateway_state") != "draining":
-        raise ControlError("Hermes gateway is not draining during cron validation")
-    if status_module.parse_active_agents(payload.get("active_agents")) != 0:
-        raise ControlError("Hermes gateway became active during cron validation")
-    counts = validate_cron_tree()
-    _receipt("validate", pid, start_time, drain_token, **counts)
-
-
-def release_drain(pid: int, start_time: int, drain_token: str | None) -> None:
-    drain_control, status_module = _load_gateway_modules()
-    _require_identity(status_module, pid, start_time)
-    if not drain_control.drain_requested(home=HERMES_HOME):
-        raise ControlError("Hermes cron restore drain marker disappeared before release")
-    if drain_token is None:
-        _receipt("release", pid, start_time, None, preserved_drain=True)
-        return
-    _require_owned_drain(drain_control, drain_token)
-    if not drain_control.clear_drain_request(home=HERMES_HOME):
-        raise ControlError("Hermes cron restore drain marker could not be cleared")
-    try:
+def begin_drain() -> str:
+    with _control_lock():
+        drain_control, status_module = _load_gateway_modules()
+        _, pid, start_time = _gateway_identity(status_module)
+        drain_token = secrets.token_urlsafe(24)
+        _write_owned_drain(drain_token)
         payload = _wait_for_state(
             status_module,
             pid=pid,
             start_time=start_time,
-            state="running",
-            require_idle=False,
-            timeout_seconds=RELEASE_TIMEOUT_SECONDS,
+            state="draining",
+            require_idle=True,
+            timeout_seconds=BEGIN_TIMEOUT_SECONDS,
         )
-    except Exception:
-        # Re-engage the same pinned marker contract before failing so dispatch
-        # cannot resume without a verified running receipt.
-        if not drain_control.drain_requested(home=HERMES_HOME):
-            drain_control.write_drain_request(
-                principal=f"{DRAIN_PRINCIPAL_PREFIX}{drain_token}",
-                suppress_notification=True,
-                home=HERMES_HOME,
+        _receipt(
+            "begin",
+            pid,
+            start_time,
+            drain_token,
+            active_agents=status_module.parse_active_agents(payload.get("active_agents")),
+            disposition="drain-acquired",
+            operator_drain_active=_operator_drain_active(drain_control),
+        )
+        return drain_token
+
+
+def validate_restore(pid: int, start_time: int, drain_token: str) -> None:
+    with _control_lock():
+        drain_control, status_module = _load_gateway_modules()
+        _require_owned_drain(drain_token)
+        _require_drained_idle(status_module, pid, start_time)
+        counts = validate_cron_tree()
+        _receipt(
+            "validate",
+            pid,
+            start_time,
+            drain_token,
+            disposition="restore-validated",
+            operator_drain_active=_operator_drain_active(drain_control),
+            **counts,
+        )
+
+
+def release_drain(pid: int, start_time: int, drain_token: str) -> None:
+    with _control_lock():
+        drain_control, status_module = _load_gateway_modules()
+        _require_owned_drain(drain_token)
+        _require_drained_idle(status_module, pid, start_time)
+        _complete_release(
+            "release",
+            drain_control,
+            status_module,
+            pid=pid,
+            start_time=start_time,
+            drain_token=drain_token,
+        )
+
+
+def recover_drain() -> None:
+    with _control_lock():
+        drain_control, status_module = _load_gateway_modules()
+        payload, pid, start_time = _gateway_identity(status_module)
+        drain_token = _read_owned_drain_token(required=False)
+        if drain_token is None:
+            operator_drain_active = _operator_drain_active(drain_control)
+            _receipt(
+                "recover",
+                pid,
+                start_time,
+                None,
+                active_agents=status_module.parse_active_agents(
+                    payload.get("active_agents")
+                ),
+                disposition="not-required",
+                operator_drain_active=operator_drain_active,
+                preserved_drain=operator_drain_active,
             )
-        raise
-    _receipt(
-        "release",
-        pid,
-        start_time,
-        drain_token,
-        active_agents=status_module.parse_active_agents(payload.get("active_agents")),
-    )
+            return
+        _wait_for_state(
+            status_module,
+            pid=pid,
+            start_time=start_time,
+            state="draining",
+            require_idle=True,
+            timeout_seconds=BEGIN_TIMEOUT_SECONDS,
+        )
+        counts = validate_cron_tree()
+        _complete_release(
+            "recover",
+            drain_control,
+            status_module,
+            pid=pid,
+            start_time=start_time,
+            drain_token=drain_token,
+            **counts,
+        )
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="action", required=True)
     subparsers.add_parser("begin")
+    subparsers.add_parser("recover")
     for action in ("validate", "release"):
         subparser = subparsers.add_parser(action)
         subparser.add_argument("--pid", required=True, type=int)
         subparser.add_argument("--start-time", required=True, type=int)
-        subparser.add_argument("--drain-token")
+        subparser.add_argument("--drain-token", required=True)
     tree = subparsers.add_parser("validate-tree")
     tree.add_argument("--home", required=True, type=Path)
     tree.add_argument("--sandbox-home", required=True, type=Path)
@@ -383,6 +630,8 @@ def main() -> int:
     try:
         if args.action == "begin":
             begin_drain()
+        elif args.action == "recover":
+            recover_drain()
         elif args.action == "validate":
             validate_restore(args.pid, args.start_time, args.drain_token)
         elif args.action == "release":
