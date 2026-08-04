@@ -166,8 +166,16 @@ describe("sandbox messaging credential drift", () => {
     });
 
     expect(calls.setupMessaging).toHaveBeenCalled();
+    expect(calls.stageCredentialProviders).not.toHaveBeenCalled();
+    expect(calls.selectResourceProfile).not.toHaveBeenCalled();
+    expect(calls.planRegisteredExtraProviders).not.toHaveBeenCalled();
+    expect(calls.resolveCreateIntent).not.toHaveBeenCalled();
+    expect(calls.startStep).not.toHaveBeenCalled();
     expect(calls.removeSandbox).not.toHaveBeenCalled();
+    expect(calls.restoreSandboxRegistryEntryIfMissing).not.toHaveBeenCalled();
     expect(calls.createSandbox).not.toHaveBeenCalled();
+    expect(calls.updateSandbox).not.toHaveBeenCalled();
+    expect(calls.complete).not.toHaveBeenCalled();
   });
 
   it("validates registry credential drift after the session already refreshed its hash (#3631)", async () => {
