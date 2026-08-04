@@ -203,7 +203,7 @@ async function rebuildSandboxUnlocked(
       });
       if (!backup) return;
 
-      // Validate the immutable artifact produced above, not the mutable live
+      // Validate the completed backup artifact produced above, not the mutable live
       // tree. This gate therefore follows backup creation and precedes every
       // destructive rebuild phase.
       const hermesCronRestorePreflight = runHermesCronRestoreBackupPreflight({
@@ -426,7 +426,7 @@ async function rebuildSandboxUnlocked(
               console.error(
                 error instanceof HermesCronRestoreIncompleteError
                   ? "  Hermes cron dispatch remains drained because state restore was incomplete."
-                  : `  Hermes cron restore could not prove safe reactivation: ${rebuildFailureDetail(error)}`,
+                  : `  Hermes cron restore could not validate and reactivate dispatch: ${rebuildFailureDetail(error)}`,
               );
               console.error(`  Backup is preserved at: ${backup.backupManifest?.backupPath}`);
               return bail("Hermes cron restore validation failed; dispatch was not re-enabled.");

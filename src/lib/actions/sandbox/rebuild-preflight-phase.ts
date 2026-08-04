@@ -6,11 +6,11 @@ import type { SandboxMessagingPlan } from "../../messaging";
 import { hydrateCredentialEnv } from "../../onboard/credential-env";
 import { DCODE_AUTO_APPROVAL_FEATURE } from "../../onboard/dcode-auto-approval";
 import { managedSandboxFeatureIssue } from "../../onboard/managed-sandbox-feature";
-import type { RebuildManifest } from "../../state/sandbox";
 import {
   type HermesCronRestorePlan,
   validateHermesCronRestoreBackup,
 } from "../../state/rebuild/hermes-cron-restore-backup";
+import type { RebuildManifest } from "../../state/sandbox";
 import { assertMcpDestroyNotPending } from "./mcp-bridge-state";
 import {
   preflightRebuildCredentials,
@@ -106,7 +106,7 @@ export function runHermesCronRestoreBackupPreflight({
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     printRebuildPreflightFailure(
-      `the Hermes cron backup is not safe to activate: ${detail}`,
+      `the Hermes cron backup failed script-reference validation: ${detail}`,
       `Repair or disable the affected job before rebuilding. Backup: ${backupPath}`,
       "Hermes cron restore preflight failed.",
       bail,

@@ -8,7 +8,7 @@ import { recoverHermesCronRestore } from "../rebuild-hermes-post-restore";
 
 const RECOVERY_LOCK_TIMEOUT_MS = 30_000;
 
-/** Repair the gateway first, then safely retire any stranded Hermes cron restore gate. */
+/** Repair the gateway first, then validate and release any stranded Hermes cron restore gate. */
 export async function recoverSandboxWithHermesCronRestore(sandboxName: string): Promise<void> {
   await withMcpLifecycleLock(
     sandboxName,
