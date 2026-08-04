@@ -125,7 +125,7 @@ async function tryReapStaleLock(
     }
 
     assertBeforeDeadline();
-    return reclaimStaleMcpLifecycleLockGeneration(lockPath, latest, assertBeforeDeadline);
+    return await reclaimStaleMcpLifecycleLockGeneration(lockPath, latest, assertBeforeDeadline);
   } finally {
     await safelyReleaseMcpLifecycleLock(reaperPath, reaperToken);
   }
