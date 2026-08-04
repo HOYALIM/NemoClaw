@@ -327,7 +327,9 @@ async function selectionFromCompletedMessagingCheckpoint<Agent>(
   // A completed checkpoint makes the session copy authoritative. The process
   // plan may already have refreshed hashes, so it cannot prove that a newly
   // exported credential passed the channel's validation hooks.
-  const durablePlan = options.session?.messagingPlan ?? options.credentialValidationPlan ?? null;
+  const durablePlan = options.forceCredentialValidation
+    ? (options.credentialValidationPlan ?? options.session?.messagingPlan ?? null)
+    : (options.session?.messagingPlan ?? options.credentialValidationPlan ?? null);
   const diverged = options.forceCredentialValidation
     ? null
     : divergedCheckpointChannels(options.session, durablePlan);
