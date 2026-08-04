@@ -46,6 +46,7 @@ function context(
     hermesToolGateways: [],
     preferredInferenceApi: null,
     compatibleEndpointReasoning: null,
+
     compatibleEndpointReasoningEffort: null,
     nimContainer: null,
     webSearchConfig: null,
@@ -84,6 +85,7 @@ function createPhases(
   overrides: {
     endpointProvenance?: Partial<EndpointProvenanceOptions>;
     providerDeps?: Partial<ProviderOptions["deps"]>;
+    sandboxOptions?: Partial<Omit<SandboxOptions, "deps">>;
     sandboxDeps?: Partial<SandboxOptions["deps"]>;
   } = {},
 ): CoreOnboardFlowPhases<CoreContext> {
@@ -136,6 +138,7 @@ function createPhases(
         hermesToolGateways: ["local"],
         preferredInferenceApi: "chat",
         compatibleEndpointReasoning: null,
+
         compatibleEndpointReasoningEffort: null,
         nimContainer: "nim-test",
       })),
@@ -161,8 +164,10 @@ function createPhases(
       recordRepairEvent: vi.fn(async () => createSession()),
       hydrateCredentialEnv: vi.fn(),
       configureCompatibleEndpointReasoning: vi.fn(async () => "false" as const),
-      clearCompatibleEndpointReasoning: vi.fn(() => null),
+
       configureCompatibleEndpointReasoningEffort: vi.fn(async () => null),
+      clearCompatibleEndpointReasoning: vi.fn(() => null),
+
       clearCompatibleEndpointReasoningEffort: vi.fn(() => null),
       repairLocalInferenceSystemdOverrideOrExit: vi.fn(),
       isNonInteractive: () => true,
@@ -200,15 +205,13 @@ function createPhases(
     controlUiPort: null,
     rootDir: "/repo",
     env: {},
+    ...overrides.sandboxOptions,
     deps: {
       resolvePath: (value) => value,
       agentSupportsWebSearch: () => true,
       note: vi.fn(),
+
       cliName: () => "nemoclaw",
-      retireReplacedSandboxWorkload: vi.fn(() => ({
-        status: "skipped" as const,
-        reason: "replacement-unproven" as const,
-      })),
       updateSession: vi.fn((mutator) => mutator(createSession()) ?? createSession()),
       getStoredMessagingChannelConfig: () => null,
       hydrateMessagingChannelConfig: (config) => config,
@@ -379,6 +382,27 @@ describe("core onboard flow phases", () => {
     });
   });
 
+  it("carries rebuild-preserved environment assignments into sandbox creation (#7803)", async () => {
+    const createSandbox = vi.fn(async () => "created-sandbox");
+    const rebuildPreservedEnv = [
+      {
+        path: ".env",
+        assignments: ["SLACK_HOME_CHANNEL=C0123"],
+      },
+    ];
+    const { providerInference: providerPhase, sandbox: sandboxPhase } = createPhases({
+      sandboxOptions: { rebuildPreservedEnv },
+      sandboxDeps: { createSandbox },
+    });
+
+    const providerResult = await providerPhase.run(context({ agent: { name: "hermes" } }));
+    await sandboxPhase.run(providerResult.context);
+
+    expect(createSandbox.mock.calls[0]?.at(-1)).toMatchObject({
+      rebuildPreservedEnv,
+    });
+  });
+
   it("passes fresh context through to provider setup recovery policy", async () => {
     const setupNim = vi.fn(async () => ({
       model: "nvidia/test",
@@ -389,6 +413,7 @@ describe("core onboard flow phases", () => {
       hermesToolGateways: [],
       preferredInferenceApi: "chat",
       compatibleEndpointReasoning: null,
+
       compatibleEndpointReasoningEffort: null,
       nimContainer: null,
     }));
@@ -878,7 +903,7 @@ describe("core onboard flow phases", () => {
         resume: true,
         recordRepairEvent: repairRecorder(),
       }),
-    ).rejects.toThrow("Unexpected onboarding live flow state before slice entry");
+    ).rejects.toThrow("Unexpected onboarding flow state before slice entry");
     expect(providerInference.run).not.toHaveBeenCalled();
     expect(sandbox.run).not.toHaveBeenCalled();
   });
