@@ -4,7 +4,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentDefinition } from "../../../agent/defs";
-import { createBuiltInChannelManifestRegistry } from "../../../messaging";
 import { MessagingSetupApplier } from "../../../messaging/applier/setup-applier";
 import { MESSAGING_SETUP_APPLIER_ENV_KEY } from "../../../messaging/applier/types";
 import type { SandboxMessagingPlan } from "../../../messaging/manifest";
@@ -15,7 +14,7 @@ import {
   type OnboardCheckpoint,
 } from "../../../state/onboard-checkpoint-types";
 import { createSession, type Session } from "../../../state/onboard-session";
-import { setupSelectedMessagingChannels } from "../../messaging-channel-setup";
+import { setupMessagingChannels } from "../../messaging-channel-setup";
 import {
   hasMessagingCredentialDrift,
   reconcileReusedSandboxMessaging,
@@ -382,7 +381,63 @@ describe("reconcileSandboxMessaging completed checkpoint credentials", () => {
       { selectionCompleted: true },
     );
     expect(deps.writePlanToEnv).toHaveBeenCalledWith(persistedPlan);
-    expect(result).toEqual({ plan: validatedPlan, selectedChannels: ["telegram"] });
+    expect(result.plan).toMatchObject(validatedPlan);
+    expect(result.selectedChannels).toEqual(["telegram"]);
+  });
+
+  it("validates only the channel whose supplied credential changed (#3631)", async () => {
+    const previousTelegramToken = "123456:previous-telegram-token";
+    const changedTelegramToken = "123456:changed-telegram-token";
+    const telegram = telegramPlan(hashCredential(previousTelegramToken) ?? "");
+    const slack = slackPlan(
+      hashCredential("xoxb-existing-slack-bot-token") ?? "",
+      hashCredential("xapp-existing-slack-app-token") ?? "",
+    );
+    const persistedPlan: SandboxMessagingPlan = {
+      ...telegram,
+      channels: [...telegram.channels, ...slack.channels],
+      credentialBindings: [...telegram.credentialBindings, ...slack.credentialBindings],
+    };
+    const validatedTelegramPlan = telegramPlan(hashCredential(changedTelegramToken) ?? "");
+    const deps = reconcileDeps([persistedPlan, validatedTelegramPlan]);
+    deps.setupMessagingChannels.mockResolvedValueOnce(["telegram"]);
+    deps.providerMatchesGatewayCredential.mockReturnValue(true);
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", changedTelegramToken);
+    vi.stubEnv("SLACK_BOT_TOKEN", "");
+    vi.stubEnv("SLACK_APP_TOKEN", "");
+
+    const result = await reconcileSandboxMessaging({
+      resume: true,
+      session: completedCheckpointSession(persistedPlan, [
+        "alpha-telegram-bridge",
+        "alpha-slack-bridge",
+        "alpha-slack-app",
+      ]),
+      sandboxName: "alpha",
+      agent: { name: "openclaw" },
+      deps,
+    });
+
+    expect(deps.setupMessagingChannels).toHaveBeenCalledWith(
+      { name: "openclaw" },
+      ["telegram"],
+      "alpha",
+      { selectionCompleted: true },
+    );
+    expect([...result.selectedChannels].sort()).toEqual(["slack", "telegram"]);
+    expect(result.plan?.credentialBindings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          channelId: "telegram",
+          credentialHash: hashCredential(changedTelegramToken),
+        }),
+        expect.objectContaining({
+          channelId: "slack",
+          providerEnvKey: "SLACK_BOT_TOKEN",
+          credentialHash: hashCredential("xoxb-existing-slack-bot-token"),
+        }),
+      ]),
+    );
   });
 
   it("propagates Telegram rejection instead of refreshing the persisted hash", async () => {
@@ -429,22 +484,15 @@ describe("reconcileSandboxMessaging completed checkpoint credentials", () => {
     deps.readMessagingPlanFromEnv.mockImplementation(() => MessagingSetupApplier.readPlanFromEnv());
     deps.writePlanToEnv.mockImplementation((plan) => MessagingSetupApplier.writePlanToEnv(plan));
     deps.clearPlanEnv.mockImplementation(() => MessagingSetupApplier.clearPlanEnv());
-    deps.setupMessagingChannels.mockImplementation(async (agent, existingChannels, sandboxName) => {
-      const selectedChannels = existingChannels ?? [];
-      const enabledChannels = new Set(selectedChannels);
-      await setupSelectedMessagingChannels(
-        selectedChannels,
-        enabledChannels,
-        createBuiltInChannelManifestRegistry().list(),
-        {
-          agent: agent as AgentDefinition,
-          configurationCompleted: true,
-          interactive: false,
+    deps.setupMessagingChannels.mockImplementation(
+      async (agent, existingChannels, sandboxName, setupOptions) =>
+        setupMessagingChannels(agent as AgentDefinition, existingChannels, {
           sandboxName,
-        },
-      );
-      return [...enabledChannels];
-    });
+          selectionCompleted: setupOptions?.selectionCompleted,
+          isNonInteractive: () => true,
+          note: () => {},
+        }),
+    );
 
     try {
       await expect(

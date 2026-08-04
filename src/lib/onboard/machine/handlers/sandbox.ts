@@ -162,6 +162,16 @@ function hasEffectiveMessagingCredentialDrift(
   return hasMessagingCredentialDrift(credentialPlan, env, activeChannels);
 }
 
+function messagingCredentialBindingsChanged(
+  baseline: SandboxMessagingPlan | null,
+  reconciled: SandboxMessagingPlan | null,
+): boolean {
+  return (
+    fingerprintSandboxRecreateValue(baseline?.credentialBindings ?? []) !==
+    fingerprintSandboxRecreateValue(reconciled?.credentialBindings ?? [])
+  );
+}
+
 function shouldApplyCheckpointCrashRecovery(decision: SandboxResumeDecision): boolean {
   return decision.kind === "create" && decision.validateMessagingCredentialsBeforeMutation !== true;
 }
@@ -892,6 +902,26 @@ class SandboxStateFlow<
     throw new Error("exitProcess returned while aborting an incompatible gateway route");
   }
 
+  private assertRegistryMessagingPlanUnchanged(
+    sandboxName: string,
+    expectedPlan: SandboxMessagingPlan | null,
+  ): void {
+    const currentPlan = this.deps.getRegistrySandboxMessagingPlan(sandboxName);
+    if (
+      fingerprintSandboxRecreateValue(currentPlan) === fingerprintSandboxRecreateValue(expectedPlan)
+    ) {
+      return;
+    }
+    this.deps.error(
+      `  Messaging channel state for sandbox '${sandboxName}' changed while onboarding was in progress.`,
+    );
+    this.deps.error(
+      `  Retry with the latest channel state: ${this.deps.cliName()} onboard --name ${sandboxName}`,
+    );
+    this.deps.exitProcess(1);
+    throw new Error("exitProcess returned after messaging channel state changed");
+  }
+
   private async reuseSandbox(
     state: SandboxStepState<WebSearchConfig>,
   ): Promise<SandboxStepState<WebSearchConfig>> {
@@ -1152,9 +1182,11 @@ class SandboxStateFlow<
     webSearchConfig: WebSearchConfig | null,
     group: CheckpointEffectGroupName,
     checkpoint: OnboardCheckpoint | null,
+    force = false,
   ): Promise<void> {
     if (!this.resumesSandboxPrompts || (!webSearchConfig && enabledChannels.length === 0)) return;
     if (
+      !force &&
       checkpoint &&
       planEffectGroupReplay(checkpoint, group, this.providerBindingsLive(checkpoint)).action ===
         "skip"
@@ -1184,6 +1216,31 @@ class SandboxStateFlow<
         );
         return current;
       });
+    }
+  }
+
+  private async stageMessagingProvidersForCreate(
+    sandboxName: string,
+    state: SandboxStepState<WebSearchConfig>,
+    registryPlanSnapshot: SandboxMessagingPlan | null,
+    force: boolean,
+  ): Promise<void> {
+    if (state.selectedMessagingChannels.length === 0) return;
+    const stage = async () => {
+      this.assertRegistryMessagingPlanUnchanged(sandboxName, registryPlanSnapshot);
+      await this.registerCompletedCredentialProviders(
+        sandboxName,
+        state.selectedMessagingChannels,
+        null,
+        "messaging_providers",
+        state.session?.checkpoint ?? null,
+        force,
+      );
+    };
+    if (this.deps.withSandboxMutationLock) {
+      await this.deps.withSandboxMutationLock(sandboxName, stage);
+    } else {
+      await stage();
     }
   }
 
@@ -1493,6 +1550,7 @@ class SandboxStateFlow<
     initialState: SandboxStepState<WebSearchConfig>,
     requestedSandboxName: string,
     messagingPlan: SandboxMessagingPlan | null,
+    registryMessagingPlanSnapshot: SandboxMessagingPlan | null,
     decision: SandboxCreationDecision,
   ): Promise<SandboxStepState<WebSearchConfig>> {
     const resourceSelection = await this.resolveResourceProfile(initialState);
@@ -1505,6 +1563,10 @@ class SandboxStateFlow<
     );
     const extraProviderPlan = this.deps.planRegisteredExtraProviders(this.options.gatewayName);
     const createAndRecord = async (): Promise<SandboxStepState<WebSearchConfig>> => {
+      this.assertRegistryMessagingPlanUnchanged(
+        requestedSandboxName,
+        registryMessagingPlanSnapshot,
+      );
       // Build the complete create plan after acquiring the sandbox lock. A
       // baseline transaction may have started while onboarding waited, and a
       // pre-lock snapshot must never survive a destructive recreate.
@@ -1696,6 +1758,8 @@ class SandboxStateFlow<
       nextState.session?.checkpoint ?? null,
     );
     const registryMessagingPlan = this.deps.getRegistrySandboxMessagingPlan(requestedSandboxName);
+    const messagingCredentialBaseline =
+      registryMessagingPlan ?? nextState.session?.messagingPlan ?? null;
     const messagingCredentialChanged = decision.validateMessagingCredentialsBeforeMutation === true;
     const messaging = await reconcileSandboxMessaging({
       resume: this.options.resume,
@@ -1703,19 +1767,26 @@ class SandboxStateFlow<
       sandboxName: requestedSandboxName,
       agent: this.options.agent,
       env: this.options.env,
+      registryPlanSnapshot: registryMessagingPlan,
       credentialValidationPlan: messagingCredentialChanged ? registryMessagingPlan : null,
       forceCredentialValidation: messagingCredentialChanged,
       deps: this.deps,
     });
     nextState = this.checkpointMessaging(nextState, messaging);
-    await this.registerCompletedCredentialProviders(
+    await this.stageMessagingProvidersForCreate(
       requestedSandboxName,
-      nextState.selectedMessagingChannels,
-      null,
-      "messaging_providers",
-      nextState.session?.checkpoint ?? null,
+      nextState,
+      registryMessagingPlan,
+      messagingCredentialChanged ||
+        messagingCredentialBindingsChanged(messagingCredentialBaseline, messaging.plan),
     );
-    return this.createAndRecordSandbox(nextState, requestedSandboxName, messaging.plan, decision);
+    return this.createAndRecordSandbox(
+      nextState,
+      requestedSandboxName,
+      messaging.plan,
+      registryMessagingPlan,
+      decision,
+    );
   }
 
   private complete(state: SandboxStepState<WebSearchConfig>): SandboxStateResult<WebSearchConfig> {

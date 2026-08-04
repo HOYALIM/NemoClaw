@@ -748,10 +748,10 @@ Then re-run `$$nemoclaw onboard`.
 
 ### Updated messaging token is not picked up
 
-Re-running `$$nemoclaw onboard --non-interactive` with a new `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN`, `SLACK_BOT_TOKEN`, or `SLACK_APP_TOKEN` previously reported success while the sandbox kept using the old credential.
+Rerunning `$$nemoclaw onboard --non-interactive` with a new `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN`, `SLACK_BOT_TOKEN`, or `SLACK_APP_TOKEN` previously reported success while the sandbox kept using the old credential.
 When you rerun onboarding, NemoClaw compares each supplied token with its SHA-256 hash in the sandbox registry for active channels.
-When you provide a replacement token, NemoClaw validates it before backing up workspace state, deleting the sandbox, recreating it, and restoring the backup.
-If validation fails, onboarding stops before it backs up or deletes the existing sandbox.
+When you provide a replacement token, NemoClaw validates it before it backs up workspace state, destroys the sandbox, recreates it, and restores the backup.
+If validation fails, onboarding stops before it backs up workspace state or destroys the existing sandbox.
 If you replace a token for a channel that you paused with `channels stop`, onboarding does not trigger recreation because that channel is inactive.
 
 If you suspect a sandbox is still using a stale token, re-run onboarding so the credential check runs:
@@ -3068,6 +3068,7 @@ For unattended re-onboards, export the messaging env vars first so the wizard sk
 export TELEGRAM_BOT_TOKEN=...
 export DISCORD_BOT_TOKEN=...
 export SLACK_BOT_TOKEN=...
+export SLACK_APP_TOKEN=...
 nemohermes onboard --resume --non-interactive
 ```
 
