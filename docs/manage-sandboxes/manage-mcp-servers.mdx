@@ -198,7 +198,13 @@ If a mutating command times out waiting for the per-sandbox lifecycle lock, conf
 
 <AgentOnly variant="openclaw,hermes">
 
-`recover` also owns this lock while it repairs the gateway and forwards and handles any Hermes cron restore gate.
+`recover` also owns this lock while it repairs the gateway and forwards.
+
+</AgentOnly>
+
+<AgentOnly variant="hermes">
+
+`recover` keeps the lock while it validates and releases any Hermes cron restore gate.
 
 </AgentOnly>
 

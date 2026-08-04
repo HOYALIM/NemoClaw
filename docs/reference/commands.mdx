@@ -1206,8 +1206,7 @@ Repair a stopped in-sandbox gateway and re-establish host-side forwards without 
 Use this after a direct sandbox container restart, a sandbox crash, or whenever `$$nemoclaw <name> status` reports the gateway is not running but the sandbox is alive.
 
 `recover` waits up to 30 seconds to acquire the per-sandbox lifecycle lock.
-After acquisition, it holds the lock until gateway recovery, forward repair, and any Hermes cron restore validation and gate release finish.
-Hermes gate recovery can continue under that lock for its 130-second host timeout; the 30-second limit applies only to lock acquisition.
+After acquisition, it holds the lock until gateway recovery and forward repair finish.
 
 For built-in OpenClaw and Hermes sandboxes, `recover` sends an authenticated lifecycle request through registry-scoped privileged direct-container control.
 The host selects the controller from the live container topology.
@@ -1252,6 +1251,9 @@ The managed controller verifies that strict hash when both Hermes config inputs 
 Mutable config under the managed topology has no durable root-owned hash anchor and retains the same trust and time-of-check/time-of-use limits as managed cold start.
 If the boundary validator or supervisor helper is missing, recovery fails closed, names the sandbox, explains that `/sandbox/.hermes/.env` could not be re-evaluated, and leaves an otherwise healthy gateway untouched.
 Rebuild an older sandbox image with `$$nemoclaw <name> rebuild --yes` before retrying.
+
+While a NemoClaw cron restore gate exists, Hermes `recover` keeps the same lifecycle lock through restore validation and gate release.
+That controller call has a 130-second host timeout; the earlier 30-second limit applies only to lifecycle-lock acquisition.
 
 After gateway and forward recovery, Hermes `recover` also checks for a NemoClaw cron restore gate retained by an interrupted rebuild.
 It validates the restored cron jobs and scripts before it clears that gate, and it leaves an independent Hermes operator drain active.
