@@ -83,15 +83,21 @@ export function resolveToolDisclosureResumeSignals(
 }
 
 export type SandboxResumeDecision =
-  | { readonly kind: "create" }
+  | {
+      readonly kind: "create";
+      readonly validateMessagingCredentialsBeforeMutation?: boolean;
+    }
   | { readonly kind: "reuse" }
   | {
       readonly kind: "recreate";
       readonly note: string;
       readonly removeRegistryEntry: boolean;
-      readonly validateMessagingCredentialsBeforeRecreate?: boolean;
+      readonly validateMessagingCredentialsBeforeMutation?: boolean;
     }
-  | { readonly kind: "repair-and-recreate" };
+  | {
+      readonly kind: "repair-and-recreate";
+      readonly validateMessagingCredentialsBeforeMutation?: boolean;
+    };
 
 export function mcpRegistryRemovalBlockReason(
   decision: SandboxResumeDecision,

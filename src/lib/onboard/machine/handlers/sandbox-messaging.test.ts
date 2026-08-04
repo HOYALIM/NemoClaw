@@ -299,6 +299,7 @@ describe("reconcileReusedSandboxMessaging", () => {
   it("removes every unsupported channel artifact from a reused plan", () => {
     const result = reconcileReusedSandboxMessaging(
       mixedChannelPlan(),
+      null,
       { name: "openclaw" },
       { clearPlanEnv() {} },
     );

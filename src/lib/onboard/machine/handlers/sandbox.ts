@@ -101,9 +101,12 @@ import type { SandboxCreateIntent } from "../../types";
 import { branchTo, type OnboardStateTransitionResult } from "../result";
 import * as dcodeResume from "./sandbox-dcode-resume";
 import {
+  activeMessagingChannelsWithLifecycleAuthority,
   hasMessagingCredentialDrift,
+  messagingPlanWithLifecycleAuthority,
   reconcileReusedSandboxMessaging,
   reconcileSandboxMessaging,
+  registryMessagingPlanHasSelectionAuthority,
 } from "./sandbox-messaging";
 import {
   applySandboxResumeDecision,
@@ -129,10 +132,25 @@ function hasEffectiveMessagingCredentialDrift(
   session: Session | null,
   env: NodeJS.ProcessEnv,
 ): boolean {
-  const plan = registryPlan ?? session?.messagingPlan ?? null;
+  const selectionPlan = messagingPlanWithLifecycleAuthority(
+    session?.messagingPlan ?? null,
+    registryPlan,
+  );
+  const credentialPlan = registryPlan ?? selectionPlan;
+  if (registryMessagingPlanHasSelectionAuthority(registryPlan)) {
+    return hasMessagingCredentialDrift(
+      credentialPlan,
+      env,
+      activeMessagingChannelsWithLifecycleAuthority(session?.messagingPlan ?? null, registryPlan),
+    );
+  }
   const messagingDecision = session?.checkpoint?.messaging;
   if (!messagingDecision || isDecisionUnset(messagingDecision)) {
-    return hasMessagingCredentialDrift(plan, env);
+    return hasMessagingCredentialDrift(
+      credentialPlan,
+      env,
+      activeMessagingChannelsWithLifecycleAuthority(session?.messagingPlan ?? null, registryPlan),
+    );
   }
   if (!isDecisionSelected(messagingDecision)) {
     return false;
@@ -141,7 +159,11 @@ function hasEffectiveMessagingCredentialDrift(
   const activeChannels = messagingDecision.value.selectedChannels.filter(
     (channelId) => !disabledChannels.has(channelId),
   );
-  return hasMessagingCredentialDrift(plan, env, activeChannels);
+  return hasMessagingCredentialDrift(credentialPlan, env, activeChannels);
+}
+
+function shouldApplyCheckpointCrashRecovery(decision: SandboxResumeDecision): boolean {
+  return decision.kind === "create" && decision.validateMessagingCredentialsBeforeMutation !== true;
 }
 
 export interface SandboxStateOptions<
@@ -634,8 +656,8 @@ class SandboxStateFlow<
       ...dcodeResumeSignals,
     });
     const credentialValidatedDecision =
-      decision.kind === "recreate" && messagingCredentialChanged
-        ? { ...decision, validateMessagingCredentialsBeforeRecreate: true }
+      decision.kind !== "reuse" && messagingCredentialChanged
+        ? { ...decision, validateMessagingCredentialsBeforeMutation: true }
         : decision;
     const managedDcodeDecision = dcodeResume.preserveManagedDcodeRegistryEntry(
       this.options,
@@ -655,7 +677,7 @@ class SandboxStateFlow<
     state: SandboxStepState<WebSearchConfig>,
     sandboxReuseState: string,
   ): SandboxResumeDecision {
-    if (decision.kind !== "create") return decision;
+    if (!shouldApplyCheckpointCrashRecovery(decision)) return decision;
     const checkpoint = state.session?.checkpoint;
     const agentName = (this.options.agent as { name?: string } | null)?.name ?? "openclaw";
     const identity =
@@ -885,12 +907,14 @@ class SandboxStateFlow<
       }
       const messaging = reconcileReusedSandboxMessaging(
         state.session?.messagingPlan ?? null,
+        state.sandboxName ? this.deps.getRegistrySandboxMessagingPlan(state.sandboxName) : null,
         this.options.agent,
         this.deps,
       );
       if (messaging.changed) {
         this.deps.updateSession((current) => {
           current.messagingPlan = messaging.plan;
+          recordCheckpointMessaging(current, messaging.plan);
           return current;
         });
       }
@@ -1672,8 +1696,7 @@ class SandboxStateFlow<
       nextState.session?.checkpoint ?? null,
     );
     const registryMessagingPlan = this.deps.getRegistrySandboxMessagingPlan(requestedSandboxName);
-    const messagingCredentialChanged =
-      decision.kind === "recreate" && decision.validateMessagingCredentialsBeforeRecreate === true;
+    const messagingCredentialChanged = decision.validateMessagingCredentialsBeforeMutation === true;
     const messaging = await reconcileSandboxMessaging({
       resume: this.options.resume,
       session: nextState.session,

@@ -63,6 +63,33 @@ export interface ReconcileSandboxMessagingOptions<Agent> {
 }
 
 const messagingManifestRegistry = createBuiltInChannelManifestRegistry();
+const registrySelectionWorkflows = new Set<SandboxMessagingPlan["workflow"]>([
+  "add-channel",
+  "remove-channel",
+  "start-channel",
+  "stop-channel",
+]);
+
+export function registryMessagingPlanHasSelectionAuthority(
+  plan: SandboxMessagingPlan | null,
+): boolean {
+  return plan !== null && registrySelectionWorkflows.has(plan.workflow);
+}
+
+export function messagingPlanWithLifecycleAuthority(
+  sessionPlan: SandboxMessagingPlan | null,
+  registryPlan: SandboxMessagingPlan | null,
+): SandboxMessagingPlan | null {
+  if (registryMessagingPlanHasSelectionAuthority(registryPlan)) return registryPlan;
+  return sessionPlan ?? registryPlan;
+}
+
+export function activeMessagingChannelsWithLifecycleAuthority(
+  sessionPlan: SandboxMessagingPlan | null,
+  registryPlan: SandboxMessagingPlan | null,
+): string[] {
+  return getActiveChannelsFromPlan(messagingPlanWithLifecycleAuthority(sessionPlan, registryPlan));
+}
 
 export function hasMessagingCredentialDrift(
   plan: SandboxMessagingPlan | null,
@@ -367,16 +394,18 @@ async function selectionFromRegistryPlan<Agent>(
 }
 
 export function reconcileReusedSandboxMessaging<Agent>(
-  plan: SandboxMessagingPlan | null,
+  sessionPlan: SandboxMessagingPlan | null,
+  registryPlan: SandboxMessagingPlan | null,
   agent: Agent,
   deps: Pick<SandboxMessagingDeps<Agent>, "clearPlanEnv">,
 ): SandboxMessagingSelection & { readonly changed: boolean } {
+  const plan = messagingPlanWithLifecycleAuthority(sessionPlan, registryPlan);
   const filtered = plan ? filterMessagingPlanForCurrentAgent(plan, agent) : null;
-  if (filtered !== plan) deps.clearPlanEnv();
+  if (filtered !== sessionPlan) deps.clearPlanEnv();
   return {
     plan: filtered,
     selectedChannels: getActiveChannelsFromPlan(filtered),
-    changed: filtered !== plan,
+    changed: filtered !== sessionPlan,
   };
 }
 
@@ -417,7 +446,10 @@ async function selectionFromCompletedMessagingCheckpoint<Agent>(
   // A completed checkpoint makes the session copy authoritative. The process
   // plan may already have refreshed hashes, so it cannot prove that a newly
   // exported credential passed the channel's validation hooks.
-  const selectionPlan = options.session?.messagingPlan ?? options.credentialValidationPlan ?? null;
+  const selectionPlan = messagingPlanWithLifecycleAuthority(
+    options.session?.messagingPlan ?? null,
+    options.credentialValidationPlan ?? null,
+  );
   const durablePlan = options.forceCredentialValidation
     ? withCredentialValidationHashes(selectionPlan, options.credentialValidationPlan)
     : selectionPlan;
