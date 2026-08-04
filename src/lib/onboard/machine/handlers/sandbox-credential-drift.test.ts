@@ -150,7 +150,7 @@ describe("sandbox messaging credential drift", () => {
       },
       session,
     );
-    calls.setupMessaging.mockRejectedValueOnce(new Error("Bot token was rejected by Telegram"));
+    calls.setupMessaging.mockResolvedValueOnce([]);
 
     await withEnv("TELEGRAM_BOT_TOKEN", replacementToken, async () => {
       await expect(
@@ -160,7 +160,9 @@ describe("sandbox messaging credential drift", () => {
           sandboxName: "saved",
           env: { TELEGRAM_BOT_TOKEN: replacementToken },
         }),
-      ).rejects.toThrow("Bot token was rejected by Telegram");
+      ).rejects.toThrow(
+        "Credential validation did not complete for active messaging channels: telegram. The existing sandbox was not changed.",
+      );
     });
 
     expect(calls.setupMessaging).toHaveBeenCalled();
@@ -186,7 +188,7 @@ describe("sandbox messaging credential drift", () => {
       getRegistrySandboxMessagingPlan: () => registryPlan,
       getRecordedMessagingChannelsForResume: () => null,
     });
-    calls.setupMessaging.mockRejectedValueOnce(new Error("Bot token was rejected by Telegram"));
+    calls.setupMessaging.mockResolvedValueOnce([]);
 
     await withEnv("TELEGRAM_BOT_TOKEN", replacementToken, async () => {
       await expect(
@@ -196,7 +198,9 @@ describe("sandbox messaging credential drift", () => {
           sandboxName: "saved",
           env: { TELEGRAM_BOT_TOKEN: replacementToken },
         }),
-      ).rejects.toThrow("Bot token was rejected by Telegram");
+      ).rejects.toThrow(
+        "Credential validation did not complete for active messaging channels: telegram. The existing sandbox was not changed.",
+      );
     });
 
     expect(calls.setupMessaging).toHaveBeenCalled();

@@ -7,6 +7,7 @@ import {
   listSupportedMessagingChannelIdsForAgent,
   tryGetMessagingAgentId,
 } from "../../../messaging";
+import { mergeSandboxMessagingPlans } from "../../../messaging/applier/host-state-applier";
 import type { MessagingAgentId, SandboxMessagingPlan } from "../../../messaging/manifest";
 import { hashCredential } from "../../../security/credential-hash";
 import { isDecisionSelected, isDecisionUnset } from "../../../state/onboard-checkpoint-decision";
@@ -90,6 +91,30 @@ function refreshCredentialHashesFromEnv(plan: SandboxMessagingPlan): {
     return { ...binding, credentialHash };
   });
   return changed ? { plan: { ...plan, credentialBindings }, changed } : { plan, changed };
+}
+
+function credentialBindingKey(binding: SandboxMessagingPlan["credentialBindings"][number]): string {
+  return `${binding.channelId}\u0000${binding.credentialId}\u0000${binding.providerEnvKey}`;
+}
+
+function withCredentialValidationHashes(
+  selectionPlan: SandboxMessagingPlan | null,
+  credentialPlan: SandboxMessagingPlan | null | undefined,
+): SandboxMessagingPlan | null {
+  if (!selectionPlan || !credentialPlan || selectionPlan === credentialPlan) return selectionPlan;
+  const credentialBindings = new Map(
+    credentialPlan.credentialBindings.map((binding) => [credentialBindingKey(binding), binding]),
+  );
+  return {
+    ...selectionPlan,
+    credentialBindings: selectionPlan.credentialBindings.map((binding) => {
+      const authority = credentialBindings.get(credentialBindingKey(binding));
+      const { credentialHash: _selectionHash, ...withoutHash } = binding;
+      return authority?.credentialHash
+        ? { ...withoutHash, credentialHash: authority.credentialHash }
+        : withoutHash;
+    }),
+  };
 }
 
 function resolveCurrentMessagingAgent(agent: unknown): {
@@ -182,14 +207,52 @@ function selectionFromReusablePlan<Agent>(
   };
 }
 
+function requireValidatedActiveChannels<Agent>(
+  selection: SandboxMessagingSelection,
+  requiredChannels: readonly string[],
+  validationBaseline: SandboxMessagingPlan | null,
+  options: ReconcileSandboxMessagingOptions<Agent>,
+): SandboxMessagingSelection {
+  if (!options.forceCredentialValidation) return selection;
+  const reportedChannels = new Set(selection.selectedChannels);
+  const validatedChannels = new Set(
+    getActiveChannelsFromPlan(selection.plan).filter((channelId) =>
+      reportedChannels.has(channelId),
+    ),
+  );
+  const missingChannels = requiredChannels.filter((channelId) => !validatedChannels.has(channelId));
+  const recoveryPlan =
+    validationBaseline ??
+    (options.session?.messagingPlan
+      ? filterMessagingPlanForCurrentAgent(options.session.messagingPlan, options.agent)
+      : null);
+  if (missingChannels.length > 0) {
+    if (recoveryPlan) options.deps.writePlanToEnv(recoveryPlan);
+    else options.deps.clearPlanEnv();
+    throw new Error(
+      `Credential validation did not complete for active messaging channels: ${missingChannels.join(", ")}. The existing sandbox was not changed.`,
+    );
+  }
+  if (!validationBaseline || !selection.plan) return selection;
+
+  const mergedPlan = mergeSandboxMessagingPlans(validationBaseline, selection.plan);
+  options.deps.writePlanToEnv(mergedPlan);
+  return {
+    plan: mergedPlan,
+    selectedChannels: getActiveChannelsFromPlan(mergedPlan),
+  };
+}
+
 async function selectionFromMessagingSetup<Agent>(
   existingChannels: string[] | null,
   options: ReconcileSandboxMessagingOptions<Agent>,
   selectionCompleted = false,
+  validationBaseline: SandboxMessagingPlan | null = null,
 ): Promise<SandboxMessagingSelection> {
   const existing = existingChannels
     ? filterChannelNamesForCurrentAgent(existingChannels, options.agent)
     : existingChannels;
+  const requiredChannels = existing ?? [];
   const setupOptions = selectionCompleted ? { selectionCompleted: true } : undefined;
   const selected = filterChannelNamesForCurrentAgent(
     setupOptions
@@ -203,18 +266,42 @@ async function selectionFromMessagingSetup<Agent>(
     options.agent,
   );
   const plan = options.deps.readMessagingPlanFromEnv();
-  if (!plan) return { plan: null, selectedChannels: selected };
+  if (!plan) {
+    return requireValidatedActiveChannels(
+      { plan: null, selectedChannels: selected },
+      requiredChannels,
+      validationBaseline,
+      options,
+    );
+  }
   const filtered = filterMessagingPlanForCurrentAgent(plan, options.agent);
   if (!filtered) {
     options.deps.clearPlanEnv();
-    return { plan: null, selectedChannels: [] };
+    return requireValidatedActiveChannels(
+      { plan: null, selectedChannels: [] },
+      requiredChannels,
+      validationBaseline,
+      options,
+    );
   }
-  if (filtered === plan) return { plan, selectedChannels: selected };
+  if (filtered === plan) {
+    return requireValidatedActiveChannels(
+      { plan, selectedChannels: selected },
+      requiredChannels,
+      validationBaseline,
+      options,
+    );
+  }
   options.deps.writePlanToEnv(filtered);
-  return {
-    plan: filtered,
-    selectedChannels: getActiveChannelsFromPlan(filtered),
-  };
+  return requireValidatedActiveChannels(
+    {
+      plan: filtered,
+      selectedChannels: selected,
+    },
+    requiredChannels,
+    validationBaseline,
+    options,
+  );
 }
 
 function selectionFromRecordedChannels<Agent>(
@@ -299,8 +386,11 @@ function divergedCheckpointChannels(
 ): readonly string[] | null {
   const checkpoint = session?.checkpoint;
   if (!checkpoint) return null;
-  const checkpointedChannels = isDecisionSelected(checkpoint.messaging)
-    ? checkpoint.messaging.value.selectedChannels
+  const messagingDecision = checkpoint.messaging;
+  const checkpointedChannels = isDecisionSelected(messagingDecision)
+    ? messagingDecision.value.selectedChannels.filter(
+        (channelId) => !messagingDecision.value.disabledChannels.includes(channelId),
+      )
     : [];
   const durableChannels = durablePlan ? getActiveChannelsFromPlan(durablePlan) : [];
   return sameChannelSet(checkpointedChannels, durableChannels) ? null : checkpointedChannels;
@@ -327,12 +417,16 @@ async function selectionFromCompletedMessagingCheckpoint<Agent>(
   // A completed checkpoint makes the session copy authoritative. The process
   // plan may already have refreshed hashes, so it cannot prove that a newly
   // exported credential passed the channel's validation hooks.
+  const selectionPlan = options.session?.messagingPlan ?? options.credentialValidationPlan ?? null;
   const durablePlan = options.forceCredentialValidation
-    ? (options.credentialValidationPlan ?? options.session?.messagingPlan ?? null)
-    : (options.session?.messagingPlan ?? options.credentialValidationPlan ?? null);
-  const diverged = options.forceCredentialValidation
-    ? null
-    : divergedCheckpointChannels(options.session, durablePlan);
+    ? withCredentialValidationHashes(selectionPlan, options.credentialValidationPlan)
+    : selectionPlan;
+  // Legacy resumes may have a live registry plan without a session plan. Once
+  // a session plan exists, its active/disabled selection remains authoritative.
+  const hasSessionSelectionAuthority = Boolean(options.session?.messagingPlan);
+  const diverged = hasSessionSelectionAuthority
+    ? divergedCheckpointChannels(options.session, durablePlan)
+    : null;
   if (diverged) {
     return selectionFromDivergedMessagingCheckpoint(diverged, options);
   }
@@ -377,7 +471,7 @@ async function selectionFromCompletedMessagingCheckpoint<Agent>(
   });
   if (credentialNeedsValidation) {
     options.deps.writePlanToEnv(durablePlan);
-    return selectionFromMessagingSetup(selectedChannels, options, true);
+    return selectionFromMessagingSetup(selectedChannels, options, true, durablePlan);
   }
 
   const selection = selectionFromReusablePlan(
@@ -393,6 +487,36 @@ async function selectionFromCompletedMessagingCheckpoint<Agent>(
   return selection;
 }
 
+function isCompletedOpenClawMessagingResume<Agent>(
+  options: ReconcileSandboxMessagingOptions<Agent>,
+): boolean {
+  const agentName = (options.agent as MessagingAgentLike | null)?.name;
+  const messagingDecisionCompleted = options.session?.checkpoint
+    ? !isDecisionUnset(options.session.checkpoint.messaging)
+    : options.session?.sandboxPromptProgress?.messaging === true;
+  return (!agentName || agentName === "openclaw") && options.resume && messagingDecisionCompleted;
+}
+
+async function selectionFromForcedCredentialValidation<Agent>(
+  options: ReconcileSandboxMessagingOptions<Agent>,
+): Promise<SandboxMessagingSelection | null> {
+  if (!options.forceCredentialValidation || !options.credentialValidationPlan) return null;
+  const validationBaseline = filterMessagingPlanForCurrentAgent(
+    options.credentialValidationPlan,
+    options.agent,
+  );
+  if (!validationBaseline) {
+    options.deps.clearPlanEnv();
+    return { plan: null, selectedChannels: [] };
+  }
+  const requiredChannels = getActiveChannelsFromPlan(validationBaseline);
+  if (requiredChannels.length === 0) {
+    return selectionFromReusablePlan(validationBaseline, options.agent, true, options.deps);
+  }
+  options.deps.writePlanToEnv(validationBaseline);
+  return selectionFromMessagingSetup(requiredChannels, options, true, validationBaseline);
+}
+
 export async function reconcileSandboxMessaging<Agent>(
   options: ReconcileSandboxMessagingOptions<Agent>,
 ): Promise<SandboxMessagingSelection> {
@@ -402,13 +526,11 @@ export async function reconcileSandboxMessaging<Agent>(
     options.sandboxName,
   );
   const envPlan = options.deps.readMessagingPlanFromEnv();
-  const agentName = (options.agent as MessagingAgentLike | null)?.name;
-  const messagingDecisionCompleted = options.session?.checkpoint
-    ? !isDecisionUnset(options.session.checkpoint.messaging)
-    : options.session?.sandboxPromptProgress?.messaging === true;
-  if ((!agentName || agentName === "openclaw") && options.resume && messagingDecisionCompleted) {
+  if (isCompletedOpenClawMessagingResume(options)) {
     return selectionFromCompletedMessagingCheckpoint(envPlan, options);
   }
+  const forcedValidationSelection = await selectionFromForcedCredentialValidation(options);
+  if (forcedValidationSelection) return forcedValidationSelection;
   const registryPlan = options.deps.getRegistrySandboxMessagingPlan(options.sandboxName);
   if (recordedChannels) {
     return selectionFromRecordedChannels(recordedChannels, envPlan, registryPlan, options);
