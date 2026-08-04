@@ -178,6 +178,10 @@ export function createDeps(
       }),
     ),
     createSandbox: vi.fn(async () => "my-assistant"),
+    retireReplacedSandboxWorkload: vi.fn(() => ({
+      status: "skipped" as const,
+      reason: "replacement-unproven" as const,
+    })),
     updateSandbox: vi.fn(),
     complete: vi.fn(async (_stepName: string, updates: SessionUpdates) => {
       Object.assign(session, updates);
@@ -215,6 +219,7 @@ export function createDeps(
       resolvePath: (value: string) => `/abs/${value}`,
       agentSupportsWebSearch: () => true,
       note: calls.note,
+      cliName: () => "nemoclaw",
       updateSession: calls.updateSession,
       getStoredMessagingChannelConfig: () => null,
       hydrateMessagingChannelConfig: (config: MessagingChannelConfig | null) => config,
@@ -262,6 +267,7 @@ export function createDeps(
       planRegisteredExtraProviders: calls.planRegisteredExtraProviders,
       resolveSandboxCreateIntent: calls.resolveCreateIntent,
       createSandbox: calls.createSandbox,
+      retireReplacedSandboxWorkload: calls.retireReplacedSandboxWorkload,
       updateSandboxRegistry: calls.updateSandbox,
       getSandboxAgentRegistryFields: () => ({ agent: null }),
       recordStepComplete: calls.complete,
@@ -310,6 +316,7 @@ export function baseOptions(
     model: "model",
     provider: "provider",
     endpointUrl: null,
+    compatibleEndpointReasoning: null,
     credentialEnv: null,
     nimContainer: null,
     webSearchConfig: null,
