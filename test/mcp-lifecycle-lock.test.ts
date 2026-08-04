@@ -449,7 +449,7 @@ const releasePath = process.argv[3];
     expect(fs.existsSync(lockPath)).toBe(false);
   });
 
-  it("preserves a corrupt lock when observation crosses the acquisition deadline", async () => {
+  it("preserves a corrupt lock when observation crosses the acquisition deadline (#7858)", async () => {
     const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
     fs.writeFileSync(lockPath, '{"version":1,"sandboxName":"alpha"');
@@ -471,7 +471,7 @@ const releasePath = process.argv[3];
     expect(fs.readFileSync(lockPath, "utf8")).toContain('"sandboxName":"alpha"');
   });
 
-  it("does not enter the critical section when lock publication crosses the deadline", async () => {
+  it("does not enter the critical section when lock publication crosses the deadline (#7858)", async () => {
     let nowCalls = 0;
     let entered = false;
 
@@ -495,7 +495,7 @@ const releasePath = process.argv[3];
     expect(fs.existsSync(lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir))).toBe(false);
   });
 
-  it("restores a stale main lock when reclamation crosses the deadline", async () => {
+  it("restores a stale main lock when reclamation crosses the deadline (#7858)", async () => {
     const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
     fs.writeFileSync(
@@ -540,7 +540,7 @@ const releasePath = process.argv[3];
     expect(JSON.parse(fs.readFileSync(lockPath, "utf8")).token).toBe("stale-main-token");
   });
 
-  it("restores a stale reaper when reclamation crosses the deadline", async () => {
+  it("restores a stale reaper when reclamation crosses the deadline (#7858)", async () => {
     const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
     const reaperPath = `${lockPath}.reaper`;
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
@@ -586,7 +586,7 @@ const releasePath = process.argv[3];
     expect(JSON.parse(fs.readFileSync(reaperPath, "utf8")).token).toBe("stale-reaper-token");
   });
 
-  it("does not reclaim a corrupt directory at the lock path", async () => {
+  it("does not reclaim a corrupt directory at the lock path (#7858)", async () => {
     const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
     fs.mkdirSync(lockPath, { recursive: true });
 
