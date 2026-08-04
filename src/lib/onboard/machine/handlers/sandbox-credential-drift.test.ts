@@ -1,13 +1,16 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { MessagingSetupApplier } from "../../../messaging/applier/setup-applier";
 import { hashCredential } from "../../../security/credential-hash";
 import { createSession } from "../../../state/onboard-session";
 import { recordCheckpointMessaging } from "../../checkpoint-record";
 import { detectMessagingChannelsFromEnv } from "../../messaging-channel-setup";
-import { handleSandboxState } from "./sandbox";
 import {
   baseOptions,
   createDeps,
@@ -22,9 +25,32 @@ vi.mock("../../messaging-channel-setup", () => ({
 }));
 
 const detectMessagingChannelsFromEnvMock = vi.mocked(detectMessagingChannelsFromEnv);
+const previousHome = process.env.HOME;
+let registryHome = "";
+let registry: typeof import("../../../state/registry");
+let handleSandboxState: typeof import("./sandbox").handleSandboxState;
+
+beforeAll(async () => {
+  registryHome = await mkdtemp(path.join(os.tmpdir(), "nemoclaw-credential-drift-"));
+  process.env.HOME = registryHome;
+  ({ handleSandboxState } = await import("./sandbox"));
+  registry = await import("../../../state/registry");
+
+  const registryPath = path.relative(registryHome, registry.REGISTRY_FILE);
+  if (registryPath.startsWith("..") || path.isAbsolute(registryPath)) {
+    throw new Error("Credential-drift test registry did not resolve under its temporary home.");
+  }
+});
+
+afterAll(async () => {
+  if (previousHome === undefined) delete process.env.HOME;
+  else process.env.HOME = previousHome;
+  if (registryHome) await rm(registryHome, { recursive: true, force: true });
+});
 
 describe("sandbox messaging credential drift", () => {
   beforeEach(() => {
+    registry.clearAll();
     detectMessagingChannelsFromEnvMock.mockReturnValue([]);
   });
 
@@ -41,18 +67,38 @@ describe("sandbox messaging credential drift", () => {
     );
     const session = createSession({ sandboxName: "saved", messagingPlan: previousPlan });
     session.steps.sandbox.status = "complete";
+    registry.registerSandbox({
+      name: "saved",
+      messaging: { schemaVersion: 1, plan: previousPlan },
+    });
     detectMessagingChannelsFromEnvMock.mockReturnValue(["telegram"]);
-    const readMessagingPlanFromEnv = vi
-      .fn()
-      .mockReturnValueOnce(null)
-      .mockReturnValue(replacementPlan);
+    const messagingEnv: NodeJS.ProcessEnv = {};
+    const readMessagingPlanFromEnv = () =>
+      MessagingSetupApplier.readPlanFromEnv({ env: messagingEnv });
+    const writePlanToEnv = (plan: typeof replacementPlan) =>
+      MessagingSetupApplier.writePlanToEnv(plan, { env: messagingEnv });
     const { deps, calls, getSession } = createDeps({
       getSandboxReuseState: () => "ready",
-      getRegistrySandboxMessagingPlan: () => previousPlan,
+      getRegistrySandboxMessagingPlan: (name) =>
+        registry.getHydratedMessagingPlanFromEntry(registry.getSandbox(name)),
       getRecordedMessagingChannelsForResume: () => null,
       readMessagingPlanFromEnv,
+      writePlanToEnv,
+      listRegistrySandboxes: registry.listSandboxes,
     });
-    calls.setupMessaging.mockResolvedValue(["telegram"]);
+    calls.removeSandbox.mockImplementation(() => registry.removeSandboxWithReceipt("saved"));
+    calls.setupMessaging.mockImplementation(async () => {
+      writePlanToEnv(replacementPlan);
+      return ["telegram"];
+    });
+    calls.createSandbox.mockImplementation(async () => {
+      const plan = readMessagingPlanFromEnv();
+      registry.registerSandbox({
+        name: "saved",
+        messaging: plan ? { schemaVersion: 1, plan } : undefined,
+      });
+      return "saved";
+    });
 
     await withEnv("TELEGRAM_BOT_TOKEN", replacementToken, async () => {
       await handleSandboxState({
@@ -72,6 +118,18 @@ describe("sandbox messaging credential drift", () => {
     expect(getSession().messagingPlan?.credentialBindings[0]?.credentialHash).toBe(
       hashCredential(replacementToken),
     );
+    const registryState = registry.listSandboxes();
+    expect(registryState.sandboxes).toHaveLength(1);
+    expect(registryState.sandboxes[0]?.name).toBe("saved");
+    expect(
+      registryState.sandboxes[0]?.messaging?.plan.credentialBindings.map(
+        (binding) => binding.credentialHash,
+      ),
+    ).toEqual([hashCredential(replacementToken)]);
+    const serializedRegistry = JSON.stringify(registryState);
+    expect(serializedRegistry).not.toContain(hashCredential(previousToken));
+    expect(serializedRegistry).not.toContain(previousToken);
+    expect(serializedRegistry).not.toContain(replacementToken);
   });
 
   it("validates registry-only credential drift before removing the sandbox (#3631)", async () => {
