@@ -511,8 +511,11 @@ describe("reconcileSandboxMessaging completed checkpoint credentials", () => {
 
       expect(MessagingSetupApplier.requirePlanFromEnv()).toEqual(persistedPlan);
     } finally {
-      if (previousPlanEnv === undefined) MessagingSetupApplier.clearPlanEnv();
-      else process.env[MESSAGING_SETUP_APPLIER_ENV_KEY] = previousPlanEnv;
+      MessagingSetupApplier.clearPlanEnv();
+      Object.assign(
+        process.env,
+        previousPlanEnv === undefined ? {} : { [MESSAGING_SETUP_APPLIER_ENV_KEY]: previousPlanEnv },
+      );
     }
   });
 
@@ -521,6 +524,10 @@ describe("reconcileSandboxMessaging completed checkpoint credentials", () => {
     const oldSlackAppHash = hashCredential("xapp-previous-slack-app-token") ?? "";
     const replacementSlackBotHash = hashCredential("xoxb-replacement-slack-bot-token") ?? "";
     const replacementSlackAppHash = hashCredential("xapp-replacement-slack-app-token") ?? "";
+    const replacementHashesByProviderEnvKey: Readonly<Record<string, string>> = {
+      SLACK_BOT_TOKEN: replacementSlackBotHash,
+      SLACK_APP_TOKEN: replacementSlackAppHash,
+    };
     const telegram = telegramPlan(hashCredential("123456:telegram-token") ?? "");
     const slack = slackPlan(oldSlackBotHash, oldSlackAppHash);
     const registryPlan: SandboxMessagingPlan = {
@@ -534,15 +541,11 @@ describe("reconcileSandboxMessaging completed checkpoint credentials", () => {
         channel.channelId === "telegram" ? { ...channel, active: false, disabled: true } : channel,
       ),
       disabledChannels: ["telegram"],
-      credentialBindings: registryPlan.credentialBindings.map((binding) => {
-        if (binding.providerEnvKey === "SLACK_BOT_TOKEN") {
-          return { ...binding, credentialHash: replacementSlackBotHash };
-        }
-        if (binding.providerEnvKey === "SLACK_APP_TOKEN") {
-          return { ...binding, credentialHash: replacementSlackAppHash };
-        }
-        return binding;
-      }),
+      credentialBindings: registryPlan.credentialBindings.map((binding) => ({
+        ...binding,
+        credentialHash:
+          replacementHashesByProviderEnvKey[binding.providerEnvKey] ?? binding.credentialHash,
+      })),
     };
     const validatedSlackPlan = slackPlan(replacementSlackBotHash, replacementSlackAppHash);
     const deps = reconcileDeps([registryPlan, validatedSlackPlan]);

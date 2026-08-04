@@ -30,7 +30,6 @@ vi.mock("../../messaging-channel-setup", () => ({
 }));
 
 const detectMessagingChannelsFromEnvMock = vi.mocked(detectMessagingChannelsFromEnv);
-const previousHome = process.env.HOME;
 let registryHome = "";
 let registry: typeof import("../../../state/registry");
 let handleSandboxState: typeof import("./sandbox").handleSandboxState;
@@ -38,7 +37,7 @@ let persistManifestChannelDisabledPlan: typeof import("../../../actions/sandbox/
 
 beforeAll(async () => {
   registryHome = await mkdtemp(path.join(os.tmpdir(), "nemoclaw-credential-drift-"));
-  process.env.HOME = registryHome;
+  vi.stubEnv("HOME", registryHome);
   ({ handleSandboxState } = await import("./sandbox"));
   ({ persistManifestChannelDisabledPlan } = await import(
     "../../../actions/sandbox/policy-channel"
@@ -46,15 +45,13 @@ beforeAll(async () => {
   registry = await import("../../../state/registry");
 
   const registryPath = path.relative(registryHome, registry.REGISTRY_FILE);
-  if (registryPath.startsWith("..") || path.isAbsolute(registryPath)) {
-    throw new Error("Credential-drift test registry did not resolve under its temporary home.");
-  }
+  expect(registryPath.startsWith("..")).toBe(false);
+  expect(path.isAbsolute(registryPath)).toBe(false);
 });
 
 afterAll(async () => {
-  if (previousHome === undefined) delete process.env.HOME;
-  else process.env.HOME = previousHome;
-  if (registryHome) await rm(registryHome, { recursive: true, force: true });
+  vi.unstubAllEnvs();
+  await rm(registryHome, { recursive: true, force: true });
 });
 
 describe("sandbox messaging credential drift", () => {
