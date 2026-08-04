@@ -680,7 +680,7 @@ const releasePath = process.argv[3];
     let now = 0;
     const renameSpy = vi.spyOn(fs.promises, "rename").mockImplementation(async (from, to) => {
       await rename(from, to);
-      if (String(from) === lockPath) now = 100;
+      now = String(from) === lockPath ? 100 : now;
     });
     let entered = false;
 
