@@ -32,7 +32,7 @@ export interface LockObservation {
   mtimeMs: number;
   dev: number;
   ino: number;
-  /** Directories cannot be restored with the no-overwrite hard-link protocol. */
+  /** A directory cannot be restored with a hard link. */
   reclaimable: boolean;
 }
 

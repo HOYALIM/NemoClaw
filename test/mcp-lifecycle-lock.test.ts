@@ -650,7 +650,7 @@ const releasePath = process.argv[3];
     expect(fs.existsSync(`${lockPath}.containment`)).toBe(false);
   });
 
-  it("rolls back containment when publication crosses the asynchronous acquisition deadline (#7858)", async () => {
+  it("rolls back containment when publication crosses the acquisition deadline in the asynchronous path (#7858)", async () => {
     const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
     const deadlinePath = `${lockPath}.deadline`;
     const containmentPath = `${lockPath}.containment`;
@@ -692,7 +692,7 @@ const releasePath = process.argv[3];
     expect(fs.existsSync(containmentPath)).toBe(false);
   });
 
-  it("rolls back containment when publication crosses the synchronous acquisition deadline (#7858)", () => {
+  it("rolls back containment when publication crosses the acquisition deadline in the synchronous path (#7858)", () => {
     const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
     const deadlinePath = `${lockPath}.deadline`;
     const containmentPath = `${lockPath}.containment`;
@@ -755,7 +755,7 @@ const releasePath = process.argv[3];
     expect(fs.existsSync(lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir))).toBe(false);
   });
 
-  it("does not invoke the asynchronous callback after the acquisition deadline (#7858)", async () => {
+  it("does not invoke the callback after the acquisition deadline in the asynchronous path (#7858)", async () => {
     const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
     let now = 0;
     let handoffScheduled = false;
@@ -787,7 +787,7 @@ const releasePath = process.argv[3];
     expect(JSON.parse(fs.readFileSync(lockPath, "utf8")).token).toBe("async-replacement-token");
   });
 
-  it("does not invoke the synchronous callback after the acquisition deadline (#7858)", () => {
+  it("does not invoke the callback after the acquisition deadline in the synchronous path (#7858)", () => {
     const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
     let acquisitionPublished = false;
     let replacementPublished = false;
