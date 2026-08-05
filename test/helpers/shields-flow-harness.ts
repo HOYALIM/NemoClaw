@@ -5,14 +5,20 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { expect, type MockInstance, vi } from "vitest";
+import YAML from "yaml";
+import { buildMcpBridgePolicyYaml } from "../../src/lib/actions/sandbox/mcp-bridge-policy-render";
+import type { SandboxEntry } from "../../src/lib/state/registry";
 
 const shieldsModulePath = "./index.js";
 
 export type ShieldsFlowHarness = {
+  applyShieldsPolicySnapshot: typeof import("../../src/lib/shields/index.js").applyShieldsPolicySnapshot;
   auditSpy: MockInstance;
+  cleanupTempDirSpy: MockInstance;
   errorSpy: MockInstance;
   getOpenClawPosture: () => "locked" | "mutable";
   logSpy: MockInstance;
+  policySetBodies: string[];
   runCaptureSpy: MockInstance;
   runSpy: MockInstance;
   shieldsDown: typeof import("../../src/lib/shields/index.js").shieldsDown;
@@ -28,6 +34,7 @@ export type ShieldsFlowHarnessOptions = {
   directSandboxUnavailable?: boolean;
   dockerExecFileSync?: (argv: unknown) => string;
   failOpenClawGuardActions?: Array<"lock" | "unlock">;
+  failStateSave?: boolean;
   initialOpenClawPosture?: "locked" | "mutable";
   invokedAs?: "nemoclaw" | "nemohermes";
   openClawGuardFailure?: {
@@ -49,11 +56,59 @@ export type ShieldsFlowHarnessOptions = {
   };
   livePolicyYaml?: string;
   run?: (cmd: unknown) => { status: number };
+  sandboxEntry?: SandboxEntry;
   timerAuthorityRevokedSequence?: readonly boolean[];
 };
 
+export function managedMcpPolicy(server: string, address = "8.8.8.8") {
+  const content = buildMcpBridgePolicyYaml(
+    server,
+    `https://${server}.example.com/mcp`,
+    "hermes-config",
+    [address],
+  );
+  const entries = Object.entries(YAML.parse(content).network_policies as Record<string, unknown>);
+  expect(entries, `rendered MCP policies for ${server}`).toHaveLength(1);
+  const [key, networkPolicy] = entries[0]!;
+  return { content, key, networkPolicy, server };
+}
+
+export function managedMcpSandbox(
+  policies: Array<ReturnType<typeof managedMcpPolicy>>,
+): SandboxEntry {
+  return {
+    name: "openclaw",
+    openshellDriver: "docker",
+    customPolicies: policies.map(({ content, server }) => ({
+      name: `mcp-bridge-${server}`,
+      content,
+      sourcePath: "generated:nemoclaw-mcp-bridge",
+    })),
+    mcp: {
+      bridges: Object.fromEntries(
+        policies.map(({ server }) => [
+          server,
+          {
+            server,
+            agent: "hermes",
+            adapter: "hermes-config",
+            url: `https://${server}.example.com/mcp`,
+            env: ["MCP_SECRET"],
+            policyName: `mcp-bridge-${server}`,
+            addedAt: "2026-07-30T00:00:00.000Z",
+          },
+        ]),
+      ),
+    },
+  };
+}
+
 function throwHarnessError(error: Error): never {
   throw error;
+}
+
+function recordPolicySetBody(policySetBodies: string[], file: unknown): void {
+  policySetBodies.push(fs.readFileSync(String(file), "utf-8"));
 }
 
 export function createShieldsFlowHarness(
@@ -65,6 +120,8 @@ export function createShieldsFlowHarness(
   delete require.cache[requireDist.resolve(shieldsModulePath)];
   delete require.cache[requireDist.resolve("./timer-bound-lock.js")];
   delete require.cache[requireDist.resolve("./transition-lock.js")];
+  delete require.cache[requireDist.resolve("./permissive-runtime.js")];
+  delete require.cache[requireDist.resolve("../actions/sandbox/mcp-bridge-policy.js")];
   delete require.cache[requireDist.resolve("../sandbox/privileged-exec.js")];
   delete require.cache[requireDist.resolve("../cli/branding.js")];
   const lifecycleLock = requireDist(
@@ -87,7 +144,9 @@ export function createShieldsFlowHarness(
   const dockerExec = requireDist("../adapters/docker/exec.js");
   const audit = requireDist("./audit.js");
   const timerControl = requireDist("./timer-control.js");
+  const tempFiles = requireDist("../onboard/temp-files.js");
   const childProcess = requireDist("node:child_process");
+  const policySetBodies: string[] = [];
   let openClawPosture: "locked" | "mutable" = options.initialOpenClawPosture ?? "mutable";
 
   vi.spyOn(runner, "validateName").mockImplementation((name: unknown) => String(name));
@@ -99,7 +158,10 @@ export function createShieldsFlowHarness(
   });
   options.fork && vi.spyOn(childProcess, "fork").mockImplementation(options.fork);
   vi.spyOn(policy, "buildPolicyGetCommand").mockReturnValue(["openshell", "policy", "get"]);
-  vi.spyOn(policy, "buildPolicySetCommand").mockReturnValue(["openshell", "policy", "set"]);
+  vi.spyOn(policy, "buildPolicySetCommand").mockImplementation((file: unknown) => {
+    recordPolicySetBody(policySetBodies, file);
+    return ["openshell", "policy", "set"];
+  });
   vi.spyOn(policy, "parseCurrentPolicy").mockImplementation((raw: unknown) => String(raw));
   vi.spyOn(policy, "resolvePermissivePolicyPath").mockReturnValue(
     path.join(tmpDir, "permissive.yaml"),
@@ -112,8 +174,13 @@ export function createShieldsFlowHarness(
     configPath: "/sandbox/.openclaw/openclaw.json",
     format: "json",
   });
-  vi.spyOn(registry, "getSandbox").mockReturnValue({ name: "openclaw", openshellDriver: "docker" });
+  vi.spyOn(registry, "getSandbox").mockReturnValue(
+    options.sandboxEntry ?? { name: "openclaw", openshellDriver: "docker" },
+  );
   vi.spyOn(registry, "listSandboxes").mockReturnValue({ sandboxes: [{ name: "openclaw" }] });
+  const permissiveRuntime = requireDist(
+    "./permissive-runtime.js",
+  ) as typeof import("../../src/lib/shields/permissive-runtime.js");
   const directSandboxUnavailableError = new Error(
     "No running direct OpenShell sandbox container found for 'openclaw' (driver: docker). Expected a running container named openshell-openclaw or openshell-openclaw-*. Is the sandbox running?",
   );
@@ -228,6 +295,21 @@ export function createShieldsFlowHarness(
       };
     });
   }
+  const cleanupTempDirSpy = vi.spyOn(tempFiles, "cleanupTempDir");
+  const prepareStateSaveFailure = options.failStateSave
+    ? () =>
+        fs.mkdirSync(path.join(tmpDir, ".nemoclaw", "state", "shields-openclaw.json"), {
+          recursive: true,
+        })
+    : () => undefined;
+  const buildRuntimePermissivePolicy = permissiveRuntime.buildRuntimePermissivePolicy;
+  vi.spyOn(permissiveRuntime, "buildRuntimePermissivePolicy").mockImplementation(
+    (basePath, deps) => {
+      const runtimePolicy = buildRuntimePermissivePolicy(basePath, deps);
+      prepareStateSaveFailure();
+      return runtimePolicy;
+    },
+  );
 
   const shields = requireDist(shieldsModulePath);
   logSpy.mockClear();
@@ -235,10 +317,13 @@ export function createShieldsFlowHarness(
   auditSpy.mockClear();
   runCaptureSpy.mockClear();
   return {
+    applyShieldsPolicySnapshot: shields.applyShieldsPolicySnapshot,
     auditSpy,
+    cleanupTempDirSpy,
     errorSpy,
     getOpenClawPosture: () => openClawPosture,
     logSpy,
+    policySetBodies,
     runCaptureSpy,
     runSpy,
     shieldsDown: shields.shieldsDown,
@@ -247,20 +332,4 @@ export function createShieldsFlowHarness(
     isShieldsDown: shields.isShieldsDown,
     synchronizeAutoRestoreWithShieldsDown: shields.synchronizeAutoRestoreWithShieldsDown,
   };
-}
-
-export function expectStagedDriverNeutralRecovery(
-  errorSpy: MockInstance,
-  sandboxName: string,
-  cliName = "nemoclaw",
-): string {
-  const output = errorSpy.mock.calls.flat().map(String).join("\n");
-  expect(output).toContain(
-    `Recovery: confirm the sandbox is running and ready, then retry \`${cliName} ${sandboxName} shields up\`.`,
-  );
-  expect(output).toContain(
-    `If the retry still fails, rebuild a known-good baseline with \`${cliName} ${sandboxName} rebuild --yes\`.`,
-  );
-  expect(output).not.toMatch(/kubectl/i);
-  return output;
 }
