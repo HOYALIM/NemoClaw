@@ -101,6 +101,7 @@ COPY agents/hermes/config/ /opt/nemoclaw-hermes-config/config/
 COPY agents/hermes/image-build-probes.py /opt/nemoclaw-hermes-config/image-build-probes.py
 COPY agents/hermes/patch-gateway-runtime-metadata.py /opt/nemoclaw-hermes-config/patch-gateway-runtime-metadata.py
 COPY agents/hermes/patch-gateway-process-identity.py /opt/nemoclaw-hermes-config/patch-gateway-process-identity.py
+COPY agents/hermes/patch-drain-control-cas.py /opt/nemoclaw-hermes-config/patch-drain-control-cas.py
 COPY agents/hermes/patch-cron-execution-runtime.py /opt/nemoclaw-hermes-config/patch-cron-execution-runtime.py
 COPY agents/hermes/patch-neutral-platform-env-activation.py /opt/nemoclaw-hermes-config/patch-neutral-platform-env-activation.py
 COPY agents/hermes/host/managed-tool-gateway-matrix.json /opt/nemoclaw-hermes-config/managed-tool-gateway-matrix.json
@@ -436,6 +437,24 @@ RUN /usr/bin/python3 -I \
     && /opt/hermes/.venv/bin/python -I \
         /opt/nemoclaw-hermes-config/image-build-probes.py gateway-process-identity
 
+# Hermes v2026.7.20 unconditionally replaces and removes the shared external
+# drain marker. Serialize all canonical writers and add create-only plus
+# principal-matched clear operations so cron restore cannot race an operator
+# drain between ownership checks and mutation.
+ARG NEMOCLAW_HERMES_DRAIN_CONTROL_CAS_PATCHER_SHA256=45a4bf047eb378c8e2752d7aee88a4b06fc29e8d1c5bb9b2a4dd933bed9b3960
+ARG NEMOCLAW_HERMES_DRAIN_CONTROL_SOURCE_SHA256=5436daa7807ce3e765dac084974af025c8ffd0515faca15ac455ade2595e4af7
+# hadolint ignore=DL4006
+RUN printf '%s  %s\n' \
+        "$NEMOCLAW_HERMES_DRAIN_CONTROL_CAS_PATCHER_SHA256" /opt/nemoclaw-hermes-config/patch-drain-control-cas.py \
+        "$NEMOCLAW_HERMES_DRAIN_CONTROL_SOURCE_SHA256" /opt/hermes/gateway/drain_control.py \
+    | sha256sum -c - \
+    || { echo "ERROR: Hermes drain-control CAS source identity mismatch" >&2; exit 1; }
+RUN /usr/bin/python3 -I \
+        /opt/nemoclaw-hermes-config/patch-drain-control-cas.py \
+        /opt/hermes/gateway/drain_control.py \
+    && grep -Fq 'def write_drain_request_if_absent(' /opt/hermes/gateway/drain_control.py \
+    && grep -Fq 'def clear_drain_request_if_principal(' /opt/hermes/gateway/drain_control.py
+
 # Hermes v0.19.0 creates its writable cron execution-history database below
 # the high-risk directory that contains cron job definitions. When Shields up
 # is active, NemoClaw seals that directory, so a managed gateway restart cannot
@@ -518,7 +537,7 @@ ARG NEMOCLAW_HERMES_CLI_ADAPTER_SHA256=989edf54a8c09c6efb348600a8aa2f264c0b71408
 ARG NEMOCLAW_HERMES_CLI_ADAPTER_VALIDATOR_SHA256=db4046e79e513eab67b069a8eda20167b8b65529cf26842531d2ad673c670330
 ARG NEMOCLAW_HERMES_VALIDATOR_SHA256=822c7e63d068c5d09f3291350771c1a42c9686f51bfa9bc9a1f41fbe15d163b1
 ARG NEMOCLAW_HERMES_TIRITH_FINALIZER_SHA256=a1e6b1c53ab297569abb87c29d15c294d729e46005bfd022136b4c447a791819
-ARG NEMOCLAW_HERMES_CRON_RESTORE_CONTROLLER_SHA256=68e1c7f108b7e6787bb50099704fd7b975b66cd6cf7c35dbf87ff9b800de288f
+ARG NEMOCLAW_HERMES_CRON_RESTORE_CONTROLLER_SHA256=fb89cab6d7b834fa01d51e77030bf382e1176f162e6b1fb78af34a13c834c0cc
 # hadolint ignore=DL4006
 RUN printf '%s  %s\n' \
         "$NEMOCLAW_HERMES_VALIDATOR_SHA256" /usr/local/lib/nemoclaw/validate-hermes-env-secret-boundary.py \

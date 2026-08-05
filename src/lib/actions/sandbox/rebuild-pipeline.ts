@@ -426,6 +426,12 @@ async function rebuildSandboxUnlocked(
                   : `  Hermes cron restore could not prove safe reactivation: ${rebuildFailureDetail(error)}`,
               );
               console.error(`  Backup is preserved at: ${backup.backupManifest?.backupPath}`);
+              console.error(
+                `  Correct the reported restore failure, then rerun \`nemohermes ${sandboxName} rebuild --yes\`.`,
+              );
+              console.error(
+                "  Do not remove /sandbox/.hermes/.drain_request.json manually; recreation revalidates cron state before dispatch resumes.",
+              );
               return bail("Hermes cron restore validation failed; dispatch was not re-enabled.");
             }
           })()

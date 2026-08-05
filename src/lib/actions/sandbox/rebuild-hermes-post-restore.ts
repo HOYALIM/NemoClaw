@@ -7,6 +7,7 @@ import * as processRecovery from "./process-recovery";
 const HERMES_CRON_CONTROL = "/usr/local/lib/nemoclaw/hermes-cron-restore-control.py";
 const HERMES_PYTHON = "/opt/hermes/.venv/bin/python";
 const RECEIPT_PREFIX = "NEMOCLAW_HERMES_CRON_RESTORE_V1:";
+const DRAIN_TOKEN_PATTERN = /^[A-Za-z0-9_-]{32}$/u;
 const BEGIN_TIMEOUT_MS = 70_000;
 const CONTROL_TIMEOUT_MS = 25_000;
 
@@ -119,7 +120,7 @@ function parseCronRestoreReceipt(
     typeof (payload as { drain_acquired?: unknown }).drain_acquired !== "boolean" ||
     ((payload as { drain_acquired: boolean }).drain_acquired
       ? typeof (payload as { drain_token?: unknown }).drain_token !== "string" ||
-        !(payload as { drain_token: string }).drain_token
+        !DRAIN_TOKEN_PATTERN.test((payload as { drain_token: string }).drain_token)
       : "drain_token" in payload)
   ) {
     throw new Error(`Hermes cron ${expectedAction} receipt failed validation`);
@@ -133,7 +134,7 @@ function runCronRestoreControl(
   identity?: HermesCronRestoreIdentity,
 ): HermesCronRestoreReceipt {
   const identityArgs = identity
-    ? ` --pid ${String(identity.pid)} --start-time ${String(identity.start_time)}${identity.drain_token ? ` --drain-token ${identity.drain_token}` : ""}`
+    ? ` --pid ${String(identity.pid)} --start-time ${String(identity.start_time)}${identity.drain_token ? ` --drain-token '${identity.drain_token}'` : ""}`
     : "";
   const command = `${HERMES_PYTHON} -I ${HERMES_CRON_CONTROL} ${action}${identityArgs}`;
   const result = processRecovery.executeSandboxExecCommand(

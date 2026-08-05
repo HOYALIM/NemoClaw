@@ -23,6 +23,7 @@ import {
 } from "./rebuild-hermes-post-restore";
 
 const RECEIPT_PREFIX = "NEMOCLAW_HERMES_CRON_RESTORE_V1:";
+const VALID_DRAIN_TOKEN = "a".repeat(32);
 
 function writeJson(target: string, payload: unknown): void {
   mkdirSync(path.dirname(target), { recursive: true });
@@ -34,7 +35,12 @@ function writeScript(target: string): void {
   writeFileSync(target, "print('ok')\n", { mode: 0o600 });
 }
 
-function receipt(action: string, pid = 41, startTime = 902, drainToken = "restore-token"): string {
+function receipt(
+  action: string,
+  pid = 41,
+  startTime = 902,
+  drainToken = VALID_DRAIN_TOKEN,
+): string {
   return `${RECEIPT_PREFIX}${JSON.stringify({
     version: 1,
     action,
@@ -134,17 +140,30 @@ describe("Hermes cron rebuild restore contract", () => {
     validateHermesCronRestore("alpha", identity);
     releaseHermesCronRestore("alpha", identity);
 
-    expect(identity).toEqual({ pid: 41, start_time: 902, drain_token: "restore-token" });
+    expect(identity).toEqual({ pid: 41, start_time: 902, drain_token: VALID_DRAIN_TOKEN });
     expect(processMocks.executeSandboxExecCommand).toHaveBeenCalledTimes(3);
     expect(processMocks.executeSandboxExecCommand.mock.calls[1]?.[1]).toContain(
       "validate --pid 41 --start-time 902",
     );
     expect(processMocks.executeSandboxExecCommand.mock.calls[1]?.[1]).toContain(
-      "--drain-token restore-token",
+      `--drain-token '${VALID_DRAIN_TOKEN}'`,
     );
     expect(processMocks.executeSandboxExecCommand.mock.calls[2]?.[1]).toContain(
       "release --pid 41 --start-time 902",
     );
+  });
+
+  it("rejects a shell-metacharacter drain token before building follow-up commands", () => {
+    processMocks.executeSandboxExecCommand.mockReturnValue({
+      status: 0,
+      stdout: receipt("begin", 41, 902, `${"a".repeat(31)};touch /tmp/injected`),
+      stderr: "",
+    });
+
+    expect(() => beginHermesCronRestore("alpha")).toThrow("receipt failed validation");
+    expect(processMocks.executeSandboxExecCommand).toHaveBeenCalledOnce();
+    expect(processMocks.executeSandboxExecCommand.mock.calls[0]?.[1]).toContain(" begin");
+    expect(processMocks.executeSandboxExecCommand.mock.calls[0]?.[1]).not.toContain("injected");
   });
 
   it("rejects a control receipt that changes gateway identity", () => {

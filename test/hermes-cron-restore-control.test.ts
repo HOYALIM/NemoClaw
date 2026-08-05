@@ -44,6 +44,17 @@ class DrainControl:
         self.marker = None
         return True
 
+    def write_drain_request_if_absent(self, **kwargs):
+        if self.marker is not None:
+            return None
+        return self.write_drain_request(**kwargs)
+
+    def clear_drain_request_if_principal(self, principal, **_kwargs):
+        if not isinstance(self.marker, dict) or self.marker.get("principal") != principal:
+            return False
+        self.marker = None
+        return True
+
 class Status:
     payload = {
         "pid": 41,
@@ -232,7 +243,7 @@ describe("Hermes in-sandbox cron restore validator", () => {
     const result = runLifecycle("replacement-operator");
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("drain ownership changed");
+    expect(result.stderr).toContain("drain ownership changed before release");
     expect(result.stdout).toContain("FINAL_MARKER:operator");
   });
 

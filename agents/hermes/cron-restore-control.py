@@ -253,19 +253,24 @@ def _require_owned_drain(drain_control: Any, drain_token: str) -> None:
         raise ControlError("Hermes cron restore drain ownership changed")
 
 
+def _drain_principal(drain_token: str) -> str:
+    return f"{DRAIN_PRINCIPAL_PREFIX}{drain_token}"
+
+
 def begin_drain() -> str | None:
     drain_control, status_module = _load_gateway_modules()
     _, pid, start_time = _gateway_identity(status_module)
-    drain_token: str | None = None
-    if not drain_control.drain_requested(home=HERMES_HOME):
-        drain_token = secrets.token_urlsafe(24)
-        marker = drain_control.write_drain_request(
-            principal=f"{DRAIN_PRINCIPAL_PREFIX}{drain_token}",
-            suppress_notification=True,
-            home=HERMES_HOME,
-        )
-        if marker.get("principal") != f"{DRAIN_PRINCIPAL_PREFIX}{drain_token}":
-            raise ControlError("Hermes cron restore drain ownership was not recorded")
+    candidate_token = secrets.token_urlsafe(24)
+    marker = drain_control.write_drain_request_if_absent(
+        principal=_drain_principal(candidate_token),
+        suppress_notification=True,
+        home=HERMES_HOME,
+    )
+    drain_token = candidate_token if marker is not None else None
+    if marker is not None and marker.get("principal") != _drain_principal(
+        candidate_token
+    ):
+        raise ControlError("Hermes cron restore drain ownership was not recorded")
     payload = _wait_for_state(
         status_module,
         pid=pid,
@@ -274,6 +279,8 @@ def begin_drain() -> str | None:
         require_idle=True,
         timeout_seconds=BEGIN_TIMEOUT_SECONDS,
     )
+    if drain_token is not None:
+        _require_owned_drain(drain_control, drain_token)
     _receipt(
         "begin",
         pid,
@@ -307,9 +314,10 @@ def release_drain(pid: int, start_time: int, drain_token: str | None) -> None:
     if drain_token is None:
         _receipt("release", pid, start_time, None, preserved_drain=True)
         return
-    _require_owned_drain(drain_control, drain_token)
-    if not drain_control.clear_drain_request(home=HERMES_HOME):
-        raise ControlError("Hermes cron restore drain marker could not be cleared")
+    if not drain_control.clear_drain_request_if_principal(
+        _drain_principal(drain_token), home=HERMES_HOME
+    ):
+        raise ControlError("Hermes cron restore drain ownership changed before release")
     try:
         payload = _wait_for_state(
             status_module,
@@ -322,12 +330,11 @@ def release_drain(pid: int, start_time: int, drain_token: str | None) -> None:
     except Exception:
         # Re-engage the same pinned marker contract before failing so dispatch
         # cannot resume without a verified running receipt.
-        if not drain_control.drain_requested(home=HERMES_HOME):
-            drain_control.write_drain_request(
-                principal=f"{DRAIN_PRINCIPAL_PREFIX}{drain_token}",
-                suppress_notification=True,
-                home=HERMES_HOME,
-            )
+        drain_control.write_drain_request_if_absent(
+            principal=_drain_principal(drain_token),
+            suppress_notification=True,
+            home=HERMES_HOME,
+        )
         raise
     _receipt(
         "release",
