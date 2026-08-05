@@ -11,6 +11,10 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as lifecycleLock from "../src/lib/state/mcp-lifecycle-lock";
+import {
+  createAsynchronousLockReplacementClock,
+  createSynchronousLockReplacementClock,
+} from "./helpers/mcp-lifecycle-lock-deadline-clock";
 import "./helpers/mcp-lifecycle-lock-properties";
 
 const requireDist = createRequire(import.meta.url);
@@ -757,67 +761,35 @@ const releasePath = process.argv[3];
 
   it("does not invoke the callback after the acquisition deadline in the asynchronous path (#7858)", async () => {
     const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
-    let now = 0;
-    let handoffScheduled = false;
+    const clock = createAsynchronousLockReplacementClock(lockPath, "async-replacement-token");
     const operation = vi.fn();
 
     await expect(
       lifecycleLock.withMcpLifecycleLock("alpha", operation, {
         ...options({ timeoutMs: 30 }),
-        monotonicNow: () => {
-          if (!handoffScheduled && fs.existsSync(lockPath)) {
-            handoffScheduled = true;
-            queueMicrotask(() => {
-              const owner = JSON.parse(fs.readFileSync(lockPath, "utf8"));
-              fs.unlinkSync(lockPath);
-              fs.writeFileSync(
-                lockPath,
-                `${JSON.stringify({ ...owner, token: "async-replacement-token" })}\n`,
-              );
-              now = 100;
-            });
-          }
-          return now;
-        },
+        monotonicNow: clock.monotonicNow,
       }),
     ).rejects.toThrow("Timed out waiting for the sandbox mutation lock");
 
-    expect(handoffScheduled).toBe(true);
+    expect(clock.handoffScheduled()).toBe(true);
     expect(operation).not.toHaveBeenCalled();
     expect(JSON.parse(fs.readFileSync(lockPath, "utf8")).token).toBe("async-replacement-token");
   });
 
   it("does not invoke the callback after the acquisition deadline in the synchronous path (#7858)", () => {
     const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
-    let acquisitionPublished = false;
-    let replacementPublished = false;
+    const clock = createSynchronousLockReplacementClock(lockPath, "sync-replacement-token");
     const operation = vi.fn();
 
     expect(() =>
       lifecycleLock.withMcpLifecycleLockSync("alpha", operation, {
         ...options({ timeoutMs: 30 }),
-        monotonicNow: () => {
-          if (!fs.existsSync(lockPath)) return 0;
-          if (!acquisitionPublished) {
-            acquisitionPublished = true;
-            return 0;
-          }
-          if (!replacementPublished) {
-            const owner = JSON.parse(fs.readFileSync(lockPath, "utf8"));
-            fs.unlinkSync(lockPath);
-            fs.writeFileSync(
-              lockPath,
-              `${JSON.stringify({ ...owner, token: "sync-replacement-token" })}\n`,
-            );
-            replacementPublished = true;
-          }
-          return 100;
-        },
+        monotonicNow: clock.monotonicNow,
       }),
     ).toThrow("Timed out waiting for sandbox mutation lock");
 
-    expect(acquisitionPublished).toBe(true);
-    expect(replacementPublished).toBe(true);
+    expect(clock.acquisitionPublished()).toBe(true);
+    expect(clock.replacementPublished()).toBe(true);
     expect(operation).not.toHaveBeenCalled();
     expect(JSON.parse(fs.readFileSync(lockPath, "utf8")).token).toBe("sync-replacement-token");
   });
