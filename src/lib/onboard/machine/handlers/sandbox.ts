@@ -18,6 +18,7 @@ import {
   webSearchProviderForConfig,
 } from "../../../inference/web-search";
 import type { SandboxMessagingPlan } from "../../../messaging/manifest";
+import type { RegistryMessagingAuthority } from "../../../messaging/plan-authority";
 import {
   decisionValue,
   isDecisionSelected,
@@ -45,17 +46,21 @@ import {
 import { getSandboxEntryInference } from "../../../state/registry-entry-view";
 import { toolDisclosureOrDefault } from "../../../tool-disclosure";
 import {
-  recordCheckpointBindings,
   recordCheckpointEffectGroup,
   recordCheckpointMessaging,
+  recordCheckpointProviderEffectGroup,
+  recordCheckpointProviderEffectGroups,
   recordCheckpointResourceProfile,
   recordCheckpointSandboxIdentity,
   recordCheckpointWebSearch,
 } from "../../checkpoint-record";
 import {
   checkpointProvesSandboxStepComplete,
+  observeProviderEffectFingerprint,
   planEffectGroupReplay,
   planSandboxCreateReplay,
+  requiredMessagingProviderBindings,
+  requiredWebSearchProviderType,
 } from "../../checkpoint-replay";
 import {
   bindingRevalidationGuidance,
@@ -101,19 +106,17 @@ import type { SandboxCreateIntent } from "../../types";
 import { branchTo, type OnboardStateTransitionResult } from "../result";
 import * as dcodeResume from "./sandbox-dcode-resume";
 import {
-  activeMessagingChannelsWithLifecycleAuthority,
   hasMessagingCredentialDrift,
-  messagingPlanWithLifecycleAuthority,
   reconcileReusedSandboxMessaging,
   reconcileSandboxMessaging,
-  registryMessagingPlanHasSelectionAuthority,
+  resolveMessagingPlanAuthority,
 } from "./sandbox-messaging";
 import {
-  applySandboxResumeDecision,
   decideSandboxResume,
   hasCompatibleEndpointReasoningDrift,
   hasHermesCompatibleAnthropicInferenceRouteDrift,
   mcpRegistryRemovalBlockReason,
+  replacesSameNameSandbox,
   resolveToolDisclosureResumeSignals,
   type SandboxResumeDecision,
 } from "./sandbox-resume";
@@ -128,41 +131,6 @@ function isAdvisoryPeerRouteDifference(
   );
 }
 
-function hasEffectiveMessagingCredentialDrift(
-  registryPlan: SandboxMessagingPlan | null,
-  session: Session | null,
-  env: NodeJS.ProcessEnv,
-): boolean {
-  const selectionPlan = messagingPlanWithLifecycleAuthority(
-    session?.messagingPlan ?? null,
-    registryPlan,
-  );
-  const credentialPlan = registryPlan ?? selectionPlan;
-  if (registryMessagingPlanHasSelectionAuthority(registryPlan)) {
-    return hasMessagingCredentialDrift(
-      credentialPlan,
-      env,
-      activeMessagingChannelsWithLifecycleAuthority(session?.messagingPlan ?? null, registryPlan),
-    );
-  }
-  const messagingDecision = session?.checkpoint?.messaging;
-  if (!messagingDecision || isDecisionUnset(messagingDecision)) {
-    return hasMessagingCredentialDrift(
-      credentialPlan,
-      env,
-      activeMessagingChannelsWithLifecycleAuthority(session?.messagingPlan ?? null, registryPlan),
-    );
-  }
-  if (!isDecisionSelected(messagingDecision)) {
-    return false;
-  }
-  const disabledChannels = new Set(messagingDecision.value.disabledChannels);
-  const activeChannels = messagingDecision.value.selectedChannels.filter(
-    (channelId) => !disabledChannels.has(channelId),
-  );
-  return hasMessagingCredentialDrift(credentialPlan, env, activeChannels);
-}
-
 function messagingCredentialBindingsChanged(
   baseline: SandboxMessagingPlan | null,
   reconciled: SandboxMessagingPlan | null,
@@ -171,6 +139,14 @@ function messagingCredentialBindingsChanged(
     fingerprintSandboxRecreateValue(baseline?.credentialBindings ?? []) !==
     fingerprintSandboxRecreateValue(reconciled?.credentialBindings ?? [])
   );
+}
+
+function shouldForceMessagingProviderRegistration(
+  credentialChanged: boolean,
+  baseline: SandboxMessagingPlan | null,
+  reconciled: SandboxMessagingPlan | null,
+): boolean {
+  return credentialChanged || messagingCredentialBindingsChanged(baseline, reconciled);
 }
 
 function shouldApplyCheckpointCrashRecovery(decision: SandboxResumeDecision): boolean {
@@ -270,7 +246,6 @@ export interface SandboxStateOptions<
     stringSetsEqual(left: string[], right: string[]): boolean;
     removeSandboxFromRegistry(sandboxName: string): SandboxRemovalReceipt | null;
     restoreSandboxRegistryEntryIfMissing(receipt: SandboxRemovalReceipt): boolean;
-    repairRecordedSandbox(sandboxName: string | null): void;
     ensureValidatedWebSearchCredential(config: WebSearchConfig): Promise<unknown>;
     isBackToSelection(value: unknown): boolean;
     configureWebSearch(
@@ -297,13 +272,16 @@ export interface SandboxStateOptions<
     readMessagingPlanFromEnv(): SandboxMessagingPlan | null;
     writePlanToEnv(plan: SandboxMessagingPlan): void;
     clearPlanEnv(): void;
-    getRegistrySandboxMessagingPlan(sandboxName: string): SandboxMessagingPlan | null;
+    getRegistrySandboxMessagingAuthority(
+      sandboxName: string,
+    ): import("../../../messaging/plan-authority").RegistryMessagingAuthority;
     providerMatchesGatewayCredential(name: string, type: string, credentialEnv: string): boolean;
     stageSandboxCredentialProviders(input: {
       sandboxName: string;
       enabledChannels: readonly string[];
       webSearchConfig: WebSearchConfig | null;
       agent: Agent;
+      requiredBindings: readonly CheckpointProviderBinding[];
     }): Promise<readonly CheckpointProviderBinding[]>;
     promptValidatedSandboxName(agent: Agent): Promise<string>;
     selectResourceProfileForSandbox(): Promise<ResourceProfile | null>;
@@ -438,6 +416,22 @@ function effectiveHermesToolGatewaysForWebSearch(
     : [...gateways];
 }
 
+function requiredWebSearchProviderBindings(
+  sandboxName: string,
+  webSearchConfig: SharedWebSearchConfig | null,
+  agent: { name?: string } | null,
+): CheckpointProviderBinding[] {
+  if (webSearchConfig?.fetchEnabled !== true) return [];
+  const provider = webSearchProviderForConfig(webSearchConfig);
+  return [
+    {
+      name: `${sandboxName}-${provider}-search`,
+      type: requiredWebSearchProviderType(provider, agent),
+      credentialEnv: webSearchEnvFor(provider),
+    },
+  ];
+}
+
 function hasResourceProfileEnvOverride(env: NodeJS.ProcessEnv): boolean {
   return Boolean(env.NEMOCLAW_RESOURCE_PROFILE || env.NEMOCLAW_CPU || env.NEMOCLAW_RAM);
 }
@@ -469,7 +463,6 @@ type SandboxRecreatePreparation = {
   readonly sourceEntry: ReplacedSandboxSourceEntry | null;
   readonly effectiveCreateIntent: CompleteSandboxCreateIntent;
   readonly repairMetadata: SandboxRecreateRepairMetadata | null;
-  readonly removalReceipt: SandboxRemovalReceipt | null;
 };
 
 function observabilityRequestValidationError(
@@ -492,6 +485,50 @@ function checkpointIdentityForResumeTarget(
   if (!isDecisionSelected(checkpoint.sandboxIdentity)) return null;
   const identity = checkpoint.sandboxIdentity.value;
   return identity.name === sandboxName && identity.agent === agentName ? identity : null;
+}
+
+type ProviderEffectGroupName = Extract<
+  CheckpointEffectGroupName,
+  "web_search_provider" | "messaging_providers"
+>;
+
+function canonicalCheckpointProviderReceiptNames(checkpoint: OnboardCheckpoint): string[] | null {
+  const fingerprints = (["web_search_provider", "messaging_providers"] as const)
+    .map((group) => checkpoint.effectGroups[group]?.fingerprint)
+    .filter((fingerprint): fingerprint is string => typeof fingerprint === "string");
+  const receiptNamesByGroup = fingerprints.map((fingerprint) =>
+    fingerprint.split(",").filter(Boolean),
+  );
+  const malformed = receiptNamesByGroup.some(
+    (names, index) =>
+      names.length === 0 ||
+      names.some((name) => name.trim() !== name) ||
+      names.join(",") !== fingerprints[index] ||
+      new Set(names).size !== names.length,
+  );
+  if (malformed) return null;
+  const receiptNames = receiptNamesByGroup.flat();
+  return new Set(receiptNames).size === receiptNames.length ? receiptNames : null;
+}
+
+function checkpointProviderReceiptNames(
+  checkpoint: OnboardCheckpoint,
+  group: ProviderEffectGroupName,
+): string[] {
+  return checkpoint.effectGroups[group]?.fingerprint.split(",") ?? [];
+}
+
+function checkpointProviderBindingKey(binding: CheckpointProviderBinding): string {
+  return JSON.stringify([binding.name, binding.type, binding.credentialEnv]);
+}
+
+function isCanonicalCheckpointProviderBinding(binding: CheckpointProviderBinding): boolean {
+  return (
+    Boolean(binding.name && binding.type && binding.credentialEnv) &&
+    binding.name.trim() === binding.name &&
+    binding.type.trim() === binding.type &&
+    binding.credentialEnv.trim() === binding.credentialEnv
+  );
 }
 
 class SandboxStateFlow<
@@ -598,6 +635,15 @@ class SandboxStateFlow<
     };
   }
 
+  private checkpointChangedExplicitSandboxName(
+    state: SandboxStepState<WebSearchConfig>,
+  ): SandboxStepState<WebSearchConfig> {
+    const explicitName = this.options.sandboxName;
+    const recordedName = state.session?.sandboxName;
+    if (!explicitName || !recordedName || recordedName === explicitName) return state;
+    return this.checkpointSandboxName(state, explicitName);
+  }
+
   private resolveResumeDecision(state: SandboxStepState<WebSearchConfig>): SandboxResumeDecision {
     const storedMessagingConfig = this.deps.getStoredMessagingChannelConfig(
       state.sandboxName,
@@ -617,9 +663,9 @@ class SandboxStateFlow<
     const registryEntry = state.sandboxName
       ? this.deps.getSandboxRegistryEntry(state.sandboxName)
       : null;
-    const registryMessagingPlan = state.sandboxName
-      ? this.deps.getRegistrySandboxMessagingPlan(state.sandboxName)
-      : null;
+    const messagingAuthority = state.sandboxName
+      ? this.resolveSandboxMessagingAuthority(state.sandboxName, state.session)
+      : { source: "none" as const, plan: null };
     const toolDisclosureSignals = resolveToolDisclosureResumeSignals(registryEntry, state.session);
     const sandboxReuseState = this.deps.getSandboxReuseState(state.sandboxName);
     const dcodeResumeSignals = dcodeResume.resolveSignals(
@@ -630,9 +676,8 @@ class SandboxStateFlow<
       this.dcodeAutoApprovalMode,
       this.deps,
     );
-    const messagingCredentialChanged = hasEffectiveMessagingCredentialDrift(
-      registryMessagingPlan,
-      state.session,
+    const messagingCredentialChanged = hasMessagingCredentialDrift(
+      messagingAuthority.plan,
       this.options.env,
     );
     const decision = decideSandboxResume({
@@ -719,7 +764,7 @@ class SandboxStateFlow<
 
     const bindingCheck = revalidateCheckpointBindings(
       checkpoint,
-      this.checkpointBindingAvailability(checkpoint),
+      this.checkpointBindingAvailabilityBeforeProviderReplay(checkpoint),
     );
     if (bindingCheck.status === "stale") return this.rejectStaleCheckpointBindings(bindingCheck);
 
@@ -773,6 +818,10 @@ class SandboxStateFlow<
   ): void {
     const recordedFingerprint = state.session?.checkpoint?.effectGroups.sandbox_create?.fingerprint;
     if (!recordedFingerprint) return;
+    // Older and reuse-backfilled receipts contain the stable create-input prefix.
+    // Accept that reviewed compatibility form while requiring an exact match
+    // when the receipt includes the complete durable create intent.
+    if (recordedFingerprint === this.currentSandboxCreateFingerprint(sandboxName)) return;
     if (recordedFingerprint !== this.currentSandboxCreateFingerprint(sandboxName, createIntent)) {
       this.rejectDriftedCheckpointFingerprint(sandboxName);
     }
@@ -786,19 +835,30 @@ class SandboxStateFlow<
     return this.deps.exitProcess(1);
   }
 
-  private providerBindingsLive(checkpoint: OnboardCheckpoint): boolean {
-    if (checkpoint.bindings.registeredProviders.length === 0) return false;
-    return checkpoint.bindings.registeredProviders.every((binding) =>
-      this.deps.providerMatchesGatewayCredential(binding.name, binding.type, binding.credentialEnv),
-    );
-  }
-
-  private checkpointBindingAvailability(checkpoint: OnboardCheckpoint): {
+  private checkpointBindingAvailability(
+    checkpoint: OnboardCheckpoint,
+    provisionallyAvailableBindings: readonly CheckpointProviderBinding[] = [],
+  ): {
     availableCredentialEnvs: ReadonlySet<string>;
     liveRegisteredProviders: ReadonlySet<string>;
   } {
-    const liveRegisteredBindings = checkpoint.bindings.registeredProviders.filter((binding) =>
-      this.deps.providerMatchesGatewayCredential(binding.name, binding.type, binding.credentialEnv),
+    const provisionallyAvailableBindingKeys = new Set(
+      provisionallyAvailableBindings.map(checkpointProviderBindingKey),
+    );
+    const bindingNameCounts = new Map<string, number>();
+    for (const binding of checkpoint.bindings.registeredProviders) {
+      bindingNameCounts.set(binding.name, (bindingNameCounts.get(binding.name) ?? 0) + 1);
+    }
+    const liveRegisteredBindings = checkpoint.bindings.registeredProviders.filter(
+      (binding) =>
+        bindingNameCounts.get(binding.name) === 1 &&
+        isCanonicalCheckpointProviderBinding(binding) &&
+        (provisionallyAvailableBindingKeys.has(checkpointProviderBindingKey(binding)) ||
+          this.deps.providerMatchesGatewayCredential(
+            binding.name,
+            binding.type,
+            binding.credentialEnv,
+          )),
     );
     return {
       availableCredentialEnvs: new Set(
@@ -807,13 +867,59 @@ class SandboxStateFlow<
             Boolean(this.options.env[name]?.trim()),
           ),
           // Provider setup deliberately scrubs raw credentials from process.env
-          // after registration. The exact live name/type/credential-key binding
+          // after registration. The exact live provider name, provider type, and credential key
           // is sufficient evidence for that scrubbed credential key (#7022).
           ...liveRegisteredBindings.map((binding) => binding.credentialEnv),
         ].filter(Boolean),
       ),
       liveRegisteredProviders: new Set(liveRegisteredBindings.map((binding) => binding.name)),
     };
+  }
+
+  private checkpointBindingAvailabilityBeforeProviderReplay(checkpoint: OnboardCheckpoint): {
+    availableCredentialEnvs: ReadonlySet<string>;
+    liveRegisteredProviders: ReadonlySet<string>;
+  } {
+    const replayableBindings = this.replayableCheckpointProviderBindings(checkpoint);
+    return this.checkpointBindingAvailability(checkpoint, replayableBindings);
+  }
+
+  private replayableCheckpointProviderBindings(
+    checkpoint: OnboardCheckpoint,
+  ): CheckpointProviderBinding[] {
+    const registeredBindings = checkpoint.bindings.registeredProviders;
+    const registeredByName = new Map(registeredBindings.map((binding) => [binding.name, binding]));
+    if (
+      registeredByName.size !== registeredBindings.length ||
+      registeredBindings.some((binding) => !isCanonicalCheckpointProviderBinding(binding))
+    ) {
+      return this.rejectInvalidCheckpointProviderBindings();
+    }
+
+    // Only canonical provider-effect receipts may defer their exact bindings
+    // to the reconciliation that runs before sandbox creation.
+    const receiptNames = canonicalCheckpointProviderReceiptNames(checkpoint);
+    if (!receiptNames) {
+      return this.rejectInvalidCheckpointProviderBindings();
+    }
+
+    const replayableBindings = receiptNames.map((name) => registeredByName.get(name));
+    if (
+      replayableBindings.some(
+        (binding) => !binding || !isCanonicalCheckpointProviderBinding(binding),
+      )
+    ) {
+      return this.rejectInvalidCheckpointProviderBindings();
+    }
+    return replayableBindings as CheckpointProviderBinding[];
+  }
+
+  private rejectInvalidCheckpointProviderBindings(): never {
+    this.deps.error("  A previous onboarding attempt recorded invalid provider bindings.");
+    this.deps.error(
+      `  Run ${this.deps.cliName()} onboard --fresh to discard the invalid checkpoint and start again.`,
+    );
+    return this.deps.exitProcess(1);
   }
 
   private rejectStaleCheckpointBindings(
@@ -920,11 +1026,12 @@ class SandboxStateFlow<
 
   private assertRegistryMessagingPlanUnchanged(
     sandboxName: string,
-    expectedPlan: SandboxMessagingPlan | null,
+    expectedAuthority: RegistryMessagingAuthority,
   ): void {
-    const currentPlan = this.deps.getRegistrySandboxMessagingPlan(sandboxName);
+    const currentAuthority = this.deps.getRegistrySandboxMessagingAuthority(sandboxName);
     if (
-      fingerprintSandboxRecreateValue(currentPlan) === fingerprintSandboxRecreateValue(expectedPlan)
+      fingerprintSandboxRecreateValue(currentAuthority) ===
+      fingerprintSandboxRecreateValue(expectedAuthority)
     ) {
       return;
     }
@@ -942,6 +1049,7 @@ class SandboxStateFlow<
     state: SandboxStepState<WebSearchConfig>,
   ): Promise<SandboxStepState<WebSearchConfig>> {
     return this.deps.withGatewayRouteMutationLock(this.options.gatewayName, async () => {
+      this.assertCheckpointBindingsStillLive(state);
       this.assertGatewayRouteCompatible(state.sandboxName);
       if (state.webSearchConfig) {
         const provider = webSearchProviderForConfig(
@@ -951,11 +1059,15 @@ class SandboxStateFlow<
           `  [resume] Reusing ${webSearchLabelFor(provider)} configuration already baked into the sandbox.`,
         );
       }
+      const messagingAuthority = this.resolveSandboxMessagingAuthority(
+        state.sandboxName,
+        state.session,
+      );
       const messaging = reconcileReusedSandboxMessaging(
-        state.session?.messagingPlan ?? null,
-        state.sandboxName ? this.deps.getRegistrySandboxMessagingPlan(state.sandboxName) : null,
+        messagingAuthority.plan,
         this.options.agent,
         this.deps,
+        state.session?.messagingPlan ?? null,
       );
       if (messaging.changed) {
         this.deps.updateSession((current) => {
@@ -1192,62 +1304,120 @@ class SandboxStateFlow<
     };
   }
 
+  private checkpointProviderEffectGroup(
+    state: SandboxStepState<WebSearchConfig>,
+    group: ProviderEffectGroupName,
+    registeredProviders: readonly CheckpointProviderBinding[],
+  ): SandboxStepState<WebSearchConfig> {
+    if (!this.resumesSandboxPrompts) return state;
+    const session = this.deps.updateSession((current) => {
+      recordCheckpointProviderEffectGroup(current, group, registeredProviders);
+      return current;
+    });
+    return { ...state, session };
+  }
+
   private async registerCompletedCredentialProviders(
     sandboxName: string,
     enabledChannels: readonly string[],
     webSearchConfig: WebSearchConfig | null,
-    group: CheckpointEffectGroupName,
+    requiredBindings: readonly CheckpointProviderBinding[],
+    group: ProviderEffectGroupName,
     checkpoint: OnboardCheckpoint | null,
     force = false,
   ): Promise<void> {
-    if (!this.resumesSandboxPrompts || (!webSearchConfig && enabledChannels.length === 0)) return;
+    if (
+      !this.resumesSandboxPrompts ||
+      (!webSearchConfig && enabledChannels.length === 0 && requiredBindings.length === 0)
+    ) {
+      return;
+    }
+    const requiredBindingsByName = new Map(
+      requiredBindings.map((binding) => [binding.name, binding]),
+    );
+    if (
+      requiredBindingsByName.size !== requiredBindings.length ||
+      requiredBindings.some((binding) => !binding.name || !binding.type || !binding.credentialEnv)
+    ) {
+      this.deps.error("  Provider setup produced conflicting credential bindings.");
+      return this.deps.exitProcess(1);
+    }
     if (
       !force &&
       checkpoint &&
-      planEffectGroupReplay(checkpoint, group, this.providerBindingsLive(checkpoint)).action ===
-        "skip"
+      planEffectGroupReplay(
+        checkpoint,
+        group,
+        observeProviderEffectFingerprint(checkpoint, group, requiredBindings, (binding) =>
+          this.deps.providerMatchesGatewayCredential(
+            binding.name,
+            binding.type,
+            binding.credentialEnv,
+          ),
+        ),
+      ).action === "skip"
     ) {
       return;
     }
     const registeredProviders = await this.deps.withGatewayRouteMutationLock(
       this.options.gatewayName,
-      () =>
-        this.deps.stageSandboxCredentialProviders({
+      async () => {
+        const staged = await this.deps.stageSandboxCredentialProviders({
           sandboxName,
           enabledChannels,
           webSearchConfig,
           agent: this.options.agent,
-        }),
+          requiredBindings,
+        });
+        const stagedProviderNames = new Set<string>();
+        for (const binding of staged) {
+          const required = requiredBindingsByName.get(binding.name);
+          if (
+            stagedProviderNames.has(binding.name) ||
+            !required ||
+            binding.type !== required.type ||
+            binding.credentialEnv !== required.credentialEnv
+          ) {
+            this.deps.error("  Provider setup returned unexpected credential bindings.");
+            return this.deps.exitProcess(1);
+          }
+          stagedProviderNames.add(binding.name);
+        }
+        const allRequiredBindingsLive = requiredBindings.every((binding) =>
+          this.deps.providerMatchesGatewayCredential(
+            binding.name,
+            binding.type,
+            binding.credentialEnv,
+          ),
+        );
+        if (!allRequiredBindingsLive) {
+          this.deps.error("  OpenShell did not retain the selected credential bindings.");
+          this.deps.error("  Re-run onboarding with the required credentials available.");
+          return this.deps.exitProcess(1);
+        }
+        return staged;
+      },
     );
     if (registeredProviders.length > 0) {
       this.deps.note("  ✓ Registered selected credentials with OpenShell for resume.");
-      this.deps.updateSession((current) => {
-        recordCheckpointBindings(current, {
-          registeredProviders,
-        });
-        recordCheckpointEffectGroup(
-          current,
-          group,
-          registeredProviders.map((binding) => binding.name).join(","),
-        );
-        return current;
-      });
     }
   }
 
   private async stageMessagingProvidersForCreate(
     sandboxName: string,
     state: SandboxStepState<WebSearchConfig>,
-    registryPlanSnapshot: SandboxMessagingPlan | null,
+    requiredBindings: readonly CheckpointProviderBinding[],
+    registryAuthoritySnapshot: RegistryMessagingAuthority,
     force: boolean,
   ): Promise<void> {
     if (state.selectedMessagingChannels.length === 0) return;
     const stage = async () => {
-      this.assertRegistryMessagingPlanUnchanged(sandboxName, registryPlanSnapshot);
+      this.assertRegistryMessagingPlanUnchanged(sandboxName, registryAuthoritySnapshot);
       await this.registerCompletedCredentialProviders(
         sandboxName,
         state.selectedMessagingChannels,
         null,
+        requiredBindings,
         "messaging_providers",
         state.session?.checkpoint ?? null,
         force,
@@ -1440,12 +1610,17 @@ class SandboxStateFlow<
         ? { repair: "recorded-sandbox-cleanup", sandboxName: state.sandboxName }
         : null;
     if (!transaction) {
+      if (replacesSameNameSandbox(decision)) {
+        throw new Error(
+          `Cannot replace same-name sandbox '${requestedSandboxName}': no recreate transaction proves ownership of the source sandbox and its registry row.`,
+        );
+      }
+      if (decision.kind === "recreate") this.deps.note(decision.note);
       return {
         transaction,
         sourceEntry: null,
         effectiveCreateIntent: createIntent,
         repairMetadata,
-        removalReceipt: await applySandboxResumeDecision(decision, state.sandboxName, this.deps),
       };
     }
     const effectiveCreateIntent: CompleteSandboxCreateIntent = {
@@ -1473,7 +1648,6 @@ class SandboxStateFlow<
       sourceEntry: sandboxRecreateSourceWorkloadEntry(transaction) ?? sourceEntry,
       effectiveCreateIntent,
       repairMetadata,
-      removalReceipt: null,
     };
   }
 
@@ -1567,7 +1741,7 @@ class SandboxStateFlow<
     initialState: SandboxStepState<WebSearchConfig>,
     requestedSandboxName: string,
     messagingPlan: SandboxMessagingPlan | null,
-    registryMessagingPlanSnapshot: SandboxMessagingPlan | null,
+    registryMessagingAuthoritySnapshot: RegistryMessagingAuthority,
     decision: SandboxCreationDecision,
   ): Promise<SandboxStepState<WebSearchConfig>> {
     const resourceSelection = await this.resolveResourceProfile(initialState);
@@ -1582,7 +1756,7 @@ class SandboxStateFlow<
     const createAndRecord = async (): Promise<SandboxStepState<WebSearchConfig>> => {
       this.assertRegistryMessagingPlanUnchanged(
         requestedSandboxName,
-        registryMessagingPlanSnapshot,
+        registryMessagingAuthoritySnapshot,
       );
       // Build the complete create plan after acquiring the sandbox lock. A
       // baseline transaction may have started while onboarding waited, and a
@@ -1619,15 +1793,8 @@ class SandboxStateFlow<
         requestedSandboxName,
         createIntent.resolved.policy.options.baselineExclusions,
       );
-      const { transaction, sourceEntry, effectiveCreateIntent, repairMetadata, removalReceipt } =
+      const { transaction, sourceEntry, effectiveCreateIntent, repairMetadata } =
         await this.prepareSandboxRecreate(state, requestedSandboxName, createIntent, decision);
-      let rollbackArmed = removalReceipt !== null;
-      const restoreRemovedRegistryEntry = () => {
-        if (!rollbackArmed || !removalReceipt) return;
-        rollbackArmed = false;
-        this.deps.restoreSandboxRegistryEntryIfMissing(removalReceipt);
-      };
-      if (rollbackArmed) process.once("exit", restoreRemovedRegistryEntry);
 
       let sandboxName: string;
       try {
@@ -1661,13 +1828,7 @@ class SandboxStateFlow<
               effectiveCreateIntent,
             ),
         );
-        // createSandbox returns only after the replacement row is registered.
-        // From this point the receipt must not overwrite that newer entry.
-        rollbackArmed = false;
-        process.removeListener("exit", restoreRemovedRegistryEntry);
       } catch (error) {
-        restoreRemovedRegistryEntry();
-        process.removeListener("exit", restoreRemovedRegistryEntry);
         await this.recordSandboxRecreateRepairFailure(transaction, repairMetadata, error);
         throw error;
       }
@@ -1729,6 +1890,62 @@ class SandboxStateFlow<
       : withDashboardAndGatewayLocks();
   }
 
+  private resolveSandboxMessagingAuthority(
+    sandboxName: string | null,
+    session: Session | null,
+  ): ReturnType<typeof resolveMessagingPlanAuthority> {
+    const registry = sandboxName
+      ? this.deps.getRegistrySandboxMessagingAuthority(sandboxName)
+      : { authoritative: false as const, plan: null };
+    return resolveMessagingPlanAuthority({
+      sandboxName: sandboxName ?? "",
+      registry,
+      stagedPlan: registry.authoritative ? null : this.deps.readMessagingPlanFromEnv(),
+      sessionPlan: session?.messagingPlan ?? null,
+    });
+  }
+
+  private assertMessagingPlanTargetsSandbox(sandboxName: string, session: Session | null): void {
+    this.resolveSandboxMessagingAuthority(sandboxName, session);
+  }
+
+  private assertExistingMessagingPlanTargetsSandbox(
+    state: SandboxStepState<WebSearchConfig>,
+  ): void {
+    const sandboxName = state.sandboxName;
+    if (!sandboxName || state.session?.sandboxName !== sandboxName) return;
+    this.assertMessagingPlanTargetsSandbox(sandboxName, state.session);
+  }
+
+  private validateProviderBindingsForRegistration(
+    checkpoint: OnboardCheckpoint | null,
+    webSearchBindings: readonly CheckpointProviderBinding[],
+    messagingBindings: readonly CheckpointProviderBinding[],
+  ): void {
+    const bindings = [...webSearchBindings, ...messagingBindings];
+    const providerNames = new Set(bindings.map((binding) => binding.name));
+    if (
+      providerNames.size !== bindings.length ||
+      bindings.some((binding) => !isCanonicalCheckpointProviderBinding(binding))
+    ) {
+      this.deps.error("  Provider setup produced conflicting credential bindings.");
+      return this.deps.exitProcess(1);
+    }
+    if (!checkpoint) return;
+    const recordedWebSearchNames = new Set(
+      checkpointProviderReceiptNames(checkpoint, "web_search_provider"),
+    );
+    const recordedMessagingNames = new Set(
+      checkpointProviderReceiptNames(checkpoint, "messaging_providers"),
+    );
+    if (
+      webSearchBindings.some((binding) => recordedMessagingNames.has(binding.name)) ||
+      messagingBindings.some((binding) => recordedWebSearchNames.has(binding.name))
+    ) {
+      return this.rejectInvalidCheckpointProviderBindings();
+    }
+  }
+
   private async recreateSandbox(
     state: SandboxStepState<WebSearchConfig>,
     decision: SandboxCreationDecision,
@@ -1743,6 +1960,7 @@ class SandboxStateFlow<
       this.deps.error(mcpBlockReason);
       return this.deps.exitProcess(1);
     }
+    this.assertExistingMessagingPlanTargetsSandbox(state);
     let nextState = state.sandboxName
       ? this.checkpointSandboxName(state, state.sandboxName)
       : state;
@@ -1767,14 +1985,15 @@ class SandboxStateFlow<
       },
       webSearchConfig,
     );
-    await this.registerCompletedCredentialProviders(
+    this.assertMessagingPlanTargetsSandbox(requestedSandboxName, nextState.session);
+    const webSearchProviderBindings = requiredWebSearchProviderBindings(
       requestedSandboxName,
-      [],
-      nextState.webSearchConfig,
-      "web_search_provider",
-      nextState.session?.checkpoint ?? null,
+      nextState.webSearchConfig as unknown as SharedWebSearchConfig | null,
+      this.options.agent as { name?: string } | null,
     );
-    const registryMessagingPlan = this.deps.getRegistrySandboxMessagingPlan(requestedSandboxName);
+    const registryMessagingAuthority =
+      this.deps.getRegistrySandboxMessagingAuthority(requestedSandboxName);
+    const registryMessagingPlan = registryMessagingAuthority.plan;
     const messagingCredentialBaseline =
       registryMessagingPlan ?? nextState.session?.messagingPlan ?? null;
     const messagingCredentialChanged = decision.validateMessagingCredentialsBeforeMutation === true;
@@ -1784,24 +2003,65 @@ class SandboxStateFlow<
       sandboxName: requestedSandboxName,
       agent: this.options.agent,
       env: this.options.env,
-      registryPlanSnapshot: registryMessagingPlan,
-      credentialValidationPlan: messagingCredentialChanged ? registryMessagingPlan : null,
+      registryAuthoritySnapshot: registryMessagingAuthority,
+      credentialValidationPlan: messagingCredentialChanged ? messagingCredentialBaseline : null,
       forceCredentialValidation: messagingCredentialChanged,
       deps: this.deps,
     });
+    const messagingProviderBindings = requiredMessagingProviderBindings(
+      requestedSandboxName,
+      messaging.plan,
+    );
+    this.validateProviderBindingsForRegistration(
+      nextState.session?.checkpoint ?? null,
+      webSearchProviderBindings,
+      messagingProviderBindings,
+    );
     nextState = this.checkpointMessaging(nextState, messaging);
+    await this.registerCompletedCredentialProviders(
+      requestedSandboxName,
+      [],
+      nextState.webSearchConfig,
+      webSearchProviderBindings,
+      "web_search_provider",
+      nextState.session?.checkpoint ?? null,
+    );
+    nextState = this.checkpointProviderEffectGroup(
+      nextState,
+      "web_search_provider",
+      webSearchProviderBindings,
+    );
     await this.stageMessagingProvidersForCreate(
       requestedSandboxName,
       nextState,
-      registryMessagingPlan,
-      messagingCredentialChanged ||
-        messagingCredentialBindingsChanged(messagingCredentialBaseline, messaging.plan),
+      messagingProviderBindings,
+      registryMessagingAuthority,
+      shouldForceMessagingProviderRegistration(
+        messagingCredentialChanged,
+        messagingCredentialBaseline,
+        messaging.plan,
+      ),
     );
+    nextState = this.checkpointProviderEffectGroup(
+      nextState,
+      "messaging_providers",
+      messagingProviderBindings,
+    );
+    if (this.resumesSandboxPrompts) {
+      const session = this.deps.updateSession((current) => {
+        recordCheckpointProviderEffectGroups(current, {
+          webSearch: webSearchProviderBindings,
+          messaging: messagingProviderBindings,
+        });
+        return current;
+      });
+      nextState = { ...nextState, session };
+    }
     return this.createAndRecordSandbox(
       nextState,
       requestedSandboxName,
       messaging.plan,
-      registryMessagingPlan,
+      registryMessagingAuthority,
       decision,
     );
   }
@@ -1843,12 +2103,17 @@ class SandboxStateFlow<
   }
 
   async run(): Promise<SandboxStateResult<WebSearchConfig>> {
+    if (this.options.session?.checkpoint) {
+      this.replayableCheckpointProviderBindings(this.options.session.checkpoint);
+    }
     this.dcodeAutoApprovalMode = dcodeResume.resolveAutoApprovalMode(
       this.options,
       this.options.sandboxName,
       this.deps,
     );
-    const initialState = this.applyObservabilityRequest(this.prepareWebSearchSupport());
+    const initialState = this.checkpointChangedExplicitSandboxName(
+      this.applyObservabilityRequest(this.prepareWebSearchSupport()),
+    );
     const decision = this.resolveResumeDecision(initialState);
     const completedState =
       decision.kind === "reuse"

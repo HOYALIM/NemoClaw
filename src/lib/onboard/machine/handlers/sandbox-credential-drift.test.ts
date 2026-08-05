@@ -1,18 +1,18 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MessagingSetupApplier } from "../../../messaging/applier/setup-applier";
 import { hashCredential } from "../../../security/credential-hash";
+import { decisionSelected } from "../../../state/onboard-checkpoint-decision";
 import { createSession } from "../../../state/onboard-session";
 import {
-  recordCheckpointBindings,
   recordCheckpointEffectGroup,
   recordCheckpointMessaging,
+  recordCheckpointProviderEffectGroup,
   recordCheckpointSandboxIdentity,
 } from "../../checkpoint-record";
 import { detectMessagingChannelsFromEnv } from "../../messaging-channel-setup";
@@ -27,17 +27,26 @@ import {
 // Messaging discovery is mocked at import time to isolate credential-drift resume behavior.
 vi.mock("../../messaging-channel-setup", () => ({
   detectMessagingChannelsFromEnv: vi.fn(() => []),
+  readMessagingPlanFromEnv: vi.fn(() => null),
+  getRegistrySandboxMessagingAuthority: vi.fn(() => ({
+    authoritative: false,
+    plan: null,
+  })),
 }));
 
 const detectMessagingChannelsFromEnvMock = vi.mocked(detectMessagingChannelsFromEnv);
-let registryHome = "";
+const registryEnvironment = vi.hoisted(() => {
+  const previousHome = process.env.HOME;
+  const registryHome = `${process.env.TMPDIR ?? "/tmp"}/nemoclaw-credential-drift-${process.pid}-${Date.now()}`;
+  process.env.HOME = registryHome;
+  return { previousHome, registryHome };
+});
+const { registryHome } = registryEnvironment;
 let registry: typeof import("../../../state/registry");
 let handleSandboxState: typeof import("./sandbox").handleSandboxState;
 let persistManifestChannelDisabledPlan: typeof import("../../../actions/sandbox/policy-channel").persistManifestChannelDisabledPlan;
 
 beforeAll(async () => {
-  registryHome = await mkdtemp(path.join(os.tmpdir(), "nemoclaw-credential-drift-"));
-  vi.stubEnv("HOME", registryHome);
   ({ handleSandboxState } = await import("./sandbox"));
   ({ persistManifestChannelDisabledPlan } = await import(
     "../../../actions/sandbox/policy-channel"
@@ -50,7 +59,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  vi.unstubAllEnvs();
+  if (registryEnvironment.previousHome === undefined) delete process.env.HOME;
+  else process.env.HOME = registryEnvironment.previousHome;
   await rm(registryHome, { recursive: true, force: true });
 });
 
@@ -73,6 +83,39 @@ describe("sandbox messaging credential drift", () => {
     );
     const session = createSession({ sandboxName: "saved", messagingPlan: previousPlan });
     session.steps.sandbox.status = "complete";
+    session.machine = { ...session.machine, state: "agent_setup" };
+    recordCheckpointSandboxIdentity(session, "saved", "openclaw");
+    recordCheckpointMessaging(session, previousPlan);
+    recordCheckpointEffectGroup(
+      session,
+      "sandbox_create",
+      [
+        "saved",
+        "default",
+        "provider",
+        "model",
+        "openai-completions",
+        "",
+        JSON.stringify({ sandboxGpuEnabled: false, mode: "0" }),
+        "",
+      ].join("|"),
+    );
+    recordCheckpointEffectGroup(session, "sandbox_register", "saved");
+    if (session.checkpoint) {
+      session.checkpoint = {
+        ...session.checkpoint,
+        gatewayAuthority: decisionSelected({
+          gatewayName: "nemoclaw",
+          gatewayPort: 18789,
+          mode: "nemoclaw-managed",
+          source: "standalone",
+          endpoint: null,
+          stateDir: null,
+          supervisor: null,
+          requiredCapabilities: [],
+        }),
+      };
+    }
     registry.registerSandbox({
       name: "saved",
       messaging: { schemaVersion: 1, plan: previousPlan },
@@ -83,15 +126,20 @@ describe("sandbox messaging credential drift", () => {
       MessagingSetupApplier.readPlanFromEnv({ env: messagingEnv });
     const writePlanToEnv = (plan: typeof replacementPlan) =>
       MessagingSetupApplier.writePlanToEnv(plan, { env: messagingEnv });
-    const { deps, calls, getSession } = createDeps({
-      getSandboxReuseState: () => "ready",
-      getRegistrySandboxMessagingPlan: (name) =>
-        registry.getHydratedMessagingPlanFromEntry(registry.getSandbox(name)),
-      getRecordedMessagingChannelsForResume: () => null,
-      readMessagingPlanFromEnv,
-      writePlanToEnv,
-      listRegistrySandboxes: registry.listSandboxes,
-    });
+    const { deps, calls, getSession } = createDeps(
+      {
+        getSandboxReuseState: () => "ready",
+        getRegistrySandboxMessagingAuthority: (name) => ({
+          authoritative: true,
+          plan: registry.getHydratedMessagingPlanFromEntry(registry.getSandbox(name)),
+        }),
+        getRecordedMessagingChannelsForResume: () => null,
+        readMessagingPlanFromEnv,
+        writePlanToEnv,
+        listRegistrySandboxes: registry.listSandboxes,
+      },
+      session,
+    );
     calls.removeSandbox.mockImplementation(() => registry.removeSandboxWithReceipt("saved"));
     calls.setupMessaging.mockImplementation(async () => {
       writePlanToEnv(replacementPlan);
@@ -119,8 +167,11 @@ describe("sandbox messaging credential drift", () => {
       "  [resume] Messaging credential changed; validating and recreating sandbox.",
     );
     expect(calls.setupMessaging).toHaveBeenCalled();
-    expect(calls.removeSandbox).toHaveBeenCalledWith("saved");
+    expect(calls.removeSandbox).not.toHaveBeenCalled();
     expect(calls.createSandbox).toHaveBeenCalled();
+    expect(calls.setupMessaging.mock.invocationCallOrder[0]).toBeLessThan(
+      calls.createSandbox.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
     expect(getSession().messagingPlan?.credentialBindings[0]?.credentialHash).toBe(
       hashCredential(replacementToken),
     );
@@ -152,23 +203,23 @@ describe("sandbox messaging credential drift", () => {
     const session = createSession({ sandboxName: "saved", messagingPlan: previousPlan });
     session.steps.sandbox.status = "complete";
     recordCheckpointMessaging(session, previousPlan);
-    recordCheckpointBindings(session, {
-      registeredProviders: [
-        {
-          name: "saved-telegram-bridge",
-          type: "generic",
-          credentialEnv: "TELEGRAM_BOT_TOKEN",
-        },
-      ],
-    });
-    recordCheckpointEffectGroup(session, "messaging_providers", "saved-telegram-bridge");
+    recordCheckpointProviderEffectGroup(session, "messaging_providers", [
+      {
+        name: "saved-telegram-bridge",
+        type: "generic",
+        credentialEnv: "TELEGRAM_BOT_TOKEN",
+      },
+    ]);
     const messagingEnv: NodeJS.ProcessEnv = {};
     const writePlanToEnv = (plan: typeof replacementPlan) =>
       MessagingSetupApplier.writePlanToEnv(plan, { env: messagingEnv });
     const { deps, calls } = createDeps(
       {
         getSandboxReuseState: () => "ready",
-        getRegistrySandboxMessagingPlan: () => previousPlan,
+        getRegistrySandboxMessagingAuthority: () => ({
+          authoritative: true,
+          plan: previousPlan,
+        }),
         getRecordedMessagingChannelsForResume: () => null,
         readMessagingPlanFromEnv: () =>
           MessagingSetupApplier.readPlanFromEnv({ env: messagingEnv }),
@@ -208,19 +259,16 @@ describe("sandbox messaging credential drift", () => {
     );
     const session = createSession({ sandboxName: "saved", messagingPlan: previousPlan });
     recordCheckpointMessaging(session, previousPlan);
-    recordCheckpointBindings(session, {
-      registeredProviders: [
-        {
-          name: "saved-telegram-bridge",
-          type: "generic",
-          credentialEnv: "TELEGRAM_BOT_TOKEN",
-        },
-      ],
-    });
-    recordCheckpointEffectGroup(session, "messaging_providers", "saved-telegram-bridge");
+    recordCheckpointProviderEffectGroup(session, "messaging_providers", [
+      {
+        name: "saved-telegram-bridge",
+        type: "generic",
+        credentialEnv: "TELEGRAM_BOT_TOKEN",
+      },
+    ]);
     const { deps, calls } = createDeps(
       {
-        getRegistrySandboxMessagingPlan: () => null,
+        getRegistrySandboxMessagingAuthority: () => ({ authoritative: false, plan: null }),
         readMessagingPlanFromEnv: () => replacementPlan,
         providerMatchesGatewayCredential: () => true,
       },
@@ -252,7 +300,10 @@ describe("sandbox messaging credential drift", () => {
     const { deps, calls } = createDeps(
       {
         getSandboxReuseState: () => "ready",
-        getRegistrySandboxMessagingPlan: () => previousPlan,
+        getRegistrySandboxMessagingAuthority: () => ({
+          authoritative: true,
+          plan: previousPlan,
+        }),
         getRecordedMessagingChannelsForResume: () => null,
       },
       session,
@@ -296,7 +347,10 @@ describe("sandbox messaging credential drift", () => {
     const { deps, calls } = createDeps(
       {
         getSandboxReuseState: () => "ready",
-        getRegistrySandboxMessagingPlan: () => previousPlan,
+        getRegistrySandboxMessagingAuthority: () => ({
+          authoritative: true,
+          plan: previousPlan,
+        }),
         getRecordedMessagingChannelsForResume: () => null,
       },
       session,
@@ -359,7 +413,10 @@ describe("sandbox messaging credential drift", () => {
     const { deps, calls } = createDeps(
       {
         getSandboxReuseState: () => "ready",
-        getRegistrySandboxMessagingPlan: () => previousPlan,
+        getRegistrySandboxMessagingAuthority: () => ({
+          authoritative: true,
+          plan: previousPlan,
+        }),
         getRecordedMessagingChannelsForResume: () => null,
       },
       session,
@@ -400,7 +457,10 @@ describe("sandbox messaging credential drift", () => {
     session.steps.sandbox.status = "complete";
     const { deps, calls } = createDeps({
       getSandboxReuseState: () => "ready",
-      getRegistrySandboxMessagingPlan: () => registryPlan,
+      getRegistrySandboxMessagingAuthority: () => ({
+        authoritative: true,
+        plan: registryPlan,
+      }),
       getRecordedMessagingChannelsForResume: () => null,
     });
     calls.setupMessaging.mockResolvedValueOnce([]);
@@ -423,13 +483,9 @@ describe("sandbox messaging credential drift", () => {
     expect(calls.createSandbox).not.toHaveBeenCalled();
   });
 
-  it("keeps an explicitly disabled checkpoint channel disabled when registry credentials drift (#3631)", async () => {
+  it("keeps an explicitly disabled registry channel disabled when credentials change (#3631)", async () => {
     const previousToken = "123456:previous-telegram-token";
     const replacementToken = "123456:replacement-telegram-token";
-    const registryPlan = withTelegramCredentialHash(
-      makeMinimalPlan("saved", "openclaw", ["telegram"]),
-      hashCredential(previousToken),
-    );
     const disabledPlan = withTelegramCredentialHash(
       makeMinimalPlan("saved", "openclaw", ["telegram"], ["telegram"]),
       hashCredential(previousToken),
@@ -442,7 +498,10 @@ describe("sandbox messaging credential drift", () => {
     const { deps, calls, getSession } = createDeps(
       {
         getSandboxReuseState: () => "ready",
-        getRegistrySandboxMessagingPlan: () => registryPlan,
+        getRegistrySandboxMessagingAuthority: () => ({
+          authoritative: true,
+          plan: disabledPlan,
+        }),
         getRecordedMessagingChannelsForResume: () => null,
       },
       session,
@@ -487,8 +546,10 @@ describe("sandbox messaging credential drift", () => {
     const { deps, calls, getSession } = createDeps(
       {
         getSandboxReuseState: () => "ready",
-        getRegistrySandboxMessagingPlan: (name) =>
-          registry.getHydratedMessagingPlanFromEntry(registry.getSandbox(name)),
+        getRegistrySandboxMessagingAuthority: (name) => ({
+          authoritative: true,
+          plan: registry.getHydratedMessagingPlanFromEntry(registry.getSandbox(name)),
+        }),
         getRecordedMessagingChannelsForResume: () => null,
       },
       session,
@@ -538,8 +599,10 @@ describe("sandbox messaging credential drift", () => {
     const { deps, calls, getSession } = createDeps(
       {
         getSandboxReuseState: () => "ready",
-        getRegistrySandboxMessagingPlan: (name) =>
-          registry.getHydratedMessagingPlanFromEntry(registry.getSandbox(name)),
+        getRegistrySandboxMessagingAuthority: (name) => ({
+          authoritative: true,
+          plan: registry.getHydratedMessagingPlanFromEntry(registry.getSandbox(name)),
+        }),
         getRecordedMessagingChannelsForResume: () => null,
       },
       session,
@@ -586,8 +649,10 @@ describe("sandbox messaging credential drift", () => {
     const { deps, calls, getSession } = createDeps(
       {
         getSandboxReuseState: () => "ready",
-        getRegistrySandboxMessagingPlan: (name) =>
-          registry.getHydratedMessagingPlanFromEntry(registry.getSandbox(name)),
+        getRegistrySandboxMessagingAuthority: (name) => ({
+          authoritative: true,
+          plan: registry.getHydratedMessagingPlanFromEntry(registry.getSandbox(name)),
+        }),
         getRecordedMessagingChannelsForResume: () => null,
       },
       session,
@@ -622,7 +687,10 @@ describe("sandbox messaging credential drift", () => {
     };
     let sandboxLockHeld = false;
     const { deps, calls } = createDeps({
-      getRegistrySandboxMessagingPlan: () => (sandboxLockHeld ? stoppedPlan : activePlan),
+      getRegistrySandboxMessagingAuthority: () => ({
+        authoritative: true,
+        plan: sandboxLockHeld ? stoppedPlan : activePlan,
+      }),
       withSandboxMutationLock: async (sandboxName, operation) => {
         expect(sandboxName).toBe("my-assistant");
         sandboxLockHeld = true;

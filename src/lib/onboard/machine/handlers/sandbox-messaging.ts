@@ -9,11 +9,17 @@ import {
 } from "../../../messaging";
 import { mergeSandboxMessagingPlans } from "../../../messaging/applier/host-state-applier";
 import type { MessagingAgentId, SandboxMessagingPlan } from "../../../messaging/manifest";
+import {
+  type RegistryMessagingAuthority,
+  resolveMessagingPlanAuthority,
+} from "../../../messaging/plan-authority";
 import { hashCredential } from "../../../security/credential-hash";
 import { isDecisionSelected, isDecisionUnset } from "../../../state/onboard-checkpoint-decision";
 import type { Session } from "../../../state/onboard-session";
 import { detectMessagingChannelsFromEnv } from "../../messaging-channel-setup";
 import { getActiveChannelsFromPlan, getChannelsFromPlan } from "../../messaging-plan-session";
+
+export { resolveMessagingPlanAuthority };
 
 function sameChannelSet(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false;
@@ -42,7 +48,7 @@ export interface SandboxMessagingDeps<Agent> {
   readMessagingPlanFromEnv(): SandboxMessagingPlan | null;
   writePlanToEnv(plan: SandboxMessagingPlan): void;
   clearPlanEnv(): void;
-  getRegistrySandboxMessagingPlan(sandboxName: string): SandboxMessagingPlan | null;
+  getRegistrySandboxMessagingAuthority(sandboxName: string): RegistryMessagingAuthority;
   providerMatchesGatewayCredential(name: string, type: string, credentialEnv: string): boolean;
 }
 
@@ -57,39 +63,22 @@ export interface ReconcileSandboxMessagingOptions<Agent> {
   readonly sandboxName: string;
   readonly agent: Agent;
   readonly env?: NodeJS.ProcessEnv;
-  readonly registryPlanSnapshot?: SandboxMessagingPlan | null;
+  readonly registryAuthoritySnapshot?: RegistryMessagingAuthority;
   readonly credentialValidationPlan?: SandboxMessagingPlan | null;
   readonly forceCredentialValidation?: boolean;
   readonly deps: SandboxMessagingDeps<Agent>;
 }
 
 const messagingManifestRegistry = createBuiltInChannelManifestRegistry();
-const registrySelectionWorkflows = new Set<SandboxMessagingPlan["workflow"]>([
+const registryLifecycleWorkflows = new Set<SandboxMessagingPlan["workflow"]>([
   "add-channel",
   "remove-channel",
   "start-channel",
   "stop-channel",
 ]);
 
-export function registryMessagingPlanHasSelectionAuthority(
-  plan: SandboxMessagingPlan | null,
-): plan is SandboxMessagingPlan {
-  return plan !== null && registrySelectionWorkflows.has(plan.workflow);
-}
-
-export function messagingPlanWithLifecycleAuthority(
-  sessionPlan: SandboxMessagingPlan | null,
-  registryPlan: SandboxMessagingPlan | null,
-): SandboxMessagingPlan | null {
-  if (registryMessagingPlanHasSelectionAuthority(registryPlan)) return registryPlan;
-  return sessionPlan ?? registryPlan;
-}
-
-export function activeMessagingChannelsWithLifecycleAuthority(
-  sessionPlan: SandboxMessagingPlan | null,
-  registryPlan: SandboxMessagingPlan | null,
-): string[] {
-  return getActiveChannelsFromPlan(messagingPlanWithLifecycleAuthority(sessionPlan, registryPlan));
+function registryPlanRecordsLifecycleSelection(plan: SandboxMessagingPlan): boolean {
+  return registryLifecycleWorkflows.has(plan.workflow);
 }
 
 export function hasMessagingCredentialDrift(
@@ -385,7 +374,7 @@ async function selectionFromRegistryPlan<Agent>(
   registryPlan: SandboxMessagingPlan,
   options: ReconcileSandboxMessagingOptions<Agent>,
 ): Promise<SandboxMessagingSelection> {
-  if (registryMessagingPlanHasSelectionAuthority(registryPlan)) {
+  if (registryPlanRecordsLifecycleSelection(registryPlan)) {
     return selectionFromReusablePlan(registryPlan, options.agent, true, options.deps);
   }
   const activeChannels = filterChannelNamesForCurrentAgent(
@@ -424,18 +413,17 @@ async function selectionFromRegistryPlan<Agent>(
 }
 
 export function reconcileReusedSandboxMessaging<Agent>(
-  sessionPlan: SandboxMessagingPlan | null,
-  registryPlan: SandboxMessagingPlan | null,
+  plan: SandboxMessagingPlan | null,
   agent: Agent,
   deps: Pick<SandboxMessagingDeps<Agent>, "clearPlanEnv">,
+  recordedPlan: SandboxMessagingPlan | null = plan,
 ): SandboxMessagingSelection & { readonly changed: boolean } {
-  const plan = messagingPlanWithLifecycleAuthority(sessionPlan, registryPlan);
   const filtered = plan ? filterMessagingPlanForCurrentAgent(plan, agent) : null;
-  if (filtered !== sessionPlan) deps.clearPlanEnv();
+  if (filtered !== recordedPlan) deps.clearPlanEnv();
   return {
     plan: filtered,
     selectedChannels: getActiveChannelsFromPlan(filtered),
-    changed: filtered !== sessionPlan,
+    changed: filtered !== recordedPlan,
   };
 }
 
@@ -469,67 +457,79 @@ async function selectionFromDivergedMessagingCheckpoint<Agent>(
   return selectionFromMessagingSetup([...checkpointedChannels], options, true);
 }
 
-function channelsNeedingCredentialValidation<Agent>(
+function missingCredentialNeedsValidation(
+  binding: SandboxMessagingPlan["credentialBindings"][number],
+  validateMissingCredentials: boolean,
+  stagedProviderNames: ReadonlySet<string>,
+  deps: Pick<SandboxMessagingDeps<unknown>, "providerMatchesGatewayCredential">,
+): boolean {
+  if (validateMissingCredentials && !stagedProviderNames.has(binding.providerName)) return true;
+  const providerMatches = deps.providerMatchesGatewayCredential(
+    binding.providerName,
+    "generic",
+    binding.providerEnvKey,
+  );
+  return validateMissingCredentials && !providerMatches;
+}
+
+function channelsNeedingCredentialValidation(
   plan: SandboxMessagingPlan,
   selectedChannels: readonly string[],
-  session: Session | null,
-  deps: SandboxMessagingDeps<Agent>,
+  validateMissingCredentials: boolean,
+  stagedProviderNames: ReadonlySet<string>,
+  deps: Pick<SandboxMessagingDeps<unknown>, "providerMatchesGatewayCredential">,
 ): string[] {
   const activeChannels = new Set(selectedChannels);
   const channels = new Set<string>();
   for (const binding of plan.credentialBindings) {
     if (!activeChannels.has(binding.channelId)) continue;
     const credentialHash = hashCredential(getCredential(binding.providerEnvKey));
-    const needsValidation = credentialHash
-      ? credentialHash !== binding.credentialHash
-      : !session?.stagedCredentialProviders.includes(binding.providerName) ||
-        !deps.providerMatchesGatewayCredential(
-          binding.providerName,
-          "generic",
-          binding.providerEnvKey,
-        );
-    if (needsValidation) channels.add(binding.channelId);
+    if (credentialHash && credentialHash !== binding.credentialHash) {
+      channels.add(binding.channelId);
+      continue;
+    }
+    if (
+      !credentialHash &&
+      missingCredentialNeedsValidation(
+        binding,
+        validateMissingCredentials,
+        stagedProviderNames,
+        deps,
+      )
+    ) {
+      channels.add(binding.channelId);
+    }
   }
   return [...channels];
 }
 
 async function selectionFromCompletedMessagingCheckpoint<Agent>(
   envPlan: SandboxMessagingPlan | null,
-  registryPlan: SandboxMessagingPlan | null,
   options: ReconcileSandboxMessagingOptions<Agent>,
+  durablePlan: SandboxMessagingPlan | null = options.session?.messagingPlan ?? null,
+  reconcileCheckpoint = true,
+  validateMissingCredentials = reconcileCheckpoint,
 ): Promise<SandboxMessagingSelection> {
-  // A completed checkpoint normally makes the session copy authoritative,
-  // except when a later explicit channel lifecycle operation updated the
-  // registry. The process plan may already have refreshed hashes, so it cannot
-  // prove that a newly exported credential passed the channel's validation
-  // hooks.
-  const selectionPlan = messagingPlanWithLifecycleAuthority(
-    options.session?.messagingPlan ?? null,
-    registryPlan,
-  );
-  const durablePlan = options.forceCredentialValidation
-    ? withCredentialValidationHashes(selectionPlan, options.credentialValidationPlan)
-    : selectionPlan;
-  // Legacy resumes may have a live registry plan without a session plan. Once
-  // a session plan exists, its active/disabled selection remains authoritative
-  // unless an explicit registry lifecycle plan supersedes it.
-  const hasSessionSelectionAuthority =
-    Boolean(options.session?.messagingPlan) &&
-    !registryMessagingPlanHasSelectionAuthority(registryPlan);
-  const diverged = hasSessionSelectionAuthority
-    ? divergedCheckpointChannels(options.session, durablePlan)
+  // After the checkpoint completes, the selected messaging plan is authoritative.
+  // The process plan may already have refreshed hashes, so it cannot prove
+  // that a newly exported credential passed the channel's validation hooks.
+  const validationPlan = options.forceCredentialValidation
+    ? withCredentialValidationHashes(durablePlan, options.credentialValidationPlan)
+    : durablePlan;
+  const diverged = reconcileCheckpoint
+    ? divergedCheckpointChannels(options.session, validationPlan)
     : null;
   if (diverged) {
     return selectionFromDivergedMessagingCheckpoint(diverged, options);
   }
-  if (!durablePlan) {
+  if (!validationPlan) {
     options.deps.clearPlanEnv();
     options.deps.showMessagingStage?.();
     options.deps.note("  [resume] Reusing messaging selection: no channels.");
     return { plan: null, selectedChannels: [] };
   }
 
-  const filteredPlan = filterMessagingPlanForCurrentAgent(durablePlan, options.agent);
+  const filteredPlan = filterMessagingPlanForCurrentAgent(validationPlan, options.agent);
   if (!filteredPlan) {
     options.deps.clearPlanEnv();
     options.deps.showMessagingStage?.();
@@ -539,9 +539,9 @@ async function selectionFromCompletedMessagingCheckpoint<Agent>(
   const selectedChannels = getActiveChannelsFromPlan(filteredPlan);
   if (selectedChannels.length === 0) {
     const selection = selectionFromReusablePlan(
-      durablePlan,
+      validationPlan,
       options.agent,
-      envPlan !== durablePlan,
+      envPlan !== validationPlan,
       options.deps,
     );
     options.deps.showMessagingStage?.();
@@ -552,23 +552,24 @@ async function selectionFromCompletedMessagingCheckpoint<Agent>(
   const credentialValidationChannels = channelsNeedingCredentialValidation(
     filteredPlan,
     selectedChannels,
-    options.session,
+    validateMissingCredentials,
+    new Set(options.session?.stagedCredentialProviders ?? []),
     options.deps,
   );
   if (credentialValidationChannels.length > 0) {
-    options.deps.writePlanToEnv(durablePlan);
+    options.deps.writePlanToEnv(validationPlan);
     return selectionFromMessagingSetup(
       credentialValidationChannels,
       { ...options, forceCredentialValidation: true },
       true,
-      durablePlan,
+      validationPlan,
     );
   }
 
   const selection = selectionFromReusablePlan(
-    durablePlan,
+    validationPlan,
     options.agent,
-    envPlan !== durablePlan,
+    envPlan !== validationPlan,
     options.deps,
   );
   options.deps.showMessagingStage?.();
@@ -578,14 +579,20 @@ async function selectionFromCompletedMessagingCheckpoint<Agent>(
   return selection;
 }
 
-function isCompletedOpenClawMessagingResume<Agent>(
+async function selectionFromRegistryAuthority<Agent>(
+  authority: ReturnType<typeof resolveMessagingPlanAuthority>,
+  envPlan: SandboxMessagingPlan | null,
+  messagingDecisionCompleted: boolean,
   options: ReconcileSandboxMessagingOptions<Agent>,
-): boolean {
+): Promise<SandboxMessagingSelection | null> {
+  if (authority.source !== "registry") return null;
   const agentName = (options.agent as MessagingAgentLike | null)?.name;
-  const messagingDecisionCompleted = options.session?.checkpoint
-    ? !isDecisionUnset(options.session.checkpoint.messaging)
-    : options.session?.sandboxPromptProgress?.messaging === true;
-  return (!agentName || agentName === "openclaw") && options.resume && messagingDecisionCompleted;
+  if ((!agentName || agentName === "openclaw") && options.resume && messagingDecisionCompleted) {
+    return selectionFromCompletedMessagingCheckpoint(envPlan, options, authority.plan, false);
+  }
+  if (authority.plan) return selectionFromRegistryPlan(authority.plan, options);
+  options.deps.clearPlanEnv();
+  return { plan: null, selectedChannels: [] };
 }
 
 async function selectionFromForcedCredentialValidation<Agent>(
@@ -614,31 +621,76 @@ async function selectionFromForcedCredentialValidation<Agent>(
   return selectionFromMessagingSetup(requiredChannels, options, true, validationBaseline);
 }
 
+function stagedPlanFromAuthority(
+  authority: ReturnType<typeof resolveMessagingPlanAuthority>,
+): SandboxMessagingPlan | null {
+  return authority.source === "staged" ? authority.plan : null;
+}
+
+async function selectionFromCompletedMessagingAuthority<Agent>(
+  authority: ReturnType<typeof resolveMessagingPlanAuthority>,
+  envPlan: SandboxMessagingPlan | null,
+  messagingDecisionCompleted: boolean,
+  options: ReconcileSandboxMessagingOptions<Agent>,
+): Promise<SandboxMessagingSelection | null> {
+  const agentName = (options.agent as MessagingAgentLike | null)?.name;
+  if ((agentName && agentName !== "openclaw") || !options.resume || !messagingDecisionCompleted) {
+    return null;
+  }
+  const stagedPlan = stagedPlanFromAuthority(authority);
+  if (stagedPlan) {
+    return selectionFromCompletedMessagingCheckpoint(envPlan, options, stagedPlan, false);
+  }
+  return selectionFromCompletedMessagingCheckpoint(envPlan, options, authority.plan);
+}
+
 export async function reconcileSandboxMessaging<Agent>(
   options: ReconcileSandboxMessagingOptions<Agent>,
 ): Promise<SandboxMessagingSelection> {
+  const registry =
+    options.registryAuthoritySnapshot ??
+    options.deps.getRegistrySandboxMessagingAuthority(options.sandboxName);
+  const envPlan = registry.authoritative ? null : options.deps.readMessagingPlanFromEnv();
+  const authority = resolveMessagingPlanAuthority({
+    sandboxName: options.sandboxName,
+    registry,
+    stagedPlan: envPlan,
+    sessionPlan: options.session?.messagingPlan ?? null,
+  });
+  const forcedValidationSelection = await selectionFromForcedCredentialValidation(options);
+  if (forcedValidationSelection) return forcedValidationSelection;
+  const messagingDecisionCompleted = options.session?.checkpoint
+    ? !isDecisionUnset(options.session.checkpoint.messaging)
+    : options.session?.sandboxPromptProgress?.messaging === true;
+  const registrySelection = await selectionFromRegistryAuthority(
+    authority,
+    envPlan,
+    messagingDecisionCompleted,
+    options,
+  );
+  if (registrySelection) return registrySelection;
+  const completedSelection = await selectionFromCompletedMessagingAuthority(
+    authority,
+    envPlan,
+    messagingDecisionCompleted,
+    options,
+  );
+  if (completedSelection) return completedSelection;
   const recordedChannels = options.deps.getRecordedMessagingChannelsForResume(
     options.resume,
     options.session,
     options.sandboxName,
   );
-  const envPlan = options.deps.readMessagingPlanFromEnv();
-  const registryPlan =
-    options.registryPlanSnapshot === undefined
-      ? options.deps.getRegistrySandboxMessagingPlan(options.sandboxName)
-      : options.registryPlanSnapshot;
-  if (isCompletedOpenClawMessagingResume(options)) {
-    return selectionFromCompletedMessagingCheckpoint(envPlan, registryPlan, options);
-  }
-  const forcedValidationSelection = await selectionFromForcedCredentialValidation(options);
-  if (forcedValidationSelection) return forcedValidationSelection;
-  if (registryMessagingPlanHasSelectionAuthority(registryPlan)) {
-    return selectionFromReusablePlan(registryPlan, options.agent, true, options.deps);
-  }
   if (recordedChannels) {
-    return selectionFromRecordedChannels(recordedChannels, envPlan, registryPlan, options);
+    return selectionFromRecordedChannels(
+      recordedChannels,
+      stagedPlanFromAuthority(authority),
+      null,
+      options,
+    );
   }
-  if (envPlan) return selectionFromReusablePlan(envPlan, options.agent, false, options.deps);
-  if (registryPlan) return selectionFromRegistryPlan(registryPlan, options);
-  return selectionFromMessagingSetup(getChannelsFromPlan(options.session?.messagingPlan), options);
+  if (authority.source === "staged" && authority.plan) {
+    return selectionFromReusablePlan(authority.plan, options.agent, false, options.deps);
+  }
+  return selectionFromMessagingSetup(getChannelsFromPlan(authority.plan), options);
 }
