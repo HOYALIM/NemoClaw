@@ -145,9 +145,17 @@ describe("MCP lifecycle lock", () => {
       fs.mkdirSync(path.dirname(lockPath), { recursive: true });
       fs.writeFileSync(targetPath, target);
       fs.symlinkSync(targetPath, lockPath);
+      let monotonicNow = 0;
 
       await expect(
-        lifecycleLock.withMcpLifecycleLock("alpha", () => "acquired", options({ timeoutMs: 50 })),
+        lifecycleLock.withMcpLifecycleLock(
+          "alpha",
+          () => "acquired",
+          options({
+            corruptLockGraceMs: 1,
+            monotonicNow: () => monotonicNow++,
+          }),
+        ),
       ).rejects.toThrow(/containment is active/);
       expect(fs.readFileSync(targetPath, "utf8")).toBe(target);
       expect(fs.lstatSync(lockPath).isSymbolicLink()).toBe(true);
@@ -170,13 +178,15 @@ describe("MCP lifecycle lock", () => {
         server.listen(lockPath, resolve);
       });
       expect(fs.lstatSync(lockPath).isSocket()).toBe(true);
+      let monotonicNow = 0;
 
       try {
         await expect(
           lifecycleLock.withMcpLifecycleLock("alpha", () => "acquired", {
             ...options(),
             stateDir: shortStateDir,
-            timeoutMs: 50,
+            corruptLockGraceMs: 1,
+            monotonicNow: () => monotonicNow++,
           }),
         ).rejects.toThrow(/containment is active/);
         expect(fs.lstatSync(lockPath).isSocket()).toBe(true);
