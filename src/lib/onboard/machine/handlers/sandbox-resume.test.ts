@@ -1,14 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
-  applySandboxResumeDecision,
   decideSandboxResume,
   hasCompatibleEndpointReasoningDrift,
   hasHermesCompatibleAnthropicInferenceRouteDrift,
-  type SandboxResumeDeps,
   type SandboxResumeSignals,
 } from "./sandbox-resume";
 
@@ -218,66 +216,5 @@ describe("hasCompatibleEndpointReasoningDrift", () => {
         registryEntry: { name: "saved", compatibleEndpointReasoning: "false" },
       }),
     ).toBe(false);
-  });
-});
-
-function resumeDeps(overrides: Partial<SandboxResumeDeps> = {}): SandboxResumeDeps {
-  return {
-    note: vi.fn(),
-    removeSandboxFromRegistry: vi.fn(() => null),
-    ...overrides,
-  };
-}
-
-describe("applySandboxResumeDecision (#7194)", () => {
-  it("returns the removal receipt so a failed replacement create can restore it", async () => {
-    const receipt = {
-      entry: { name: "saved" },
-      wasDefault: false,
-      fallbackDefault: null,
-      postRemovalDefaultSelectionRevision: 1,
-    };
-    const deps = resumeDeps({ removeSandboxFromRegistry: vi.fn(() => receipt) });
-
-    const result = await applySandboxResumeDecision(
-      { kind: "recreate", note: "  recreating", removeRegistryEntry: true },
-      "saved",
-      deps,
-    );
-
-    expect(deps.removeSandboxFromRegistry).toHaveBeenCalledWith("saved");
-    expect(result).toBe(receipt);
-  });
-
-  it("does not remove the registry row or return a receipt when the decision keeps it", async () => {
-    const deps = resumeDeps();
-
-    const result = await applySandboxResumeDecision(
-      { kind: "recreate", note: "  recreating", removeRegistryEntry: false },
-      "saved",
-      deps,
-    );
-
-    expect(deps.removeSandboxFromRegistry).not.toHaveBeenCalled();
-    expect(result).toBeNull();
-  });
-
-  it("returns null for create and reuse decisions", async () => {
-    const deps = resumeDeps();
-
-    expect(await applySandboxResumeDecision({ kind: "create" }, "saved", deps)).toBeNull();
-    expect(await applySandboxResumeDecision({ kind: "reuse" }, "saved", deps)).toBeNull();
-    expect(deps.removeSandboxFromRegistry).not.toHaveBeenCalled();
-  });
-
-  it("rejects not-ready repair without a journal-bound recreate transaction", async () => {
-    const deps = resumeDeps();
-
-    await expect(
-      applySandboxResumeDecision({ kind: "repair-and-recreate" }, "saved", deps),
-    ).rejects.toThrow("journal-bound recreate transaction");
-
-    expect(deps.note).not.toHaveBeenCalled();
-    expect(deps.removeSandboxFromRegistry).not.toHaveBeenCalled();
   });
 });

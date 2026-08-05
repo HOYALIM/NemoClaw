@@ -15,9 +15,9 @@ import { detectMessagingChannelsFromEnv } from "../../messaging-channel-setup";
 import { handleSandboxState } from "./sandbox";
 import {
   baseOptions,
+  bindJournaledRecreate,
   createDeps,
   makeMinimalPlan,
-  selectTestGatewayAuthority,
   withEnv,
   withTelegramCredentialHash,
 } from "./sandbox-test-fixtures";
@@ -549,7 +549,8 @@ describe("handleSandboxState", () => {
     );
   });
 
-  it("reuses a completed ready sandbox on resume", async () => {
+  it("reuses a Ready sandbox from the registry without reading an invalid environment plan", async () => {
+    const registryPlan = makeMinimalPlan("saved", "openclaw", ["telegram"]);
     const session = createSession({
       sandboxName: "saved",
       messagingPlan: makeMinimalPlan("saved", "openclaw", ["slack"]),
@@ -557,6 +558,9 @@ describe("handleSandboxState", () => {
     session.steps.sandbox.status = "complete";
     const skippedSession = createSession({ sandboxName: "saved-after-skip" });
     const recordStateSkipped = vi.fn(async () => skippedSession);
+    const readMessagingPlanFromEnv = vi.fn(() => {
+      throw new Error("invalid environment plan");
+    });
     const { deps, calls } = createDeps({
       getSandboxReuseState: () => "ready",
       getSandboxRegistryEntry: () => ({
@@ -570,6 +574,8 @@ describe("handleSandboxState", () => {
         fromDockerfile: null,
         hermesAuthMethod: null,
       }),
+      getRegistrySandboxMessagingAuthority: () => ({ authoritative: true, plan: registryPlan }),
+      readMessagingPlanFromEnv,
       recordStateSkipped,
     });
 
@@ -579,6 +585,7 @@ describe("handleSandboxState", () => {
       sandboxName: "saved",
     });
 
+    expect(readMessagingPlanFromEnv).not.toHaveBeenCalled();
     expect(calls.createSandbox).not.toHaveBeenCalled();
     expect(calls.updateSandbox).toHaveBeenCalledWith("saved", {
       pendingRouteReservation: undefined,
@@ -588,7 +595,7 @@ describe("handleSandboxState", () => {
       reason: "resume",
       sandboxName: "saved",
     });
-    expect(result.selectedMessagingChannels).toEqual(["slack"]);
+    expect(result.selectedMessagingChannels).toEqual(["telegram"]);
     expect(result.webSearchConfigChanged).toBe(false);
     expect(result.session).toBe(skippedSession);
   });
@@ -850,18 +857,16 @@ describe("handleSandboxState", () => {
   it("marks web search changed when recreate implicitly enables Tavily", async () => {
     const session = createSession({ sandboxName: "saved" });
     session.steps.sandbox.status = "complete";
-    selectTestGatewayAuthority(session);
+    const journal = bindJournaledRecreate(session);
     const { deps } = createDeps(
       {
         getSandboxReuseState: () => "not_ready",
-        getSandboxRecreateObservation: () => ({
-          state: "not_ready",
-          liveIdentityFingerprint: "a".repeat(64),
-        }),
+        getSandboxRecreateObservation: journal.observe,
         configureWebSearch: vi.fn(async () => ({
           fetchEnabled: true as const,
           provider: "tavily" as const,
         })),
+        createSandbox: journal.completeCreate,
       },
       session,
     );
@@ -876,43 +881,6 @@ describe("handleSandboxState", () => {
     expect(result.webSearchConfigChanged).toBe(true);
   });
 
-  it("removes registry state when messaging config drift forces sandbox recreation", async () => {
-    const session = createSession();
-    session.steps.sandbox.status = "complete";
-    const { deps, calls } = createDeps({
-      getSandboxReuseState: () => "ready",
-      getStoredMessagingChannelConfig: () => ({ TELEGRAM_REQUIRE_MENTION: "1" }),
-      hydrateMessagingChannelConfig: () => ({ TELEGRAM_REQUIRE_MENTION: "0" }),
-      messagingChannelConfigsEqual: () => false,
-    });
-
-    await handleSandboxState({
-      ...baseOptions(deps, session),
-      resume: true,
-      sandboxName: "saved",
-    });
-
-    expect(calls.note).toHaveBeenCalledWith(
-      "  [resume] Messaging channel configuration changed; recreating sandbox.",
-    );
-    expect(calls.removeSandbox).toHaveBeenCalledWith("saved");
-    expect(calls.createSandbox).toHaveBeenCalled();
-  });
-
-  it("fails closed when not-ready repair lacks a journal-bound source", async () => {
-    const session = createSession({ sandboxName: "saved" });
-    session.steps.sandbox.status = "complete";
-    const { deps, calls } = createDeps({ getSandboxReuseState: () => "not_ready" });
-
-    await expect(
-      handleSandboxState({ ...baseOptions(deps, session), resume: true, sandboxName: "saved" }),
-    ).rejects.toThrow("journal-bound recreate transaction");
-
-    expect(calls.repairEvent).not.toHaveBeenCalled();
-    expect(calls.removeSandbox).not.toHaveBeenCalled();
-    expect(calls.createSandbox).not.toHaveBeenCalled();
-  });
-
   it("recreates when a saved web search sandbox is no longer supported", async () => {
     const session = createSession({
       sandboxName: "saved",
@@ -925,13 +893,19 @@ describe("handleSandboxState", () => {
       },
     });
     session.steps.sandbox.status = "complete";
-    const { deps, calls } = createDeps({
-      agentSupportsWebSearch: () => false,
-      getSandboxReuseState: () => "ready",
-      updateSession: vi.fn(
-        (mutator: (value: Session) => Session | void) => mutator(session) ?? session,
-      ),
-    });
+    const journal = bindJournaledRecreate(session);
+    const { deps, calls } = createDeps(
+      {
+        agentSupportsWebSearch: () => false,
+        getSandboxReuseState: () => "ready",
+        getSandboxRecreateObservation: journal.observe,
+        createSandbox: journal.completeCreate,
+        updateSession: vi.fn(
+          (mutator: (value: Session) => Session | void) => mutator(session) ?? session,
+        ),
+      },
+      session,
+    );
 
     await handleSandboxState({
       ...baseOptions(deps, session),
@@ -949,8 +923,7 @@ describe("handleSandboxState", () => {
     expect(calls.note).not.toHaveBeenCalledWith(
       "  [resume] Reusing web search selection: disabled.",
     );
-    expect(calls.removeSandbox).toHaveBeenCalledWith("saved");
-    expect(calls.createSandbox).toHaveBeenCalled();
+    expect(calls.removeSandbox).not.toHaveBeenCalled();
   });
 
   it("recreates when an explicit web-search provider differs from saved state", async () => {
@@ -959,10 +932,16 @@ describe("handleSandboxState", () => {
       webSearchConfig: { fetchEnabled: true, provider: "brave" },
     });
     session.steps.sandbox.status = "complete";
-    const { deps, calls } = createDeps({
-      getSandboxReuseState: () => "ready",
-      agentSupportsWebSearchProvider: () => true,
-    });
+    const journal = bindJournaledRecreate(session);
+    const { deps, calls } = createDeps(
+      {
+        getSandboxReuseState: () => "ready",
+        getSandboxRecreateObservation: journal.observe,
+        createSandbox: journal.completeCreate,
+        agentSupportsWebSearchProvider: () => true,
+      },
+      session,
+    );
 
     const result = await handleSandboxState({
       ...baseOptions(deps, session),
@@ -975,12 +954,12 @@ describe("handleSandboxState", () => {
     expect(calls.note).toHaveBeenCalledWith(
       "  [resume] Web Search configuration changed; recreating sandbox.",
     );
-    expect(calls.removeSandbox).toHaveBeenCalledWith("saved");
+    expect(calls.removeSandbox).not.toHaveBeenCalled();
     expect(calls.validateBrave).toHaveBeenCalledWith({
       fetchEnabled: true,
       provider: "tavily",
     });
-    expect(calls.createSandbox).toHaveBeenCalledWith(
+    expect(journal.completeCreate).toHaveBeenCalledWith(
       { type: "nvidia" },
       "model",
       "provider",
@@ -995,7 +974,7 @@ describe("handleSandboxState", () => {
       null,
       [],
       null,
-      {
+      expect.objectContaining({
         resolved: expect.any(Object),
         recreate: true,
         toolDisclosure: "progressive",
@@ -1003,7 +982,12 @@ describe("handleSandboxState", () => {
         endpointSource: null,
         extraProviders: [],
         reuseRegisteredCredentials: true,
-      },
+        recreateTransaction: expect.objectContaining({
+          id: expect.any(String),
+          targetGeneration: expect.any(String),
+          targetIntentFingerprint: expect.any(String),
+        }),
+      }),
     );
     expect(result.webSearchConfigChanged).toBe(true);
   });
@@ -1086,15 +1070,13 @@ describe("handleSandboxState", () => {
       webSearchConfig: { fetchEnabled: true },
     });
     session.steps.sandbox.status = "complete";
-    selectTestGatewayAuthority(session);
     const backToSelection = Object.freeze({ kind: "NEMOCLAW_BACK_TO_SELECTION" });
+    const journal = bindJournaledRecreate(session);
     const { deps, calls } = createDeps(
       {
         getSandboxReuseState: () => "not_ready",
-        getSandboxRecreateObservation: () => ({
-          state: "not_ready",
-          liveIdentityFingerprint: "a".repeat(64),
-        }),
+        getSandboxRecreateObservation: journal.observe,
+        createSandbox: journal.completeCreate,
         ensureValidatedWebSearchCredential: vi.fn(async () => backToSelection),
         isBackToSelection: vi.fn((value: unknown) => value === backToSelection),
       },
@@ -1109,7 +1091,7 @@ describe("handleSandboxState", () => {
     });
 
     expect(calls.configureWebSearch).not.toHaveBeenCalled();
-    expect(calls.createSandbox).toHaveBeenCalledWith(
+    expect(journal.completeCreate).toHaveBeenCalledWith(
       { type: "nvidia" },
       "model",
       "provider",
@@ -1124,16 +1106,20 @@ describe("handleSandboxState", () => {
       null,
       [],
       null,
-      {
+      expect.objectContaining({
         resolved: expect.any(Object),
         recreate: true,
-        recreateTransaction: expect.any(Object),
         toolDisclosure: "progressive",
         observabilityEnabled: false,
         endpointSource: null,
         extraProviders: [],
         reuseRegisteredCredentials: true,
-      },
+        recreateTransaction: expect.objectContaining({
+          id: expect.any(String),
+          targetGeneration: expect.any(String),
+          targetIntentFingerprint: expect.any(String),
+        }),
+      }),
     );
     expect(result.webSearchConfig).toBeNull();
   });
@@ -1176,7 +1162,7 @@ describe("handleSandboxState", () => {
       getRecordedMessagingChannelsForResume,
       writePlanToEnv,
       readMessagingPlanFromEnv: () => null,
-      getRegistrySandboxMessagingPlan: () => registryPlan,
+      getRegistrySandboxMessagingAuthority: () => ({ authoritative: true, plan: registryPlan }),
     });
 
     await handleSandboxState({
@@ -1188,17 +1174,19 @@ describe("handleSandboxState", () => {
     expect(writePlanToEnv).toHaveBeenCalledWith(registryPlan);
   });
 
-  it("prefers env-staged plan over registry plan on non-interactive resume (rebuild path)", async () => {
+  it("uses the registry plan without reading an invalid environment plan during sandbox creation", async () => {
     const registryPlan = makeMinimalPlan("my-assistant");
-    const rebuiltPlan = makeMinimalPlan("my-assistant", "openclaw", ["telegram"], ["telegram"]);
     const session = createSession({ sandboxName: "my-assistant", messagingPlan: registryPlan });
     const getRecordedMessagingChannelsForResume = vi.fn(() => ["telegram"]);
     const writePlanToEnv = vi.fn();
-    const { deps, getSession } = createDeps({
+    const readMessagingPlanFromEnv = vi.fn(() => {
+      throw new Error("invalid environment plan");
+    });
+    const { deps, calls, getSession } = createDeps({
       getRecordedMessagingChannelsForResume,
       writePlanToEnv,
-      readMessagingPlanFromEnv: () => rebuiltPlan,
-      getRegistrySandboxMessagingPlan: () => registryPlan,
+      readMessagingPlanFromEnv,
+      getRegistrySandboxMessagingAuthority: () => ({ authoritative: true, plan: registryPlan }),
     });
 
     await handleSandboxState({
@@ -1207,14 +1195,10 @@ describe("handleSandboxState", () => {
       sandboxName: "my-assistant",
     });
 
-    expect(writePlanToEnv).not.toHaveBeenCalled();
-    expect(getSession().messagingPlan).toEqual(rebuiltPlan);
-    expect(getSession().messagingPlan?.disabledChannels).toEqual(["telegram"]);
-    expect(getSession().messagingPlan?.channels[0]).toMatchObject({
-      channelId: "telegram",
-      active: false,
-      disabled: true,
-    });
+    expect(readMessagingPlanFromEnv).not.toHaveBeenCalled();
+    expect(calls.createSandbox).toHaveBeenCalledOnce();
+    expect(writePlanToEnv).toHaveBeenCalledWith(registryPlan);
+    expect(getSession().messagingPlan).toEqual(registryPlan);
   });
 
   it("refreshes credential hashes when reusing an env-staged rebuild plan", async () => {
@@ -1231,7 +1215,7 @@ describe("handleSandboxState", () => {
       getRecordedMessagingChannelsForResume,
       writePlanToEnv,
       readMessagingPlanFromEnv: () => rebuiltPlan,
-      getRegistrySandboxMessagingPlan: () => null,
+      getRegistrySandboxMessagingAuthority: () => ({ authoritative: false, plan: null }),
     });
 
     await withEnv("TELEGRAM_BOT_TOKEN", "telegram-token-b", async () => {
@@ -1270,7 +1254,7 @@ describe("handleSandboxState", () => {
       getRecordedMessagingChannelsForResume,
       writePlanToEnv,
       readMessagingPlanFromEnv: () => null,
-      getRegistrySandboxMessagingPlan: () => registryPlan,
+      getRegistrySandboxMessagingAuthority: () => ({ authoritative: true, plan: registryPlan }),
     });
 
     await withEnv("TELEGRAM_BOT_TOKEN", "telegram-token-b", async () => {
@@ -1304,7 +1288,7 @@ describe("handleSandboxState", () => {
       getRecordedMessagingChannelsForResume,
       writePlanToEnv,
       readMessagingPlanFromEnv: () => emptyRebuildPlan,
-      getRegistrySandboxMessagingPlan: () => emptyRebuildPlan,
+      getRegistrySandboxMessagingAuthority: () => ({ authoritative: true, plan: emptyRebuildPlan }),
     });
 
     const result = await handleSandboxState({
@@ -1314,7 +1298,7 @@ describe("handleSandboxState", () => {
     });
 
     expect(calls.setupMessaging).not.toHaveBeenCalled();
-    expect(writePlanToEnv).not.toHaveBeenCalled();
+    expect(writePlanToEnv).toHaveBeenCalledWith(emptyRebuildPlan);
     expect(result.selectedMessagingChannels).toEqual([]);
     const createSandboxCall = calls.createSandbox.mock.calls[0] as unknown[];
     expect(createSandboxCall[6]).toEqual([]);
@@ -1355,7 +1339,7 @@ describe("handleSandboxState", () => {
       getRecordedMessagingChannelsForResume,
       writePlanToEnv,
       readMessagingPlanFromEnv: () => null,
-      getRegistrySandboxMessagingPlan: () => registryPlan,
+      getRegistrySandboxMessagingAuthority: () => ({ authoritative: true, plan: registryPlan }),
     });
 
     await handleSandboxState({
@@ -1390,15 +1374,12 @@ describe("handleSandboxState", () => {
       messagingPlan: makeMinimalPlan("my-assistant", "openclaw", ["slack"]),
     });
     const writePlanToEnv = vi.fn();
-    const readMessagingPlanFromEnv = vi
-      .fn()
-      .mockReturnValueOnce(null)
-      .mockReturnValue(refreshedPlan);
+    const readMessagingPlanFromEnv = vi.fn(() => refreshedPlan);
     const { deps, calls, getSession } = createDeps({
       getRecordedMessagingChannelsForResume: vi.fn(() => null),
       writePlanToEnv,
       readMessagingPlanFromEnv,
-      getRegistrySandboxMessagingPlan: () => registryPlan,
+      getRegistrySandboxMessagingAuthority: () => ({ authoritative: true, plan: registryPlan }),
     });
     // Fake-token rejection disables Telegram, so no channel survives setup.
     calls.setupMessaging.mockResolvedValue([]);
@@ -1409,6 +1390,7 @@ describe("handleSandboxState", () => {
     });
 
     expect(calls.setupMessaging).toHaveBeenCalledWith(null, ["whatsapp"], "my-assistant");
+    expect(readMessagingPlanFromEnv).toHaveBeenCalledOnce();
     expect(writePlanToEnv).not.toHaveBeenCalled();
     expect(calls.note).toHaveBeenCalledWith(
       "  [non-interactive] Detected messaging channel inputs for telegram; refreshing reused sandbox messaging plan.",
@@ -1430,7 +1412,7 @@ describe("handleSandboxState", () => {
       getRecordedMessagingChannelsForResume: vi.fn(() => null),
       writePlanToEnv,
       readMessagingPlanFromEnv: () => null,
-      getRegistrySandboxMessagingPlan: () => registryPlan,
+      getRegistrySandboxMessagingAuthority: () => ({ authoritative: true, plan: registryPlan }),
     });
 
     const result = await handleSandboxState({
@@ -1454,7 +1436,7 @@ describe("handleSandboxState", () => {
       getRecordedMessagingChannelsForResume,
       writePlanToEnv,
       readMessagingPlanFromEnv: () => null,
-      getRegistrySandboxMessagingPlan: () => null,
+      getRegistrySandboxMessagingAuthority: () => ({ authoritative: false, plan: null }),
     });
 
     await handleSandboxState({

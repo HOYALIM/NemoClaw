@@ -8,7 +8,7 @@ import {
   webSearchProviderForConfig,
 } from "../../../inference/web-search";
 import type { Session } from "../../../state/onboard-session";
-import type { SandboxEntry, SandboxRemovalReceipt } from "../../../state/registry";
+import type { SandboxEntry } from "../../../state/registry";
 import { normalizeToolDisclosure, toolDisclosureOrDefault } from "../../../tool-disclosure";
 
 export interface SandboxResumeSignals {
@@ -109,6 +109,11 @@ export type SandboxResumeDecision =
     }
   | { readonly kind: "repair-and-recreate" };
 
+export function replacesSameNameSandbox(decision: SandboxResumeDecision): boolean {
+  if (decision.kind === "repair-and-recreate") return true;
+  return decision.kind === "recreate" && decision.removeRegistryEntry;
+}
+
 export function mcpRegistryRemovalBlockReason(
   decision: SandboxResumeDecision,
   sandboxName: string | null,
@@ -131,11 +136,6 @@ export function mcpRegistryRemovalBlockReason(
   }
 
   return `  Sandbox '${sandboxName}' has managed MCP state. Use the transactional rebuild command before changing settings that recreate the sandbox.`;
-}
-
-export interface SandboxResumeDeps {
-  note(message: string): void;
-  removeSandboxFromRegistry(sandboxName: string): SandboxRemovalReceipt | null;
 }
 
 function canReuseSandbox(signals: SandboxResumeSignals): boolean {
@@ -284,26 +284,4 @@ export function decideSandboxResume(signals: SandboxResumeSignals): SandboxResum
     note: "  [resume] Recorded sandbox state is unavailable; recreating it.",
     removeRegistryEntry: true,
   };
-}
-
-/**
- * Apply a resume decision and return the removal receipt (if any) so the
- * caller can restore the durable registry row, including its baseline
- * exclusion records, when replacement creation then fails.
- */
-export async function applySandboxResumeDecision(
-  decision: SandboxResumeDecision,
-  sandboxName: string | null,
-  deps: SandboxResumeDeps,
-): Promise<SandboxRemovalReceipt | null> {
-  if (decision.kind === "repair-and-recreate") {
-    throw new Error(
-      "Cannot repair a recorded not-ready sandbox without a journal-bound recreate transaction.",
-    );
-  }
-  if (decision.kind !== "recreate") return null;
-  deps.note(decision.note);
-  if (decision.removeRegistryEntry && sandboxName)
-    return deps.removeSandboxFromRegistry(sandboxName);
-  return null;
 }
