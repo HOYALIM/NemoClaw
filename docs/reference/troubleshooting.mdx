@@ -867,8 +867,9 @@ Then re-run `$$nemoclaw onboard`.
 
 Rerunning `$$nemoclaw onboard --non-interactive` with a replacement `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `WECHAT_BOT_TOKEN`, or `MSTEAMS_APP_PASSWORD` previously reported success while the sandbox kept using the old credential.
 When you rerun onboarding, NemoClaw evaluates every active messaging credential binding and compares each supplied credential with its SHA-256 hash in the sandbox registry.
-When you provide a replacement credential, NemoClaw validates it before it backs up workspace state, destroys the sandbox, recreates it, and restores the backup.
-If validation fails, onboarding stops before it backs up workspace state or destroys the existing sandbox.
+When you provide a replacement credential, NemoClaw validates it before it backs up supported workspace and manifest-declared state, destroys the sandbox, recreates it, and restores the backup.
+Files outside those state paths are not preserved.
+If validation fails, onboarding stops before it backs up supported workspace and manifest-declared state or destroys the existing sandbox.
 If you do not supply a credential, or the supplied credential matches the recorded hash, the credential check does not trigger recreation.
 If you replace a credential for a channel that you stopped with `channels stop`, onboarding does not trigger recreation because that channel is inactive.
 
