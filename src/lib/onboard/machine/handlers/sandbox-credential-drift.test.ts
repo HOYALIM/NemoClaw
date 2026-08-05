@@ -59,8 +59,13 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (registryEnvironment.previousHome === undefined) delete process.env.HOME;
-  else process.env.HOME = registryEnvironment.previousHome;
+  const restoreHome =
+    registryEnvironment.previousHome === undefined
+      ? () => Reflect.deleteProperty(process.env, "HOME")
+      : () => {
+          process.env.HOME = registryEnvironment.previousHome;
+        };
+  restoreHome();
   await rm(registryHome, { recursive: true, force: true });
 });
 
@@ -101,21 +106,20 @@ describe("sandbox messaging credential drift", () => {
       ].join("|"),
     );
     recordCheckpointEffectGroup(session, "sandbox_register", "saved");
-    if (session.checkpoint) {
-      session.checkpoint = {
-        ...session.checkpoint,
-        gatewayAuthority: decisionSelected({
-          gatewayName: "nemoclaw",
-          gatewayPort: 18789,
-          mode: "nemoclaw-managed",
-          source: "standalone",
-          endpoint: null,
-          stateDir: null,
-          supervisor: null,
-          requiredCapabilities: [],
-        }),
-      };
-    }
+    expect(session.checkpoint).not.toBeNull();
+    session.checkpoint = {
+      ...session.checkpoint!,
+      gatewayAuthority: decisionSelected({
+        gatewayName: "nemoclaw",
+        gatewayPort: 18789,
+        mode: "nemoclaw-managed",
+        source: "standalone",
+        endpoint: null,
+        stateDir: null,
+        supervisor: null,
+        requiredCapabilities: [],
+      }),
+    };
     registry.registerSandbox({
       name: "saved",
       messaging: { schemaVersion: 1, plan: previousPlan },
