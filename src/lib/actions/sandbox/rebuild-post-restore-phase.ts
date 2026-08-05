@@ -32,8 +32,18 @@ import { reconcileStalePinnedSessionModelsAfterRebuild } from "./reconcile-sessi
 
 export {
   HermesCronRestoreIncompleteError,
+  recoverHermesCronRestore,
   runHermesCronRestoreTransaction,
 } from "./rebuild-hermes-post-restore";
+
+export function printHermesCronRestoreRecoveryCommand(
+  sandboxName: string,
+  writeLine: (message: string) => void = console.error,
+): void {
+  writeLine(
+    `  Correct the reported restore problem, then run \`${CLI_NAME} ${sandboxName} recover\`.`,
+  );
+}
 
 export interface RebuildPostRestorePhaseInput {
   sandboxName: string;

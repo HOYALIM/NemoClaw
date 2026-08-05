@@ -185,6 +185,7 @@ It validates the restored jobs and scripts against the same running gateway befo
 If an operator already drained the gateway, NemoClaw clears only its gate and leaves the operator drain active.
 If state restore or cron validation fails after gate acquisition, the command exits nonzero, preserves the backup, and retains the NemoClaw gate.
 Failures before gate acquisition do not create a new gate.
+Do not manually remove the root-owned cron restore marker because removal bypasses restored cron validation.
 After you correct the reported restore problem, run `$$nemoclaw <sandbox-name> recover` to validate the restored cron tree and clear the NemoClaw gate.
 </AgentOnly>
 
@@ -206,6 +207,14 @@ The rerun takes one of these actions:
 - It accepts an existing replacement only when its live identity and sandbox registry generation match the journal.
 
 An accepted replacement is not deleted again.
+<AgentOnly variant="hermes">
+A rerun that accepts a journaled Hermes replacement checks for any retained NemoClaw gate before it retires the replacement journal.
+When the gate exists, the rerun validates the restored cron tree and releases the gate first.
+If validation or gate release fails, NemoClaw preserves the accepted replacement, state backup, and replacement journal.
+New Hermes turns and cron dispatch remain blocked.
+Correct the reported restore problem, then run `$$nemoclaw <name> recover`.
+After recovery succeeds, rerun `rebuild` with the same replacement settings so NemoClaw can retire the journal.
+</AgentOnly>
 The command reports `Sandbox '<name>' already holds the replacement from the interrupted rebuild.` and preserves the state backup path when one exists.
 Pass `--verbose` to include the replacement identifier, OpenShell gateway, and journal phase in rebuild diagnostics.
 

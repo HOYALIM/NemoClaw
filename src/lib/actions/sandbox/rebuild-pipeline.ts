@@ -20,6 +20,8 @@ import { disposeRebuildAgentBaseImagePreflight } from "./rebuild-flow-helpers";
 import { stageMessagingManifestPlanForRebuild } from "./rebuild-messaging-phase";
 import {
   HermesCronRestoreIncompleteError,
+  printHermesCronRestoreRecoveryCommand,
+  recoverHermesCronRestore,
   runHermesCronRestoreTransaction,
   runRebuildPostRestorePhase,
 } from "./rebuild-post-restore-phase";
@@ -283,6 +285,40 @@ async function rebuildSandboxUnlocked(
       // replacement. Retire its journal and stop before the destroy phase so a
       // restart converges to that sandbox instead of deleting it.
       if (recreateJournal.acceptedTarget) {
+        // The accepted replacement belongs to an earlier run. Its persisted
+        // gate is independent of the current backup's cron plan, so probe every
+        // Hermes target before retiring the replacement journal.
+        if (rebuildAgent === "hermes") {
+          try {
+            const outcome = recoverHermesCronRestore(sandboxName);
+            if (outcome === "unsupported") {
+              console.error("");
+              console.error(
+                "  The accepted Hermes replacement does not provide cron restore recovery.",
+              );
+              console.error(`  Backup is preserved at: ${backup.backupManifest?.backupPath}`);
+              return bail(
+                "Hermes cron restore recovery is unavailable; the replacement journal was retained.",
+              );
+            }
+            if (outcome === "operator-drain-preserved") {
+              console.log(
+                "  Hermes cron restore gate cleared; the independent operator drain remains active.",
+              );
+            }
+            log(`Hermes cron restore recovery for accepted replacement: ${outcome}`);
+          } catch (error) {
+            console.error("");
+            console.error(
+              `  Hermes cron restore could not validate and release the accepted replacement: ${rebuildFailureDetail(error)}`,
+            );
+            console.error(`  Backup is preserved at: ${backup.backupManifest?.backupPath}`);
+            printHermesCronRestoreRecoveryCommand(sandboxName);
+            return bail(
+              "Hermes cron restore recovery failed; the replacement journal was retained.",
+            );
+          }
+        }
         recreateJournal.completeAcceptedTarget();
         log(`Recovered journaled replacement ${recreateJournal.id} for '${sandboxName}'`);
         console.log(
@@ -429,6 +465,7 @@ async function rebuildSandboxUnlocked(
                   : `  Hermes cron restore could not validate and reactivate dispatch: ${rebuildFailureDetail(error)}`,
               );
               console.error(`  Backup is preserved at: ${backup.backupManifest?.backupPath}`);
+              printHermesCronRestoreRecoveryCommand(sandboxName);
               return bail("Hermes cron restore validation failed; dispatch was not re-enabled.");
             }
           })()

@@ -203,6 +203,19 @@ OpenClaw regenerates its device identity on demand.
 Credential-bearing Hermes files such as `auth.json` are intentionally excluded from snapshots.
 NemoClaw-regenerated Hermes config files, including `config.yaml` and `.env`, are also excluded.
 NemoClaw recreates model, provider, and messaging credentials from host-side onboarding and OpenShell provider state during rebuild.
+
+If a Hermes rebuild cannot validate or release its NemoClaw cron restore gate, NemoClaw preserves the state backup.
+If the rebuild already accepted the replacement sandbox, it also preserves the replacement journal.
+New Hermes turns and cron dispatch remain blocked while the gate exists.
+
+<Warning>
+Do not manually remove the root-owned cron restore marker.
+Removing it bypasses validation of the restored cron jobs and scripts.
+Correct the reported restore problem, then run `$$nemoclaw <sandbox-name> recover`.
+Recovery validates the restored cron tree before it clears the NemoClaw gate.
+If an independent Hermes operator drain exists, recovery leaves it active.
+After recovery succeeds, rerun `rebuild` with the same replacement settings so NemoClaw can retire the replacement journal.
+</Warning>
 </AgentOnly>
 <AgentOnly variant="deepagents">
 ### Excluded Deep Agents State
