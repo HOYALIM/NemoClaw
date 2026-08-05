@@ -324,7 +324,9 @@ async function tryReapStaleMainLock(
       return false;
     }
     assertBeforeDeadline();
-    return reclaimStaleMcpLifecycleLockGeneration(lockPath, latest, assertBeforeDeadline);
+    // Keep the reaper generation held until reclamation or restoration settles.
+    // Returning the promise directly would enter the async finally first.
+    return await reclaimStaleMcpLifecycleLockGeneration(lockPath, latest, assertBeforeDeadline);
   } finally {
     await safelyReleaseMcpLifecycleLock(reaperPath, reaperToken);
   }
