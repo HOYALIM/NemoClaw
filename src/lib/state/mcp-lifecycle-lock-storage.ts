@@ -205,6 +205,18 @@ async function restoreClaimedMcpLifecycleLockGeneration(
   }
 }
 
+function restoreClaimedMcpLifecycleLockGenerationSync(
+  targetPath: string,
+  quarantinePath: string,
+): void {
+  try {
+    fs.linkSync(quarantinePath, targetPath);
+    fs.rmSync(quarantinePath, { force: true });
+  } catch (error) {
+    if (!isErrnoException(error) || error.code !== "EEXIST") throw error;
+  }
+}
+
 export async function reclaimStaleMcpLifecycleLockGeneration(
   targetPath: string,
   expected: LockObservation,
@@ -253,6 +265,7 @@ export async function reclaimStaleMcpLifecycleLockGeneration(
 export function reclaimStaleMcpLifecycleLockGenerationSync(
   targetPath: string,
   expected: LockObservation,
+  assertAfterClaim?: () => void,
 ): boolean {
   const quarantinePath = `${targetPath}.reclaim-${process.pid}-${crypto.randomUUID()}`;
   try {
@@ -272,16 +285,17 @@ export function reclaimStaleMcpLifecycleLockGenerationSync(
         claimed.ino === expected.ino
       : claimed?.owner?.token === expectedToken;
   if (claimedExpectedGeneration) {
+    try {
+      assertAfterClaim?.();
+    } catch (error) {
+      restoreClaimedMcpLifecycleLockGenerationSync(targetPath, quarantinePath);
+      throw error;
+    }
     fs.rmSync(quarantinePath, { force: true, recursive: true });
     return true;
   }
 
-  try {
-    fs.linkSync(quarantinePath, targetPath);
-    fs.rmSync(quarantinePath, { force: true });
-  } catch (error) {
-    if (!isErrnoException(error) || error.code !== "EEXIST") throw error;
-  }
+  restoreClaimedMcpLifecycleLockGenerationSync(targetPath, quarantinePath);
   return false;
 }
 

@@ -103,6 +103,11 @@ function withDefaultNodeExecFileSync(
   return defaultNodeExecFileSync(file, argv) || fallback();
 }
 
+function throwErrno(message: string, code: string): never {
+  const error = new Error(message) as NodeJS.ErrnoException;
+  error.code = code;
+  throw error;
+}
 function throwRegistryPermissionDenied(): never {
   throw Object.assign(new Error("registry permission denied"), { code: "EACCES" });
 }
@@ -590,6 +595,25 @@ describe("shields — unit logic", () => {
       ]);
       expect(appliedPolicy).toContain("restrictive_baseline");
       expect(appliedPolicy).not.toContain("mcp_bridge_alpha");
+    });
+
+    it("reuses the snapshot without staging when the snapshot and current policy have no managed MCP entries (#7952)", async () => {
+      const snapshotPath = "/state/policy-snapshot-no-managed-mcp.yaml";
+      const snapshotYaml = "version: 1\nnetwork_policies:\n  restrictive_baseline: {}\n";
+      const writeTempPolicy = vi.fn(() => {
+        throw new Error("policy staging is unavailable");
+      });
+      const { buildDeadlineRuntimeManagedMcpPolicy } = await import("./permissive-runtime");
+
+      const result = buildDeadlineRuntimeManagedMcpPolicy(snapshotPath, {
+        managedMcpPolicies: [],
+        snapshotManagedPolicyKeys: [],
+        readBasePolicy: () => snapshotYaml,
+        writeTempPolicy,
+      });
+
+      expect(result).toEqual({ path: snapshotPath, omissions: [] });
+      expect(writeTempPolicy).not.toHaveBeenCalled();
     });
 
     it("deadline restore reuses an unchanged snapshot without temporary storage when no managed MCP entries exist (#7952)", async () => {
@@ -1165,6 +1189,7 @@ describe("NC-2227-05: shields timer marker behavior", () => {
     const result = killTimer("openclaw");
 
     expect(result).toEqual({
+      authorityRevoked: true,
       markerFound: true,
       markerPid: 7331,
       wasAlive: true,
@@ -1256,6 +1281,7 @@ describe("NC-2227-05: shields timer marker behavior", () => {
 
     const result = killTimer("openclaw");
     expect(result).toEqual({
+      authorityRevoked: true,
       markerFound: true,
       markerPid: 7331,
       wasAlive: false,
@@ -1264,6 +1290,44 @@ describe("NC-2227-05: shields timer marker behavior", () => {
     });
     expect(processKillSpy).toHaveBeenCalledWith(7331, 0);
     expect(fs.existsSync(markerPath)).toBe(false);
+  });
+
+  it("killTimer reports active authority when the marker cannot be cleared", async () => {
+    const sourceModulePath = path.join(process.cwd(), "src", "lib", "shields", "timer-control.ts");
+    const { killTimer } = await import(sourceModulePath);
+    const stateDir = path.join(tmpDir, ".nemoclaw", "state");
+    fs.mkdirSync(stateDir, { recursive: true });
+    const markerPath = path.join(stateDir, "shields-timer-openclaw.json");
+    fs.writeFileSync(
+      markerPath,
+      JSON.stringify({
+        pid: 7331,
+        sandboxName: "openclaw",
+        snapshotPath: "/tmp/snap.yaml",
+        restoreAt: new Date(Date.now() + 60_000).toISOString(),
+      }),
+    );
+
+    const processKillSpy = vi
+      .spyOn(process, "kill")
+      .mockImplementation((pid: number, signal?: string | number) =>
+        pid === 7331 && signal === 0 ? throwErrno("gone", "ESRCH") : true,
+      );
+    const originalUnlinkSync = fs.unlinkSync.bind(fs);
+    vi.spyOn(fs, "unlinkSync").mockImplementation((filePath: fs.PathLike) =>
+      String(filePath) === markerPath
+        ? throwErrno("permission denied", "EACCES")
+        : originalUnlinkSync(filePath),
+    );
+
+    const result = killTimer("openclaw");
+
+    expect(result.authorityRevoked).toBe(false);
+    expect(result.warnings).toEqual([
+      expect.stringContaining("Failed to remove shields timer marker"),
+    ]);
+    expect(processKillSpy).toHaveBeenCalledWith(7331, 0);
+    expect(fs.existsSync(markerPath)).toBe(true);
   });
 
   it("isShieldsDown and shieldsDown fail closed when shields state is corrupt", async () => {
