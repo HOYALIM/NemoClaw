@@ -863,16 +863,16 @@ Then re-run `$$nemoclaw onboard`.
 
 <AgentOnly variant="openclaw,hermes">
 
-### Updated messaging token is not picked up
+### Updated messaging credential is not picked up
 
-Rerunning `$$nemoclaw onboard --non-interactive` with a new `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN`, `SLACK_BOT_TOKEN`, or `SLACK_APP_TOKEN` previously reported success while the sandbox kept using the old credential.
-When you rerun onboarding, NemoClaw compares each supplied token with its SHA-256 hash in the sandbox registry for active channels.
-When you provide a replacement token, NemoClaw validates it before it backs up workspace state, destroys the sandbox, recreates it, and restores the backup.
+Rerunning `$$nemoclaw onboard --non-interactive` with a replacement `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `WECHAT_BOT_TOKEN`, or `MSTEAMS_APP_PASSWORD` previously reported success while the sandbox kept using the old credential.
+When you rerun onboarding, NemoClaw evaluates every active messaging credential binding and compares each supplied credential with its SHA-256 hash in the sandbox registry.
+When you provide a replacement credential, NemoClaw validates it before it backs up workspace state, destroys the sandbox, recreates it, and restores the backup.
 If validation fails, onboarding stops before it backs up workspace state or destroys the existing sandbox.
-If you do not supply a token, or the supplied token matches the recorded hash, the credential check does not trigger recreation.
-If you replace a token for a channel that you stopped with `channels stop`, onboarding does not trigger recreation because that channel is inactive.
+If you do not supply a credential, or the supplied credential matches the recorded hash, the credential check does not trigger recreation.
+If you replace a credential for a channel that you stopped with `channels stop`, onboarding does not trigger recreation because that channel is inactive.
 
-If you suspect a sandbox is still using a stale token, re-run onboarding so the credential check runs:
+If you suspect a sandbox is still using a stale messaging credential, re-run onboarding so the credential check runs:
 
 ```bash
 $$nemoclaw onboard --non-interactive

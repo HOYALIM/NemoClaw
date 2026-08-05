@@ -54,15 +54,23 @@ describe("credential rotation documentation", () => {
     }
   });
 
-  it("documents messaging rebuilds and web search recreation", () => {
+  it("documents onboarding-managed messaging and web search recreation", () => {
     const guide = readGuide();
     const bash = fencedBlocks(guide, "bash");
 
-    for (const channel of ["slack", "telegram", "discord"]) {
-      const example = bash.find((block) => block.includes(`channels add ${channel}`));
-      expect(example, channel).toBeDefined();
-      expect(example, channel).toContain("rebuild --yes");
+    for (const credential of ["SLACK_BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN"]) {
+      const example = bash.find(
+        (block) => block.includes(credential) && block.includes("onboard --name <sandbox>"),
+      );
+      expect(example, credential).toBeDefined();
+      expect(example, credential).toContain("--yes-i-accept-third-party-software");
+      expect(example, credential).not.toContain("channels add");
+      expect(example, credential).not.toContain("rebuild --yes");
     }
+
+    expect(guide).toContain("WECHAT_BOT_TOKEN");
+    expect(guide).toContain("MSTEAMS_APP_PASSWORD");
+    expect(guide).toContain("automatically backs up, recreates, and restores the sandbox");
 
     const searchExamples = bash.filter((block) => block.includes("NEMOCLAW_WEB_SEARCH_PROVIDER"));
     expect(searchExamples.length).toBeGreaterThan(0);
