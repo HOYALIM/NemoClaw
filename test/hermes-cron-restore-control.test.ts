@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -218,7 +219,7 @@ function readMaxJobsBytes(source: string): number {
   const match = readFileSync(source, "utf8").match(
     /MAX_JOBS_BYTES\s*=\s*(\d+)\s*\*\s*(\d+)\s*\*\s*(\d+)/u,
   );
-  if (!match) throw new Error(`MAX_JOBS_BYTES is missing from ${source}`);
+  assert(match, `MAX_JOBS_BYTES is missing from ${source}`);
   return Number(match[1]) * Number(match[2]) * Number(match[3]);
 }
 

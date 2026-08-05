@@ -1307,7 +1307,7 @@ test(STALE_BASE_REBUILD
     `Hermes version output did not include expected release ${expectedVersion}: ${hermesVersionText}`,
   );
   await cronRestore.verify(rebuildOutput, rebuildBackupPath);
-  if (!STALE_BASE_REBUILD) await cronRestore.verifyStrandedGateRecovery();
+  await cronRestore.verifyStrandedGateRecovery();
   const restoredKanbanDatabase = await host.command(
     activeOpenshellBin,
     [
