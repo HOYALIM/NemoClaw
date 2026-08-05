@@ -235,6 +235,94 @@ describe("shields command flow", () => {
     expect(output).not.toContain("Original mutable-default posture restored");
   });
 
+  it("reports revoked timer authority when state restoration falls back to lockdown (#7538)", () => {
+    const stateDir = path.join(tmpDir, ".nemoclaw", "state");
+    const statePath = path.join(stateDir, "shields-openclaw.json");
+    const originalRmSync = fs.rmSync.bind(fs);
+    const harness = createHarness({
+      confirmOpenClawInodeFlags: true,
+      fork: () => ({
+        pid: 4242,
+        disconnect: vi.fn(),
+        unref: vi.fn(),
+        send: vi.fn(() => {
+          const transitionName = fs
+            .readdirSync(stateDir)
+            .find((entry) => entry.startsWith("shields-transition-openclaw-"));
+          const transitionPath = path.join(stateDir, transitionName!);
+          const transition = JSON.parse(fs.readFileSync(transitionPath, "utf-8"));
+          fs.writeFileSync(transitionPath, JSON.stringify({ ...transition, phase: "active" }));
+          return true;
+        }),
+        kill: vi.fn(() => true),
+      }),
+    });
+    vi.spyOn(fs, "rmSync").mockImplementation((target, options) => {
+      if (String(target) === statePath) throw new Error("injected state restoration failure");
+      originalRmSync(target, options);
+    });
+
+    expect(() =>
+      harness.shieldsDown("openclaw", {
+        timeout: "5m",
+        reason: "state restoration coverage",
+        throwOnError: true,
+      }),
+    ).toThrow("Shields-down recovery ownership changed during the transition");
+
+    expect(harness.getOpenClawPosture()).toBe("locked");
+    expect(JSON.parse(fs.readFileSync(statePath, "utf-8"))).toMatchObject({ shieldsDown: false });
+    const output = harness.errorSpy.mock.calls.flat().map(String).join("\n");
+    expect(output).toContain(
+      "Auto-restore handoff failed; lockdown was restored. Auto-restore timer authority was revoked.",
+    );
+    expect(output).not.toContain("scheduled auto-restore remains authoritative");
+  });
+
+  it("requires manual recovery after state restoration and re-lock fail with timer revoked (#7538)", () => {
+    const stateDir = path.join(tmpDir, ".nemoclaw", "state");
+    const statePath = path.join(stateDir, "shields-openclaw.json");
+    const originalRmSync = fs.rmSync.bind(fs);
+    const harness = createHarness({
+      failOpenClawGuardActions: ["lock"],
+      fork: () => ({
+        pid: 4242,
+        disconnect: vi.fn(),
+        unref: vi.fn(),
+        send: vi.fn(() => {
+          const transitionName = fs
+            .readdirSync(stateDir)
+            .find((entry) => entry.startsWith("shields-transition-openclaw-"));
+          const transitionPath = path.join(stateDir, transitionName!);
+          const transition = JSON.parse(fs.readFileSync(transitionPath, "utf-8"));
+          fs.writeFileSync(transitionPath, JSON.stringify({ ...transition, phase: "active" }));
+          return true;
+        }),
+        kill: vi.fn(() => true),
+      }),
+    });
+    vi.spyOn(fs, "rmSync").mockImplementation((target, options) => {
+      if (String(target) === statePath) throw new Error("injected state restoration failure");
+      originalRmSync(target, options);
+    });
+
+    expect(() =>
+      harness.shieldsDown("openclaw", {
+        timeout: "5m",
+        reason: "manual recovery coverage",
+        throwOnError: true,
+      }),
+    ).toThrow("Shields-down recovery ownership changed during the transition");
+
+    expect(harness.getOpenClawPosture()).toBe("mutable");
+    expect(JSON.parse(fs.readFileSync(statePath, "utf-8"))).toMatchObject({ shieldsDown: true });
+    const output = harness.errorSpy.mock.calls.flat().map(String).join("\n");
+    expect(output).toContain(
+      "Auto-restore handoff failed; rollback is incomplete. Auto-restore timer authority was revoked. Manual intervention is required.",
+    );
+    expect(output).not.toContain("scheduled auto-restore remains authoritative");
+  });
+
   it("rejects corrupt state before weakening an initially locked config", () => {
     const stateDir = path.join(tmpDir, ".nemoclaw", "state");
     const statePath = path.join(stateDir, "shields-openclaw.json");
