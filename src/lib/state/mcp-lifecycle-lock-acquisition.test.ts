@@ -30,7 +30,7 @@ function options() {
   return {
     stateDir,
     pollIntervalMs: 1,
-    timeoutMs: 20,
+    timeoutMs: 1_000,
     corruptLockGraceMs: 1,
   };
 }
