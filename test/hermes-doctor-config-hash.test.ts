@@ -67,6 +67,7 @@ describe("Hermes doctor and config hash boundary", () => {
     const preloadsDir = path.join(libDir, "preloads");
     const buildMcpDigestPath = path.join(libDir, "build-hermes-mcp-digest.py");
     const mcpConfigTransactionPath = path.join(libDir, "hermes-mcp-config-transaction.py");
+    const cronRestoreControlPath = path.join(libDir, "hermes-cron-restore-control.py");
     const langfuseCredentialPatcherPath = path.join(
       libDir,
       "patch-hermes-langfuse-credentials.mts",
@@ -108,6 +109,7 @@ describe("Hermes doctor and config hash boundary", () => {
         path.join(libDir, "finalize-tirith-marker.py"),
         buildMcpDigestPath,
         mcpConfigTransactionPath,
+        cronRestoreControlPath,
         mcpCredentialBoundaryPath,
         path.join(libDir, "state-dir-guard.py"),
         path.join(libDir, "managed-gateway-control.py"),
@@ -145,7 +147,7 @@ describe("Hermes doctor and config hash boundary", () => {
       expect(result.stderr).toBe("");
       expect(fs.readFileSync(chownLogPath, "utf-8")).toBe(
         [
-          `root:root ${path.join(binDir, "nemoclaw-gateway-control")} ${path.join(libDir, "gateway-supervisor.sh")} ${path.join(libDir, "state-dir-guard.py")} ${path.join(libDir, "managed-gateway-control.py")} ${buildMcpDigestPath} ${mcpCredentialBoundaryPath}`,
+          `root:root ${path.join(binDir, "nemoclaw-gateway-control")} ${path.join(libDir, "gateway-supervisor.sh")} ${path.join(libDir, "state-dir-guard.py")} ${path.join(libDir, "managed-gateway-control.py")} ${buildMcpDigestPath} ${cronRestoreControlPath} ${mcpCredentialBoundaryPath}`,
           `-R 0:0 ${preloadsDir}`,
           "",
         ].join("\n"),
@@ -153,6 +155,7 @@ describe("Hermes doctor and config hash boundary", () => {
       expect(mode(path.join(binDir, "nemoclaw-gateway-control"))).toBe("700");
       expect(mode(path.join(libDir, "finalize-tirith-marker.py"))).toBe("755");
       expect(mode(mcpConfigTransactionPath)).toBe("755");
+      expect(mode(cronRestoreControlPath)).toBe("755");
       expect(mode(discordRecoveryPatcherPath)).toBe("755");
       expect(mode(profilePolicyPatcherPath)).toBe("755");
       expect(mode(langfuseCredentialPatcherPath)).toBe("444");

@@ -1108,6 +1108,7 @@ describe("Hermes sandbox provisioning", () => {
     const gatewaySupervisorPath = path.join(localLib, "gateway-supervisor.sh");
     const buildMcpDigestPath = path.join(localLib, "build-hermes-mcp-digest.py");
     const mcpConfigTransactionPath = path.join(localLib, "hermes-mcp-config-transaction.py");
+    const cronRestoreControlPath = path.join(localLib, "hermes-cron-restore-control.py");
     const langfuseCredentialPatcherPath = path.join(
       localLib,
       "patch-hermes-langfuse-credentials.mts",
@@ -1132,6 +1133,7 @@ describe("Hermes sandbox provisioning", () => {
       path.join(localLib, "finalize-tirith-marker.py"),
       buildMcpDigestPath,
       mcpConfigTransactionPath,
+      cronRestoreControlPath,
       mcpManifest,
       gatewaySupervisorPath,
       stateDirGuardPath,
@@ -1159,10 +1161,11 @@ describe("Hermes sandbox provisioning", () => {
 
       expect(result.status, result.stderr).toBe(0);
       expect(calls).toContain(
-        `chown root:root ${gatewayControlPath} ${gatewaySupervisorPath} ${stateDirGuardPath} ${managedGatewayControlPath} ${buildMcpDigestPath} ${mcpManifest}`,
+        `chown root:root ${gatewayControlPath} ${gatewaySupervisorPath} ${stateDirGuardPath} ${managedGatewayControlPath} ${buildMcpDigestPath} ${cronRestoreControlPath} ${mcpManifest}`,
       );
       expect((fs.statSync(gatewayControlPath).mode & 0o777).toString(8)).toBe("700");
       expect((fs.statSync(mcpConfigTransactionPath).mode & 0o777).toString(8)).toBe("755");
+      expect((fs.statSync(cronRestoreControlPath).mode & 0o777).toString(8)).toBe("755");
       expect((fs.statSync(langfuseCredentialPatcherPath).mode & 0o777).toString(8)).toBe("444");
       expect((fs.statSync(mcpManifest).mode & 0o777).toString(8)).toBe("444");
       expect((fs.statSync(buildMcpDigestPath).mode & 0o777).toString(8)).toBe("444");

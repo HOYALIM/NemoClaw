@@ -565,6 +565,7 @@ describe("sandbox rlimit system hooks (#2173)", () => {
     const tirithMarkerFinalizer = path.join(localLib, "finalize-tirith-marker.py");
     const buildMcpDigest = path.join(localLib, "build-hermes-mcp-digest.py");
     const mcpTransaction = path.join(localLib, "hermes-mcp-config-transaction.py");
+    const cronRestoreControl = path.join(localLib, "hermes-cron-restore-control.py");
     const mcpCredentialBoundary = path.join(
       localLib,
       "openshell-child-visible-credentials.v0.0.85.json",
@@ -598,6 +599,7 @@ describe("sandbox rlimit system hooks (#2173)", () => {
       fs.writeFileSync(tirithMarkerFinalizer, "# Tirith marker finalizer fixture\n");
       fs.writeFileSync(buildMcpDigest, "# build MCP digest fixture\n");
       fs.writeFileSync(mcpTransaction, "# MCP transaction fixture\n");
+      fs.writeFileSync(cronRestoreControl, "# cron restore control fixture\n");
       fs.writeFileSync(mcpCredentialBoundary, "{}\n");
       fs.mkdirSync(preloadDir, { mode: 0o777 });
       fs.writeFileSync(safetyNet, "module.exports = 'safety net fixture';\n", { mode: 0o666 });
@@ -649,6 +651,7 @@ describe("sandbox rlimit system hooks (#2173)", () => {
         .replaceAll("/usr/local/lib/nemoclaw/finalize-tirith-marker.py", tirithMarkerFinalizer)
         .replaceAll("/usr/local/lib/nemoclaw/build-hermes-mcp-digest.py", buildMcpDigest)
         .replaceAll("/usr/local/lib/nemoclaw/hermes-mcp-config-transaction.py", mcpTransaction)
+        .replaceAll("/usr/local/lib/nemoclaw/hermes-cron-restore-control.py", cronRestoreControl)
         .replaceAll(
           "/usr/local/lib/nemoclaw/openshell-child-visible-credentials.v0.0.85.json",
           mcpCredentialBoundary,
