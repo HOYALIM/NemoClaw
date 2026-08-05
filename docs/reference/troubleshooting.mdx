@@ -869,7 +869,8 @@ Rerunning `$$nemoclaw onboard --non-interactive` with a new `TELEGRAM_BOT_TOKEN`
 When you rerun onboarding, NemoClaw compares each supplied token with its SHA-256 hash in the sandbox registry for active channels.
 When you provide a replacement token, NemoClaw validates it before it backs up workspace state, destroys the sandbox, recreates it, and restores the backup.
 If validation fails, onboarding stops before it backs up workspace state or destroys the existing sandbox.
-If you replace a token for a channel that you paused with `channels stop`, onboarding does not trigger recreation because that channel is inactive.
+If you do not supply a token, or the supplied token matches the recorded hash, the credential check does not trigger recreation.
+If you replace a token for a channel that you stopped with `channels stop`, onboarding does not trigger recreation because that channel is inactive.
 
 If you suspect a sandbox is still using a stale token, re-run onboarding so the credential check runs:
 
