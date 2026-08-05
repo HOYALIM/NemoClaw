@@ -94,6 +94,7 @@ describe("detached Shields timer process", () => {
           markerPid: childPid,
           wasAlive: true,
           terminated: false,
+          authorityRevoked: true,
           warnings: [],
         });
         expect(fs.existsSync(markerPath)).toBe(false);
