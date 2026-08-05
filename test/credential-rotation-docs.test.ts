@@ -71,6 +71,10 @@ describe("credential rotation documentation", () => {
     expect(guide).toContain("WECHAT_BOT_TOKEN");
     expect(guide).toContain("MSTEAMS_APP_PASSWORD");
     expect(guide).toContain("automatically backs up, recreates, and restores the sandbox");
+    expect(guide).toContain(
+      "Plan for recreation downtime when automating messaging or web search rotation.",
+    );
+    expect(guide).not.toContain("rebuild downtime");
 
     const searchExamples = bash.filter((block) => block.includes("NEMOCLAW_WEB_SEARCH_PROVIDER"));
     expect(searchExamples.length).toBeGreaterThan(0);
