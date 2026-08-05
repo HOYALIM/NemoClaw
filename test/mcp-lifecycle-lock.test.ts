@@ -675,7 +675,7 @@ const releasePath = process.argv[3];
     let now = 0;
     const linkSpy = vi.spyOn(fs, "linkSync").mockImplementation((from, to) => {
       linkSync(from, to);
-      if (String(to) === lockPath) now = 100;
+      now = String(to) === lockPath ? 100 : now;
     });
     const operation = vi.fn();
 
@@ -756,7 +756,7 @@ const releasePath = process.argv[3];
     let now = 0;
     const renameSpy = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
       renameSync(from, to);
-      if (String(from) === lockPath) now = 100;
+      now = String(from) === lockPath ? 100 : now;
     });
     const operation = vi.fn();
 
