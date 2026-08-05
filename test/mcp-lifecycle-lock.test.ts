@@ -650,7 +650,91 @@ const releasePath = process.argv[3];
     expect(fs.existsSync(`${lockPath}.containment`)).toBe(false);
   });
 
-  it("does not enter the critical section when lock publication crosses the deadline (#7858)", async () => {
+  it("rolls back containment when publication crosses the asynchronous acquisition deadline (#7858)", async () => {
+    const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
+    const deadlinePath = `${lockPath}.deadline`;
+    const containmentPath = `${lockPath}.containment`;
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(
+      deadlinePath,
+      `${JSON.stringify({
+        version: 1,
+        sandboxName: "alpha",
+        pid: 2_147_483_647,
+        processIdentity: "dead-deadline",
+        hostIdentity: currentHostIdentity,
+        pidNamespaceIdentity: currentPidNamespaceIdentity,
+        token: "stale-deadline-token",
+        acquiredAt: "2026-01-01T00:00:00.000Z",
+      })}\n`,
+    );
+    const linkSync = fs.linkSync.bind(fs);
+    let now = 0;
+    const linkSpy = vi.spyOn(fs, "linkSync").mockImplementation((from, to) => {
+      linkSync(from, to);
+      now = String(to) === containmentPath ? 100 : now;
+    });
+    const operation = vi.fn();
+
+    try {
+      await expect(
+        lifecycleLock.withMcpLifecycleLock("alpha", operation, {
+          ...options({ timeoutMs: 30 }),
+          monotonicNow: () => now,
+        }),
+      ).rejects.toThrow("Timed out waiting for the sandbox mutation lock");
+    } finally {
+      linkSpy.mockRestore();
+    }
+
+    expect(operation).not.toHaveBeenCalled();
+    expect(JSON.parse(fs.readFileSync(deadlinePath, "utf8")).token).toBe("stale-deadline-token");
+    expect(fs.existsSync(containmentPath)).toBe(false);
+  });
+
+  it("rolls back containment when publication crosses the synchronous acquisition deadline (#7858)", () => {
+    const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
+    const deadlinePath = `${lockPath}.deadline`;
+    const containmentPath = `${lockPath}.containment`;
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(
+      deadlinePath,
+      `${JSON.stringify({
+        version: 1,
+        sandboxName: "alpha",
+        pid: 2_147_483_647,
+        processIdentity: "dead-deadline",
+        hostIdentity: currentHostIdentity,
+        pidNamespaceIdentity: currentPidNamespaceIdentity,
+        token: "stale-deadline-token",
+        acquiredAt: "2026-01-01T00:00:00.000Z",
+      })}\n`,
+    );
+    const linkSync = fs.linkSync.bind(fs);
+    let now = 0;
+    const linkSpy = vi.spyOn(fs, "linkSync").mockImplementation((from, to) => {
+      linkSync(from, to);
+      now = String(to) === containmentPath ? 100 : now;
+    });
+    const operation = vi.fn();
+
+    try {
+      expect(() =>
+        lifecycleLock.withMcpLifecycleLockSync("alpha", operation, {
+          ...options({ timeoutMs: 30 }),
+          monotonicNow: () => now,
+        }),
+      ).toThrow("Timed out waiting for sandbox mutation lock");
+    } finally {
+      linkSpy.mockRestore();
+    }
+
+    expect(operation).not.toHaveBeenCalled();
+    expect(JSON.parse(fs.readFileSync(deadlinePath, "utf8")).token).toBe("stale-deadline-token");
+    expect(fs.existsSync(containmentPath)).toBe(false);
+  });
+
+  it("does not enter the critical section when lock publication crosses the acquisition deadline (#7858)", async () => {
     let nowCalls = 0;
     let entered = false;
 
@@ -671,7 +755,74 @@ const releasePath = process.argv[3];
     expect(fs.existsSync(lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir))).toBe(false);
   });
 
-  it("does not enter the synchronous critical section when lock publication crosses the deadline (#7858)", () => {
+  it("does not invoke the asynchronous callback after the acquisition deadline (#7858)", async () => {
+    const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
+    let now = 0;
+    let handoffScheduled = false;
+    const operation = vi.fn();
+
+    await expect(
+      lifecycleLock.withMcpLifecycleLock("alpha", operation, {
+        ...options({ timeoutMs: 30 }),
+        monotonicNow: () => {
+          if (!handoffScheduled && fs.existsSync(lockPath)) {
+            handoffScheduled = true;
+            queueMicrotask(() => {
+              const owner = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+              fs.unlinkSync(lockPath);
+              fs.writeFileSync(
+                lockPath,
+                `${JSON.stringify({ ...owner, token: "async-replacement-token" })}\n`,
+              );
+              now = 100;
+            });
+          }
+          return now;
+        },
+      }),
+    ).rejects.toThrow("Timed out waiting for the sandbox mutation lock");
+
+    expect(handoffScheduled).toBe(true);
+    expect(operation).not.toHaveBeenCalled();
+    expect(JSON.parse(fs.readFileSync(lockPath, "utf8")).token).toBe("async-replacement-token");
+  });
+
+  it("does not invoke the synchronous callback after the acquisition deadline (#7858)", () => {
+    const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
+    let acquisitionPublished = false;
+    let replacementPublished = false;
+    const operation = vi.fn();
+
+    expect(() =>
+      lifecycleLock.withMcpLifecycleLockSync("alpha", operation, {
+        ...options({ timeoutMs: 30 }),
+        monotonicNow: () => {
+          if (!fs.existsSync(lockPath)) return 0;
+          if (!acquisitionPublished) {
+            acquisitionPublished = true;
+            return 0;
+          }
+          if (!replacementPublished) {
+            const owner = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+            fs.unlinkSync(lockPath);
+            fs.writeFileSync(
+              lockPath,
+              `${JSON.stringify({ ...owner, token: "sync-replacement-token" })}\n`,
+            );
+            replacementPublished = true;
+          }
+          return 100;
+        },
+      }),
+    ).toThrow("Timed out waiting for sandbox mutation lock");
+
+    expect(acquisitionPublished).toBe(true);
+    expect(replacementPublished).toBe(true);
+    expect(operation).not.toHaveBeenCalled();
+    expect(JSON.parse(fs.readFileSync(lockPath, "utf8")).token).toBe("sync-replacement-token");
+  });
+
+  it("does not enter the synchronous critical section when lock publication crosses the acquisition deadline (#7858)", () => {
     const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
     const linkSync = fs.linkSync.bind(fs);
     let now = 0;
@@ -696,7 +847,7 @@ const releasePath = process.argv[3];
     expect(fs.existsSync(lockPath)).toBe(false);
   });
 
-  it("restores a stale main lock when reclamation crosses the deadline (#7858)", async () => {
+  it("restores a stale main lock when reclamation crosses the acquisition deadline (#7858)", async () => {
     const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
     fs.writeFileSync(
@@ -738,7 +889,7 @@ const releasePath = process.argv[3];
     expect(JSON.parse(fs.readFileSync(lockPath, "utf8")).token).toBe("stale-main-token");
   });
 
-  it("restores a stale main lock when synchronous reclamation crosses the deadline (#7858)", () => {
+  it("restores a stale main lock when synchronous reclamation crosses the acquisition deadline (#7858)", () => {
     const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
     fs.writeFileSync(
@@ -777,7 +928,7 @@ const releasePath = process.argv[3];
     expect(JSON.parse(fs.readFileSync(lockPath, "utf8")).token).toBe("stale-main-token");
   });
 
-  it("preserves a stale reaper when observation crosses the deadline (#7858)", async () => {
+  it("preserves a stale reaper when observation crosses the acquisition deadline (#7858)", async () => {
     const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
     const reaperPath = `${lockPath}.reaper`;
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
