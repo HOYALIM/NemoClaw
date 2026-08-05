@@ -7,11 +7,11 @@ import {
   type Dirent,
   lstatSync,
   readdirSync,
-  readFileSync,
   realpathSync,
   type Stats,
 } from "node:fs";
 import path from "node:path";
+import { type OpenRegularFile, openRegularFileNoFollow } from "../../adapters/fs/regular-file";
 
 const HERMES_RUNTIME_HOME = "/sandbox/.hermes";
 const HERMES_SANDBOX_HOME = "/sandbox";
@@ -42,24 +42,30 @@ function requirePathMetadata(target: string, description: string): Stats {
 
 function readJobs(profileLabel: string, profileBackupHome: string): Record<string, unknown>[] {
   const jobsPath = path.join(profileBackupHome, "cron", "jobs.json");
-  let metadata: Stats;
+  let jobsFile: OpenRegularFile;
   try {
-    metadata = lstatSync(jobsPath);
+    jobsFile = openRegularFileNoFollow(jobsPath);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return [];
     throw new Error(`${profileLabel} cron store is unreadable: ${describeError(error)}`);
   }
-  if (metadata.isSymbolicLink() || !metadata.isFile()) {
-    throw new Error(`${profileLabel} cron store is not a regular file`);
-  }
-  if (metadata.size > MAX_JOBS_BYTES) {
-    throw new Error(`${profileLabel} cron store exceeds the validation limit`);
+
+  let contents: string;
+  try {
+    contents = jobsFile.readUtf8(MAX_JOBS_BYTES);
+  } catch (error) {
+    if (error instanceof RangeError) {
+      throw new Error(`${profileLabel} cron store exceeds the validation limit`);
+    }
+    throw new Error(`${profileLabel} cron store is invalid: ${describeError(error)}`);
+  } finally {
+    jobsFile.close();
   }
 
   let payload: unknown;
   try {
-    payload = JSON.parse(readFileSync(jobsPath, "utf8").replace(/^\uFEFF/u, ""));
+    payload = JSON.parse(contents.replace(/^\uFEFF/u, ""));
   } catch (error) {
     throw new Error(`${profileLabel} cron store is invalid: ${describeError(error)}`);
   }
