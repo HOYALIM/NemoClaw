@@ -145,9 +145,18 @@ describe("MCP lifecycle lock", () => {
       fs.mkdirSync(path.dirname(lockPath), { recursive: true });
       fs.writeFileSync(targetPath, target);
       fs.symlinkSync(targetPath, lockPath);
+      const nowValues = [0, 0, 0, 0, 11];
+      let nowCalls = 0;
 
       await expect(
-        lifecycleLock.withMcpLifecycleLock("alpha", () => "acquired", options({ timeoutMs: 50 })),
+        lifecycleLock.withMcpLifecycleLock(
+          "alpha",
+          () => "acquired",
+          options({
+            timeoutMs: 50,
+            monotonicNow: () => nowValues[Math.min(nowCalls++, nowValues.length - 1)],
+          }),
+        ),
       ).rejects.toThrow(/containment is active/);
       expect(fs.readFileSync(targetPath, "utf8")).toBe(target);
       expect(fs.lstatSync(lockPath).isSymbolicLink()).toBe(true);
@@ -736,12 +745,18 @@ const releasePath = process.argv[3];
   it("does not reclaim a corrupt directory at the lock path (#7858)", async () => {
     const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
     fs.mkdirSync(lockPath, { recursive: true });
+    const nowValues = [0, 0, 0, 0, 100];
+    let nowCalls = 0;
 
     await expect(
       lifecycleLock.withMcpLifecycleLock(
         "alpha",
         () => undefined,
-        options({ timeoutMs: 30, corruptLockGraceMs: 1 }),
+        options({
+          timeoutMs: 30,
+          corruptLockGraceMs: 1,
+          monotonicNow: () => nowValues[Math.min(nowCalls++, nowValues.length - 1)],
+        }),
       ),
     ).rejects.toThrow("Timed out waiting for the sandbox mutation lock");
 
