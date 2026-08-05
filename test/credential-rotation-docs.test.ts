@@ -70,7 +70,9 @@ describe("credential rotation documentation", () => {
 
     expect(guide).toContain("WECHAT_BOT_TOKEN");
     expect(guide).toContain("MSTEAMS_APP_PASSWORD");
-    expect(guide).toContain("automatically backs up, recreates, and restores the sandbox");
+    expect(guide).toContain("backs up supported workspace and manifest-declared state");
+    expect(guide).toContain("Files outside those state paths are not preserved.");
+    expect(guide).not.toContain("restores the sandbox");
     expect(guide).toContain(
       "Plan for recreation downtime when automating messaging or web search rotation.",
     );
