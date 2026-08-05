@@ -820,6 +820,20 @@ describe("managed MCP policy deadline restoration (#7952)", () => {
   });
 });
 
+function removeWithInjectedStateRestoreFailure(
+  originalRmSync: typeof fs.rmSync,
+  statePath: string,
+): typeof fs.rmSync {
+  return ((target: fs.PathLike, options?: fs.RmDirOptions) => {
+    switch (String(target)) {
+      case statePath:
+        throw new Error("injected state restoration failure");
+      default:
+        return originalRmSync(target, options);
+    }
+  }) as typeof fs.rmSync;
+}
+
 describe("shields-down rollback flow", () => {
   let tmpDir: string;
 
@@ -982,10 +996,9 @@ describe("shields-down rollback flow", () => {
         kill: vi.fn(() => true),
       }),
     });
-    vi.spyOn(fs, "rmSync").mockImplementation((target, options) => {
-      if (String(target) === statePath) throw new Error("injected state restoration failure");
-      originalRmSync(target, options);
-    });
+    vi.spyOn(fs, "rmSync").mockImplementation(
+      removeWithInjectedStateRestoreFailure(originalRmSync, statePath),
+    );
 
     expect(() =>
       harness.shieldsDown("openclaw", {
@@ -1026,10 +1039,9 @@ describe("shields-down rollback flow", () => {
         kill: vi.fn(() => true),
       }),
     });
-    vi.spyOn(fs, "rmSync").mockImplementation((target, options) => {
-      if (String(target) === statePath) throw new Error("injected state restoration failure");
-      originalRmSync(target, options);
-    });
+    vi.spyOn(fs, "rmSync").mockImplementation(
+      removeWithInjectedStateRestoreFailure(originalRmSync, statePath),
+    );
 
     expect(() =>
       harness.shieldsDown("openclaw", {
