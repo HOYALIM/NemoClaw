@@ -3,11 +3,14 @@
 
 import {
   accessSync,
+  closeSync,
   constants,
   type Dirent,
+  fstatSync,
   lstatSync,
+  openSync,
   readdirSync,
-  readFileSync,
+  readSync,
   realpathSync,
   type Stats,
 } from "node:fs";
@@ -40,26 +43,66 @@ function requirePathMetadata(target: string, description: string): Stats {
   return metadata;
 }
 
-function readJobs(profileLabel: string, profileBackupHome: string): Record<string, unknown>[] {
-  const jobsPath = path.join(profileBackupHome, "cron", "jobs.json");
-  let metadata: Stats;
+function readCronStore(profileLabel: string, jobsPath: string): string | null {
+  if (typeof constants.O_NOFOLLOW !== "number") {
+    throw new Error(`${profileLabel} cron store cannot be opened without symlink protection`);
+  }
+  const nonblock = typeof constants.O_NONBLOCK === "number" ? constants.O_NONBLOCK : 0;
+  let descriptor: number;
   try {
-    metadata = lstatSync(jobsPath);
+    descriptor = openSync(jobsPath, constants.O_RDONLY | constants.O_NOFOLLOW | nonblock);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return [];
+    if (code === "ENOENT") return null;
     throw new Error(`${profileLabel} cron store is unreadable: ${describeError(error)}`);
   }
-  if (metadata.isSymbolicLink() || !metadata.isFile()) {
-    throw new Error(`${profileLabel} cron store is not a regular file`);
+
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    if (!before.isFile()) {
+      throw new Error(`${profileLabel} cron store is not a regular file`);
+    }
+    if (before.size > BigInt(MAX_JOBS_BYTES)) {
+      throw new Error(`${profileLabel} cron store exceeds the validation limit`);
+    }
+
+    const payload = Buffer.alloc(Number(before.size) + 1);
+    let offset = 0;
+    while (offset < payload.length) {
+      const bytesRead = readSync(descriptor, payload, offset, payload.length - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    const after = fstatSync(descriptor, { bigint: true });
+    if (
+      offset !== Number(before.size) ||
+      after.dev !== before.dev ||
+      after.ino !== before.ino ||
+      after.size !== before.size ||
+      after.mtimeNs !== before.mtimeNs ||
+      after.ctimeNs !== before.ctimeNs
+    ) {
+      throw new Error(`${profileLabel} cron store changed during validation`);
+    }
+    return payload.subarray(0, offset).toString("utf8");
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith(`${profileLabel} cron store`)) {
+      throw error;
+    }
+    throw new Error(`${profileLabel} cron store is unreadable: ${describeError(error)}`);
+  } finally {
+    closeSync(descriptor);
   }
-  if (metadata.size > MAX_JOBS_BYTES) {
-    throw new Error(`${profileLabel} cron store exceeds the validation limit`);
-  }
+}
+
+function readJobs(profileLabel: string, profileBackupHome: string): Record<string, unknown>[] {
+  const jobsPath = path.join(profileBackupHome, "cron", "jobs.json");
+  const contents = readCronStore(profileLabel, jobsPath);
+  if (contents === null) return [];
 
   let payload: unknown;
   try {
-    payload = JSON.parse(readFileSync(jobsPath, "utf8").replace(/^\uFEFF/u, ""));
+    payload = JSON.parse(contents.replace(/^\uFEFF/u, ""));
   } catch (error) {
     throw new Error(`${profileLabel} cron store is invalid: ${describeError(error)}`);
   }

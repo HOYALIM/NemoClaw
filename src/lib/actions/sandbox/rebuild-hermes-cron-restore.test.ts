@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -86,6 +86,18 @@ describe("Hermes cron rebuild restore contract", () => {
 
     expect(() => validateHermesCronRestoreBackup(backupPath)).toThrow(
       "active job #1 script is missing or unreadable",
+    );
+  });
+
+  it("refuses to follow a symlinked cron store", () => {
+    const target = path.join(backupPath, "external-jobs.json");
+    writeJson(target, []);
+    const jobsPath = path.join(backupPath, "cron", "jobs.json");
+    mkdirSync(path.dirname(jobsPath), { recursive: true });
+    symlinkSync(target, jobsPath);
+
+    expect(() => validateHermesCronRestoreBackup(backupPath)).toThrow(
+      "default profile cron store is unreadable",
     );
   });
 
