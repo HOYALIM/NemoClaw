@@ -669,6 +669,31 @@ const releasePath = process.argv[3];
     expect(fs.existsSync(lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir))).toBe(false);
   });
 
+  it("does not enter the synchronous critical section when lock publication crosses the deadline (#7858)", () => {
+    const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
+    const linkSync = fs.linkSync.bind(fs);
+    let now = 0;
+    const linkSpy = vi.spyOn(fs, "linkSync").mockImplementation((from, to) => {
+      linkSync(from, to);
+      if (String(to) === lockPath) now = 100;
+    });
+    const operation = vi.fn();
+
+    try {
+      expect(() =>
+        lifecycleLock.withMcpLifecycleLockSync("alpha", operation, {
+          ...options({ timeoutMs: 30 }),
+          monotonicNow: () => now,
+        }),
+      ).toThrow("Timed out waiting for sandbox mutation lock");
+    } finally {
+      linkSpy.mockRestore();
+    }
+
+    expect(operation).not.toHaveBeenCalled();
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
   it("restores a stale main lock when reclamation crosses the deadline (#7858)", async () => {
     const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
@@ -708,6 +733,45 @@ const releasePath = process.argv[3];
     }
 
     expect(entered).toBe(false);
+    expect(JSON.parse(fs.readFileSync(lockPath, "utf8")).token).toBe("stale-main-token");
+  });
+
+  it("restores a stale main lock when synchronous reclamation crosses the deadline (#7858)", () => {
+    const lockPath = lifecycleLock.getMcpLifecycleLockPath("alpha", stateDir);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(
+      lockPath,
+      `${JSON.stringify({
+        version: 1,
+        sandboxName: "alpha",
+        pid: 2_147_483_647,
+        processIdentity: "dead-process",
+        hostIdentity: currentHostIdentity,
+        pidNamespaceIdentity: currentPidNamespaceIdentity,
+        token: "stale-main-token",
+        acquiredAt: "2026-01-01T00:00:00.000Z",
+      })}\n`,
+    );
+    const renameSync = fs.renameSync.bind(fs);
+    let now = 0;
+    const renameSpy = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      renameSync(from, to);
+      if (String(from) === lockPath) now = 100;
+    });
+    const operation = vi.fn();
+
+    try {
+      expect(() =>
+        lifecycleLock.withMcpLifecycleLockSync("alpha", operation, {
+          ...options({ timeoutMs: 30 }),
+          monotonicNow: () => now,
+        }),
+      ).toThrow("Timed out waiting for sandbox mutation lock");
+    } finally {
+      renameSpy.mockRestore();
+    }
+
+    expect(operation).not.toHaveBeenCalled();
     expect(JSON.parse(fs.readFileSync(lockPath, "utf8")).token).toBe("stale-main-token");
   });
 
