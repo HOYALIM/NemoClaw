@@ -8,6 +8,10 @@ if (invokedAs === "nemo-deepagents") {
   process.env.NEMOCLAW_AGENT = "langchain-deepagents-code";
   process.env.NEMOCLAW_INVOKED_AS = "nemo-deepagents";
 }
+if (invokedAs === "nemohermes") {
+  process.env.NEMOCLAW_AGENT = "hermes";
+  process.env.NEMOCLAW_INVOKED_AS = "nemohermes";
+}
 
 let topLevelLog = null;
 try {

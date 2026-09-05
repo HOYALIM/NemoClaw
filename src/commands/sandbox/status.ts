@@ -32,7 +32,7 @@ export default class SandboxStatusCommand extends NemoClawCommand {
     const { args } = await this.parse(SandboxStatusCommand);
     if (this.jsonEnabled()) {
       const report = await getSandboxStatusReport(args.sandboxName);
-      if (
+      const isFailed =
         !report.found ||
         ("portableLifecyclePhase" in report
           ? report.portableLifecyclePhase !== "active"
@@ -40,16 +40,24 @@ export default class SandboxStatusCommand extends NemoClawCommand {
             report.rpcIssue ||
             report.failureLayer ||
             isInferenceHealthFailing(report.inferenceHealth) ||
-            report.terminalRuntimeHealth?.kind === "degraded")
-      ) {
-        process.exitCode = 1;
-      }
+            report.terminalRuntimeHealth?.kind === "degraded");
+      this.setExitCode(isFailed ? 1 : 0);
       // #4310: route the machine-readable report through the centralized
       // redactForLog source of truth so health diagnostics (inferenceHealth
       // endpoint/detail/subprobes) cannot leak token-shaped values into
       // automation that persists CLI JSON output.
       return redactForLog(report);
     }
-    await showSandboxStatus(args.sandboxName);
+    const priorExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await showSandboxStatus(args.sandboxName);
+      this.setExitCode(process.exitCode ?? 0);
+    } catch (error) {
+      if (process.exitCode === undefined && priorExitCode !== undefined) {
+        process.exitCode = priorExitCode;
+      }
+      throw error;
+    }
   }
 }

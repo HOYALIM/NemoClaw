@@ -37,6 +37,8 @@ const mocks = vi.hoisted(() => {
     runSandboxDoctor: vi.fn().mockResolvedValue(undefined),
     showSandboxLogs: vi.fn(),
     showSandboxStatus: vi.fn().mockResolvedValue(undefined),
+    getSandboxStatusReport: vi.fn(),
+    isInferenceHealthFailing: vi.fn().mockReturnValue(false),
     addSandboxHostAlias: vi.fn(),
     listSandboxHostAliases: vi.fn(),
     removeSandboxHostAlias: vi.fn(),
@@ -66,6 +68,8 @@ vi.mock("../../lib/actions/sandbox/process-recovery", () => ({
 
 vi.mock("../../lib/actions/sandbox/status", () => ({
   showSandboxStatus: mocks.showSandboxStatus,
+  getSandboxStatusReport: mocks.getSandboxStatusReport,
+  isInferenceHealthFailing: mocks.isInferenceHealthFailing,
 }));
 
 vi.mock("../../lib/actions/sandbox/logs", () => ({
@@ -327,6 +331,37 @@ describe("sandbox oclif command adapters", () => {
     ).rejects.toThrow("schema-5 rejected");
     expect(mocks.configSet).not.toHaveBeenCalled();
     expect(mocks.configRotateToken).not.toHaveBeenCalled();
+  });
+
+  it("clears a stale non-zero process.exitCode on a successful status run (#11064)", async () => {
+    mocks.showSandboxStatus.mockResolvedValueOnce(undefined);
+    const previousExitCode = process.exitCode;
+    process.exitCode = 1;
+    try {
+      await SandboxStatusCommand.run(["alpha"], rootDir);
+      expect(process.exitCode).toBe(0);
+    } finally {
+      process.exitCode = previousExitCode;
+    }
+  });
+
+  it("sets process.exitCode = 0 on successful --json status run even when process.exitCode was dirty (#11064)", async () => {
+    mocks.getSandboxStatusReport.mockResolvedValueOnce({
+      found: true,
+      gatewayState: "present",
+      rpcIssue: null,
+      failureLayer: null,
+      inferenceHealth: { ok: true },
+      terminalRuntimeHealth: null,
+    });
+    const previousExitCode = process.exitCode;
+    process.exitCode = 1;
+    try {
+      await SandboxStatusCommand.run(["alpha", "--json"], rootDir);
+      expect(process.exitCode).toBe(0);
+    } finally {
+      process.exitCode = previousExitCode;
+    }
   });
 
   it("keeps sandbox inspection usage metadata on native oclif commands", () => {

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { execSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -8,6 +9,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  HERMES_CLI,
   healthyInferenceRouteStubLines,
   inferenceInvocationStubLines,
   runWithEnv,
@@ -588,4 +590,85 @@ describe("CLI sandbox status text output", () => {
       expect(parsed.dockerPaused).toBe(true);
     },
   );
+
+  it("sandbox <name> status exits 0 on a healthy Hermes sandbox invoked directly and via nemohermes (#11064)", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-cli-sandbox-status-hermes-"));
+    const localBin = path.join(home, "bin");
+    fs.mkdirSync(localBin, { recursive: true });
+    writeSandboxRegistry(home, "hermes-station", {
+      agent: "hermes",
+      provider: "nvidia-prod",
+      model: "nvidia/nemotron-3-super-120b-a12b",
+      openshellDriver: "docker",
+      openshellVersion: "0.0.106",
+      policies: ["pypi"],
+    });
+    writeHealthyDockerStub(localBin);
+    fs.writeFileSync(
+      path.join(localBin, "openshell"),
+      [
+        "#!/usr/bin/env bash",
+        'if [ "$1" = "sandbox" ] && [ "$2" = "get" ] && { [ "$3" = "hermes-station" ] || [ "$5" = "hermes-station" ]; }; then',
+        "  echo 'Sandbox:'",
+        "  echo '  Name: hermes-station'",
+        "  echo '  Phase: Ready'",
+        "  exit 0",
+        "fi",
+        'if [ "$1" = "inference" ] && [ "$2" = "get" ]; then',
+        "  echo 'Gateway inference:'",
+        "  echo '  Provider: nvidia-prod'",
+        "  echo '  Model: nvidia/nemotron-3-super-120b-a12b'",
+        "  exit 0",
+        "fi",
+        'if [ "$1" = "status" ]; then',
+        "  echo 'Gateway: nemoclaw'",
+        "  echo 'Status: Connected'",
+        "  exit 0",
+        "fi",
+        'if [ "$1" = "gateway" ] && [ "$2" = "info" ]; then',
+        "  echo 'Gateway: nemoclaw'",
+        "  exit 0",
+        "fi",
+        ...healthyInferenceRouteStubLines(),
+        "exit 0",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+
+    const r = runWithEnv("hermes-station status", {
+      HOME: home,
+      PATH: `${localBin}:${process.env.PATH || ""}`,
+    });
+
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Sandbox: hermes-station");
+    expect(r.out).toContain("Harness:  Hermes Agent (gateway)");
+    expect(r.out).toContain("Phase: Ready");
+
+    // Also assert clean exit 0 when invoked via nemohermes launcher
+    const hermesRun = execSync(`node "${HERMES_CLI}" hermes-station status`, {
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        HOME: home,
+        PATH: `${localBin}:${process.env.PATH || ""}`,
+        NEMOCLAW_AGENT: undefined,
+        NEMOCLAW_INVOKED_AS: undefined,
+        NEMOCLAW_HEALTH_POLL_COUNT: "1",
+        NEMOCLAW_HEALTH_POLL_INTERVAL: "0",
+      },
+    });
+    expect(hermesRun).toContain("Sandbox: hermes-station");
+    expect(hermesRun).toContain("Phase: Ready");
+    expect(hermesRun).toContain("Harness:  Hermes Agent (gateway)");
+
+    // Also assert exit 0 in --json mode
+    const jsonRun = runWithEnv("hermes-station status --json", {
+      HOME: home,
+      PATH: `${localBin}:${process.env.PATH || ""}`,
+    });
+    expect(jsonRun.code).toBe(0);
+    const parsedJson = JSON.parse(jsonRun.out);
+    expect(parsedJson.found).toBe(true);
+  });
 });
