@@ -1955,42 +1955,58 @@ function persistIndependentRetainedSandboxRecovery(
   });
 }
 
-export function listRetainedSandboxRecoveryRecords(): readonly RetainedSandboxRecoveryRecord[] {
-  return withOwnedOnboardLock("nemoclaw retained sandbox recovery read", () => {
-    let records = readRetainedSandboxRecoveryRecords(RETAINED_SANDBOX_RECOVERY_FILE);
-    const current = loadSession();
-    const recovery = current?.cancellationRecovery ?? null;
-    if (
-      current &&
-      recovery &&
-      !records.some(
-        (record) =>
-          record.sandboxName === recovery.sandboxName &&
-          record.sandboxIdentityFingerprint === recovery.sandboxIdentityFingerprint &&
-          record.createAttemptNonce === recovery.createAttemptNonce,
-      )
-    ) {
-      try {
-        writeRetainedSandboxRecovery(RETAINED_SANDBOX_RECOVERY_FILE, {
-          sandboxName: recovery.sandboxName,
-          sandboxIdentityFingerprint: recovery.sandboxIdentityFingerprint,
-          gatewayName: recovery.gatewayName,
-          gatewayPort: recovery.gatewayPort,
-          lifecycleGeneration: recovery.lifecycleGeneration,
-          createAttemptNonce: recovery.createAttemptNonce,
-          resources: retainedSandboxResourceEvidence(current),
-          reason: recovery.reason,
-          recordedAt: recovery.recordedAt,
-        });
-        records = readRetainedSandboxRecoveryRecords(RETAINED_SANDBOX_RECOVERY_FILE);
-      } catch {
-        // Keep the recovery-only session authoritative. A different-name run
-        // remains blocked until a later read can durably reconstruct the
-        // independent record.
-      }
+function readAndReconcileRetainedSandboxRecoveryRecords(): readonly RetainedSandboxRecoveryRecord[] {
+  let records = readRetainedSandboxRecoveryRecords(RETAINED_SANDBOX_RECOVERY_FILE);
+  const current = loadSession();
+  const recovery = current?.cancellationRecovery ?? null;
+  if (
+    current &&
+    recovery &&
+    !records.some(
+      (record) =>
+        record.sandboxName === recovery.sandboxName &&
+        record.sandboxIdentityFingerprint === recovery.sandboxIdentityFingerprint &&
+        record.createAttemptNonce === recovery.createAttemptNonce,
+    )
+  ) {
+    try {
+      writeRetainedSandboxRecovery(RETAINED_SANDBOX_RECOVERY_FILE, {
+        sandboxName: recovery.sandboxName,
+        sandboxIdentityFingerprint: recovery.sandboxIdentityFingerprint,
+        gatewayName: recovery.gatewayName,
+        gatewayPort: recovery.gatewayPort,
+        lifecycleGeneration: recovery.lifecycleGeneration,
+        createAttemptNonce: recovery.createAttemptNonce,
+        resources: retainedSandboxResourceEvidence(current),
+        reason: recovery.reason,
+        recordedAt: recovery.recordedAt,
+      });
+      records = readRetainedSandboxRecoveryRecords(RETAINED_SANDBOX_RECOVERY_FILE);
+    } catch {
+      // Keep the recovery-only session authoritative. A different-name run
+      // remains blocked until a later read can durably reconstruct the
+      // independent record.
     }
-    return records;
-  });
+  }
+  return records;
+}
+
+export function listRetainedSandboxRecoveryRecords(): readonly RetainedSandboxRecoveryRecord[] {
+  if (heldLockFd !== null) {
+    return withOwnedOnboardLock("nemoclaw retained sandbox recovery read", () =>
+      readAndReconcileRetainedSandboxRecoveryRecords(),
+    );
+  }
+  const lock = acquireOnboardLock("nemoclaw retained sandbox recovery read");
+  if (!lock.acquired) {
+    return readRetainedSandboxRecoveryRecords(RETAINED_SANDBOX_RECOVERY_FILE);
+  }
+  try {
+    assertOnboardLockOwned();
+    return readAndReconcileRetainedSandboxRecoveryRecords();
+  } finally {
+    releaseOnboardLock();
+  }
 }
 
 export function recordRetainedSandboxRecovery(

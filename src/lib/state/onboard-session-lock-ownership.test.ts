@@ -60,4 +60,38 @@ describe("onboard lock ownership", () => {
       command: "replacement owner",
     });
   });
+
+  it("allows listing retained sandbox recovery records when another process holds the onboard lock (#11052)", () => {
+    const fingerprint = "a".repeat(64);
+    const recorded = session.recordRetainedSandboxRecovery({
+      sandboxName: "test-sb",
+      sandboxIdentityFingerprint: fingerprint,
+      gatewayName: "nemoclaw",
+      gatewayPort: 8080,
+      lifecycleGeneration: "00000000-0000-4000-8000-000000000001",
+      createAttemptNonce: "c".repeat(62),
+      resources: {
+        sharedInferenceProviders: ["nvidia"],
+        sandboxScopedProviders: ["sandbox-telegram"],
+        credentialEnvironmentVariables: ["NVIDIA_API_KEY"],
+      },
+      reason: "cancelled_after_sandbox_creation",
+      recordedAt: new Date().toISOString(),
+    });
+
+    fs.writeFileSync(
+      session.LOCK_FILE,
+      JSON.stringify({
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        command: "other onboard process",
+      }),
+      { mode: 0o600 },
+    );
+
+    const records = session.listRetainedSandboxRecoveryRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0]?.sandboxName).toBe("test-sb");
+    expect(records[0]?.recordId).toBe(recorded.recordId);
+  });
 });

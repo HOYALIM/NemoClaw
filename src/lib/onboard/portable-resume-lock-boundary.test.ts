@@ -197,7 +197,7 @@ describe("portable resume command lock boundary", () => {
         stdio: ["ignore", "pipe", "inherit"],
       });
       await once(child.stdout, "data");
-      vi.spyOn(console, "error").mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
         throw new Error(`exit:${String(code ?? 0)}`);
       }) as typeof process.exit);
@@ -214,9 +214,11 @@ describe("portable resume command lock boundary", () => {
             resolveResumeIntent: () => ({ effectiveResume: false, snapshot: null }),
             runOnboard: (options) => runWithObservedPreparation(onboardModule, options),
           }),
-        ).rejects.toThrow(
-          "Cannot update onboarding recovery while another onboarding run owns the lock.",
-        );
+        ).rejects.toThrow("exit:1");
+        const allErrors = errorSpy.mock.calls.flat().join("\n");
+        expect(allErrors).toContain("onboarding run is already in progress.");
+        expect(allErrors).toContain(`Lock holder PID: ${String(child.pid)}`);
+        expect(allErrors).toContain("Wait for the active onboarding run to finish.");
         expect(preparePortableHost).not.toHaveBeenCalled();
         expect(fs.existsSync(configWriteMarker)).toBe(false);
         expect(fs.existsSync(socketActivationMarker)).toBe(false);
