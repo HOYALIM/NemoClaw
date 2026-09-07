@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { type WebSearchConfig, webSearchProviderForConfig } from "../inference/web-search";
+import {
+  type WebSearchConfig,
+  webSearchProviderForConfig,
+} from "../inference/web-search";
 import {
   filterSetupPolicyPresetNamesForAgent,
   filterSetupPolicyPresetsForAgent,
@@ -37,7 +40,10 @@ type PoliciesApi = {
   ): Preset[];
   listCustomPresets(sandboxName: string): Preset[];
   getAppliedPresets(sandboxName: string): string[];
-  customPresetOwnsNetworkPolicyKey?(sandboxName: string, policyKey: string): boolean;
+  customPresetOwnsNetworkPolicyKey?(
+    sandboxName: string,
+    policyKey: string,
+  ): boolean;
   clampSetupPolicyPresetNames(
     names: string[],
     selectablePresets: Preset[],
@@ -69,7 +75,10 @@ export function preparePolicyPresetResumeSelection(
     tierName?: string | null;
   },
 ): PreparedPolicyResumeSelection {
-  const supportOptions = { webSearchSupported: options.webSearchSupported, agent: options.agent };
+  const supportOptions = {
+    webSearchSupported: options.webSearchSupported,
+    agent: options.agent,
+  };
   const customPolicyPresetNames = new Set(
     deps.policies.listCustomPresets(sandboxName).map((preset) => preset.name),
   );
@@ -91,7 +100,10 @@ export function preparePolicyPresetResumeSelection(
       deps.policies.listSetupPolicyPresets(sandboxName, supportOptions),
       options.agent,
     ),
-    ...filterSetupPolicyPresetNamesForAgent(appliedPolicyPresets, options.agent).map((name) => ({
+    ...filterSetupPolicyPresetNamesForAgent(
+      appliedPolicyPresets,
+      options.agent,
+    ).map((name) => ({
       name,
     })),
   ];
@@ -120,13 +132,16 @@ export function preparePolicyPresetResumeSelection(
       customOwnsObservability,
     });
   const liveBuiltinWebSearchProviderChanged = clampedLivePolicyPresets.some(
-    (name) => (name === "brave" || name === "tavily") && isStaleBuiltinWebSearch(name),
+    (name) =>
+      (name === "brave" || name === "tavily") && isStaleBuiltinWebSearch(name),
   );
   let policyPresets = pruneDisabledMessagingPolicyPresets(
     clampedLivePolicyPresets.filter(
-      (name) => !isStaleBuiltinWebSearch(name) && !isInactiveObservability(name),
+      (name) =>
+        !isStaleBuiltinWebSearch(name) && !isInactiveObservability(name),
     ),
     options.disabledChannels,
+    options.tierName,
   );
   const appliedPolicyPresetsForSupport = deps.policies
     .clampSetupPolicyPresetNames(
@@ -135,15 +150,20 @@ export function preparePolicyPresetResumeSelection(
       supportOptions,
       customPolicyPresetNames,
     )
-    .filter((name) => !isStaleBuiltinWebSearch(name) && !isInactiveObservability(name));
+    .filter(
+      (name) =>
+        !isStaleBuiltinWebSearch(name) && !isInactiveObservability(name),
+    );
   const disabledMessagingPolicyPresetApplied = hasDisabledMessagingPolicyPreset(
     appliedPolicyPresetsForSupport,
     options.disabledChannels,
+    options.tierName,
   );
   policyPresets = mergeAppliedPolicyPresetsForDisabledMessagingCleanup(
     policyPresets,
     appliedPolicyPresetsForSupport,
     options.disabledChannels,
+    options.tierName,
   );
   policyPresets = mergeRequiredSetupPolicyPresets(policyPresets, {
     enabledChannels: options.enabledChannels,
@@ -164,17 +184,23 @@ export function preparePolicyPresetResumeSelection(
   const activeWebSearchPreset = options.webSearchConfig
     ? webSearchProviderForConfig(options.webSearchConfig)
     : null;
-  const selectablePolicyPresetNames = new Set(selectablePolicyPresets.map((preset) => preset.name));
+  const selectablePolicyPresetNames = new Set(
+    selectablePolicyPresets.map((preset) => preset.name),
+  );
   if (
     activeWebSearchPreset &&
     options.webSearchSupported !== false &&
-    (options.webSearchConfigChanged === true || liveBuiltinWebSearchProviderChanged) &&
+    (options.webSearchConfigChanged === true ||
+      liveBuiltinWebSearchProviderChanged) &&
     selectablePolicyPresetNames.has(activeWebSearchPreset) &&
     !policyPresets.includes(activeWebSearchPreset)
   ) {
     policyPresets.push(activeWebSearchPreset);
   }
-  policyPresets = ensureRequiredTierPolicyPresets(options.tierName, policyPresets);
+  policyPresets = ensureRequiredTierPolicyPresets(
+    options.tierName,
+    policyPresets,
+  );
   const livePolicyPresetsNeedUpdate =
     policyPresets.length !== appliedPolicyPresets.length ||
     policyPresets.some((name) => !appliedPolicyPresets.includes(name)) ||

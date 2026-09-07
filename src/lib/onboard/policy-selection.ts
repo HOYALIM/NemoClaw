@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { type WebSearchConfig, webSearchProviderForConfig } from "../inference/web-search";
+import {
+  type WebSearchConfig,
+  webSearchProviderForConfig,
+} from "../inference/web-search";
 import * as policies from "../policy";
 import * as tiers from "../policy/tiers";
 import {
@@ -71,13 +74,22 @@ export type OnboardPolicyApplicationDeps = Omit<
 };
 
 type Preset = { name: string; access?: string };
-type SupportOptions = { webSearchSupported?: boolean | null; agent?: string | null };
+type SupportOptions = {
+  webSearchSupported?: boolean | null;
+  agent?: string | null;
+};
 type PoliciesApi = {
   setupPolicyPresetSupported(name: string, options?: SupportOptions): boolean;
-  listSetupPolicyPresets(sandboxName: string, options?: SupportOptions): Preset[];
+  listSetupPolicyPresets(
+    sandboxName: string,
+    options?: SupportOptions,
+  ): Preset[];
   listCustomPresets(sandboxName: string): Preset[];
   getAppliedPresets(sandboxName: string): string[];
-  customPresetOwnsNetworkPolicyKey?(sandboxName: string, policyKey: string): boolean;
+  customPresetOwnsNetworkPolicyKey?(
+    sandboxName: string,
+    policyKey: string,
+  ): boolean;
   clampSetupPolicyPresetNames(
     names: string[],
     selectablePresets: Preset[],
@@ -148,7 +160,9 @@ export type SetupPolicySelectionDeps = {
   env?: NodeJS.ProcessEnv;
 };
 
-export function createOnboardPolicyApplication(deps: OnboardPolicyApplicationDeps) {
+export function createOnboardPolicyApplication(
+  deps: OnboardPolicyApplicationDeps,
+) {
   const promptHelpers = () =>
     createPolicySelectionPromptHelpers({
       ...deps,
@@ -160,7 +174,12 @@ export function createOnboardPolicyApplication(deps: OnboardPolicyApplicationDep
     tierName: string,
     allPresets: Array<{ name: string; description?: string }>,
     initialSelected?: string[],
-  ) => promptHelpers().selectTierPresetsAndAccess(tierName, allPresets, initialSelected);
+  ) =>
+    promptHelpers().selectTierPresetsAndAccess(
+      tierName,
+      allPresets,
+      initialSelected,
+    );
   const presetsCheckboxSelector = (
     allPresets: Array<{ name: string; description: string }>,
     initialSelected: string[],
@@ -182,8 +201,12 @@ export function createOnboardPolicyApplication(deps: OnboardPolicyApplicationDep
   };
 
   return {
-    arePolicyPresetsApplied(sandboxName: string, selectedPresets: string[] = []): boolean {
-      if (!Array.isArray(selectedPresets) || selectedPresets.length === 0) return false;
+    arePolicyPresetsApplied(
+      sandboxName: string,
+      selectedPresets: string[] = [],
+    ): boolean {
+      if (!Array.isArray(selectedPresets) || selectedPresets.length === 0)
+        return false;
       const applied = new Set(policies.getAppliedPresets(sandboxName));
       return selectedPresets.every((preset) => applied.has(preset));
     },
@@ -208,7 +231,11 @@ export function createOnboardPolicyApplication(deps: OnboardPolicyApplicationDep
       sandboxName: string,
       options: Parameters<typeof preparePolicyPresetResumeSelection>[2],
     ): PreparedPolicyResumeSelection {
-      return preparePolicyPresetResumeSelection({ policies }, sandboxName, options);
+      return preparePolicyPresetResumeSelection(
+        { policies },
+        sandboxName,
+        options,
+      );
     },
     presetsCheckboxSelector,
     resolveSandboxBaselinePolicy: policies.resolveSandboxBaselinePolicy,
@@ -244,7 +271,9 @@ export function computeSetupPresetSuggestions(
     observabilityEnabled = false,
     env = process.env,
   } = options;
-  const known = Array.isArray(options.knownPresetNames) ? new Set(options.knownPresetNames) : null;
+  const known = Array.isArray(options.knownPresetNames)
+    ? new Set(options.knownPresetNames)
+    : null;
   const supportOptions = { webSearchSupported: options.webSearchSupported };
   const suggestions = pruneInactiveMessagingPolicyPresets(
     deps.tiers
@@ -269,10 +298,13 @@ export function computeSetupPresetSuggestions(
             customOwnsObservability: options.customOwnsObservability,
           }),
       )
-      .filter((name) => deps.policies.setupPolicyPresetSupported(name, supportOptions))
+      .filter((name) =>
+        deps.policies.setupPolicyPresetSupported(name, supportOptions),
+      )
       .filter((name) => !known || known.has(name)),
     enabledChannels,
     options.customPresetNames,
+    tierName,
   );
   const add = (name: string) => {
     if (!setupPolicyPresetAppliesToAgent(name, agent)) return;
@@ -302,14 +334,22 @@ export function computeSetupPresetSuggestions(
     suggestions.push(name);
   };
   if (webSearchConfig) add(webSearchProviderForConfig(webSearchConfig));
-  if (provider && deps.localInferenceProviders.includes(provider)) add("local-inference");
+  if (provider && deps.localInferenceProviders.includes(provider))
+    add("local-inference");
   if (tierName !== RESTRICTED_TIER_NAME) {
     for (const preset of agentRequiredPresetAdditions(agent, env)) add(preset);
-    for (const preset of requiredObservabilityPolicyPresets(agent, observabilityEnabled)) {
+    for (const preset of requiredObservabilityPolicyPresets(
+      agent,
+      observabilityEnabled,
+    )) {
       add(preset);
     }
   }
-  if (tierName === "open" && typeof agent === "string" && agent.trim().toLowerCase() === "hermes") {
+  if (
+    tierName === "open" &&
+    typeof agent === "string" &&
+    agent.trim().toLowerCase() === "hermes"
+  ) {
     for (const preset of allHermesToolGatewayPolicyPresets()) add(preset);
   }
   if (Array.isArray(enabledChannels)) {
@@ -319,7 +359,8 @@ export function computeSetupPresetSuggestions(
     // correct for any channel (and any future preset rename) without relying on
     // the channel name coinciding with its preset name or on `requiredAtCreate`
     // (#5967).
-    for (const preset of allMessagingChannelPolicyPresets(enabledChannels)) add(preset);
+    for (const preset of allMessagingChannelPolicyPresets(enabledChannels))
+      add(preset);
   }
   if (Array.isArray(options.hermesToolGateways)) {
     for (const preset of options.hermesToolGateways) {
@@ -329,7 +370,10 @@ export function computeSetupPresetSuggestions(
   return filterSuppressedAgentRequiredPresets(suggestions, tierName, agent);
 }
 
-export { type PreparedPolicyResumeSelection, preparePolicyPresetResumeSelection };
+export {
+  type PreparedPolicyResumeSelection,
+  preparePolicyPresetResumeSelection,
+};
 
 export async function setupPoliciesWithSelection(
   deps: SetupPolicySelectionDeps,
@@ -357,7 +401,9 @@ async function requireSandboxReady(
       console.error(`  ${readiness.error.message}`);
       process.exit(1);
     }
-    console.error(`  Sandbox '${sandboxName}' was not ready ${stage} policy application.`);
+    console.error(
+      `  Sandbox '${sandboxName}' was not ready ${stage} policy application.`,
+    );
     process.exit(1);
   }
   if (stage === "after" && !deps.waitForSandboxControlPlaneReady(sandboxName)) {
@@ -372,7 +418,10 @@ function refuseInPlacePersonalRemoval(
   personalAlreadyActive: boolean,
   target: readonly string[],
 ): void {
-  if (personalAlreadyActive && !target.includes(PERSONAL_OPEN_INTERNET_PRESET_NAME)) {
+  if (
+    personalAlreadyActive &&
+    !target.includes(PERSONAL_OPEN_INTERNET_PRESET_NAME)
+  ) {
     console.error(
       "  Personal open internet cannot be removed in place because it replaces overlapping web routes. Create a new sandbox with another policy tier instead.",
     );
@@ -391,9 +440,12 @@ async function setupPoliciesWithSelectionInner(
   const selectedPresets = Array.isArray(options.selectedPresets)
     ? excludePresets(options.selectedPresets)
     : null;
-  const onSelection = typeof options.onSelection === "function" ? options.onSelection : null;
+  const onSelection =
+    typeof options.onSelection === "function" ? options.onSelection : null;
   const webSearchConfig = options.webSearchConfig || null;
-  const enabledChannels = Array.isArray(options.enabledChannels) ? options.enabledChannels : null;
+  const enabledChannels = Array.isArray(options.enabledChannels)
+    ? options.enabledChannels
+    : null;
   const provider = options.provider || null;
   const agent = options.agent || null;
   const observabilityEnabled = options.observabilityEnabled === true;
@@ -406,7 +458,10 @@ async function setupPoliciesWithSelectionInner(
 
   deps.step(8, 8, "Policy presets");
 
-  const supportOptions = { webSearchSupported: options.webSearchSupported, agent };
+  const supportOptions = {
+    webSearchSupported: options.webSearchSupported,
+    agent,
+  };
   const allPresets = filterSetupPolicyPresetsForAgent(
     deps.policies.listSetupPolicyPresets(sandboxName, supportOptions),
     agent,
@@ -430,11 +485,12 @@ async function setupPoliciesWithSelectionInner(
     : rawCurrentAppliedPresets;
   const selectablePresets = [
     ...allPresets,
-    ...filterSetupPolicyPresetNamesForAgent(excludePresets(currentAppliedPresets), agent).map(
-      (name) => ({
-        name,
-      }),
-    ),
+    ...filterSetupPolicyPresetNamesForAgent(
+      excludePresets(currentAppliedPresets),
+      agent,
+    ).map((name) => ({
+      name,
+    })),
   ];
   const applied = deps.policies.clampSetupPolicyPresetNames(
     excludePresets(currentAppliedPresets),
@@ -452,7 +508,10 @@ async function setupPoliciesWithSelectionInner(
     customOwnsObservability,
   });
   const filterSupportedPresetNames = (presetNames: string[]) =>
-    filterSetupPolicyPresetNamesForAgent(excludePresets(presetNames), agent).filter(
+    filterSetupPolicyPresetNamesForAgent(
+      excludePresets(presetNames),
+      agent,
+    ).filter(
       (name) =>
         customPresetNames.has(name) ||
         deps.policies.setupPolicyPresetSupported(name, supportOptions),
@@ -469,9 +528,12 @@ async function setupPoliciesWithSelectionInner(
   const requestedTierName = options.tierName ?? null;
   const personalAlreadyActive =
     currentAppliedPresets.includes(PERSONAL_OPEN_INTERNET_PRESET_NAME) ||
-    (selectedPresets !== null && options.tierName === PERSONAL_POLICY_TIER_NAME);
+    (selectedPresets !== null &&
+      options.tierName === PERSONAL_POLICY_TIER_NAME);
   if (chosen !== null) {
-    const knownSelectablePresets = new Set(selectablePresets.map((preset) => preset.name));
+    const knownSelectablePresets = new Set(
+      selectablePresets.map((preset) => preset.name),
+    );
     chosen = mergeRequiredSetupPolicyPresets(chosen, {
       enabledChannels,
       hermesToolGateways,
@@ -487,7 +549,9 @@ async function setupPoliciesWithSelectionInner(
     // Pass the requested tier so the pruner exempts that tier's egress defaults
     // (e.g. `brave` on Balanced) via provenance — a reconcile-triggered reuse
     // reapply must not narrow an applied tier default. (#6844)
-    chosen = excludePresets(pruneUnavailablePresets(chosen, { tierName: requestedTierName }));
+    chosen = excludePresets(
+      pruneUnavailablePresets(chosen, { tierName: requestedTierName }),
+    );
     chosen = ensureRequiredTierPolicyPresets(requestedTierName, chosen);
   }
 
@@ -495,11 +559,17 @@ async function setupPoliciesWithSelectionInner(
     const resumeSelection = chosen || [];
     refuseInPlacePersonalRemoval(personalAlreadyActive, resumeSelection);
     await requireSandboxReady(deps, sandboxName, "before");
-    deps.note(`  [resume] Reapplying policy presets: ${resumeSelection.join(", ")}`);
+    deps.note(
+      `  [resume] Reapplying policy presets: ${resumeSelection.join(", ")}`,
+    );
     options.revalidateSandboxIdentity?.(
       `reapply selected policy presets to sandbox '${sandboxName}'`,
     );
-    deps.syncPresetSelection(sandboxName, currentAppliedPresets, resumeSelection);
+    deps.syncPresetSelection(
+      sandboxName,
+      currentAppliedPresets,
+      resumeSelection,
+    );
     await requireSandboxReady(deps, sandboxName, "after");
     if (onSelection) onSelection(resumeSelection);
     return resumeSelection;
@@ -532,13 +602,19 @@ async function setupPoliciesWithSelectionInner(
         hermesToolGateways,
         env: deps.env,
       }),
-      { preserveExplicitWebSearch: personalTier },
+      { preserveExplicitWebSearch: personalTier, messagingTierName: tierName },
     ),
   );
-  const suppressedNames = emitSuppressedAgentRequiredPresetsNote(tierName, agent, deps.note);
+  const suppressedNames = emitSuppressedAgentRequiredPresetsNote(
+    tierName,
+    agent,
+    deps.note,
+  );
 
   if (deps.isNonInteractive()) {
-    const policyMode = (deps.env?.NEMOCLAW_POLICY_MODE || "suggested").trim().toLowerCase();
+    const policyMode = (deps.env?.NEMOCLAW_POLICY_MODE || "suggested")
+      .trim()
+      .toLowerCase();
     chosen = suggestions;
     let isAuthoritative = false;
 
@@ -547,7 +623,9 @@ async function setupPoliciesWithSelectionInner(
         ensureRequiredTierPolicyPresets(
           tierName,
           filterSuppressedAgentRequiredPresets(
-            excludePresets(pruneUnavailablePresets(currentAppliedPresets, { tierName })),
+            excludePresets(
+              pruneUnavailablePresets(currentAppliedPresets, { tierName }),
+            ),
             tierName,
             agent,
           ),
@@ -567,7 +645,9 @@ async function setupPoliciesWithSelectionInner(
       );
       const selectionChanged =
         retainedPresets.length !== currentAppliedPresets.length ||
-        retainedPresets.some((name, index) => name !== currentAppliedPresets[index]);
+        retainedPresets.some(
+          (name, index) => name !== currentAppliedPresets[index],
+        );
       if (selectionChanged) {
         refuseInPlacePersonalRemoval(personalAlreadyActive, retainedPresets);
         await requireSandboxReady(deps, sandboxName, "before");
@@ -579,7 +659,11 @@ async function setupPoliciesWithSelectionInner(
         options.revalidateSandboxIdentity?.(
           `apply retained policy presets to sandbox '${sandboxName}'`,
         );
-        deps.syncPresetSelection(sandboxName, currentAppliedPresets, retainedPresets);
+        deps.syncPresetSelection(
+          sandboxName,
+          currentAppliedPresets,
+          retainedPresets,
+        );
         await requireSandboxReady(deps, sandboxName, "after");
         if (onSelection) onSelection(retainedPresets);
         return retainedPresets;
@@ -589,15 +673,25 @@ async function setupPoliciesWithSelectionInner(
     }
 
     if (policyMode === "custom" || policyMode === "list") {
-      const envPresets = deps.parsePolicyPresetEnv(deps.env?.NEMOCLAW_POLICY_PRESETS || "");
+      const envPresets = deps.parsePolicyPresetEnv(
+        deps.env?.NEMOCLAW_POLICY_PRESETS || "",
+      );
       if (envPresets.length === 0) {
-        console.error("  NEMOCLAW_POLICY_PRESETS is required when NEMOCLAW_POLICY_MODE=custom.");
+        console.error(
+          "  NEMOCLAW_POLICY_PRESETS is required when NEMOCLAW_POLICY_MODE=custom.",
+        );
         process.exit(1);
       }
       chosen = filterSupportedPresetNames(envPresets);
       isAuthoritative = true;
-    } else if (policyMode === "suggested" || policyMode === "default" || policyMode === "auto") {
-      const envPresets = deps.parsePolicyPresetEnv(deps.env?.NEMOCLAW_POLICY_PRESETS || "");
+    } else if (
+      policyMode === "suggested" ||
+      policyMode === "default" ||
+      policyMode === "auto"
+    ) {
+      const envPresets = deps.parsePolicyPresetEnv(
+        deps.env?.NEMOCLAW_POLICY_PRESETS || "",
+      );
       if (envPresets.length > 0) {
         chosen = filterSupportedPresetNames(envPresets);
       }
@@ -611,7 +705,9 @@ async function setupPoliciesWithSelectionInner(
           `  '${policyMode}' is a policy tier — did you mean NEMOCLAW_POLICY_TIER=${policyMode}?`,
         );
       }
-      console.warn(`  Falling back to suggested presets for tier '${tierName}'.`);
+      console.warn(
+        `  Falling back to suggested presets for tier '${tierName}'.`,
+      );
     }
 
     chosen = mergeRequiredSetupPolicyPresets(chosen, {
@@ -656,13 +752,17 @@ async function setupPoliciesWithSelectionInner(
         kept.push(name);
       }
       if (kept.length > 0) {
-        deps.note(`  [non-interactive] Preserving previously-applied presets: ${kept.join(", ")}`);
+        deps.note(
+          `  [non-interactive] Preserving previously-applied presets: ${kept.join(", ")}`,
+        );
       }
     }
 
     refuseInPlacePersonalRemoval(personalAlreadyActive, chosen);
     await requireSandboxReady(deps, sandboxName, "before");
-    deps.note(`  [non-interactive] Applying policy presets: ${chosen.join(", ")}`);
+    deps.note(
+      `  [non-interactive] Applying policy presets: ${chosen.join(", ")}`,
+    );
     options.revalidateSandboxIdentity?.(
       `apply non-interactive policy presets to sandbox '${sandboxName}'`,
     );
@@ -675,7 +775,9 @@ async function setupPoliciesWithSelectionInner(
   const knownNames = new Set(allPresets.map((preset) => preset.name));
   const initialSelected = [
     ...appliedForPreservation.filter((name) => knownNames.has(name)),
-    ...suggestions.filter((name) => knownNames.has(name) && !applied.includes(name)),
+    ...suggestions.filter(
+      (name) => knownNames.has(name) && !applied.includes(name),
+    ),
   ];
   const resolvedPresets = await deps.selectTierPresetsAndAccess(
     tierName,
@@ -701,7 +803,7 @@ async function setupPoliciesWithSelectionInner(
             customOwnsObservability,
           },
         ),
-        { preserveExplicitWebSearch: true },
+        { preserveExplicitWebSearch: true, messagingTierName: tierName },
       ),
     ),
   );
@@ -712,10 +814,18 @@ async function setupPoliciesWithSelectionInner(
   const accessByName: Record<string, string> = {};
   const interactiveChoiceNames = new Set(interactiveChoice);
   for (const preset of resolvedPresets) {
-    if (interactiveChoiceNames.has(preset.name)) accessByName[preset.name] = preset.access;
+    if (interactiveChoiceNames.has(preset.name))
+      accessByName[preset.name] = preset.access;
   }
-  options.revalidateSandboxIdentity?.(`apply policy presets to sandbox '${sandboxName}'`);
-  deps.syncPresetSelection(sandboxName, currentAppliedPresets, interactiveChoice, accessByName);
+  options.revalidateSandboxIdentity?.(
+    `apply policy presets to sandbox '${sandboxName}'`,
+  );
+  deps.syncPresetSelection(
+    sandboxName,
+    currentAppliedPresets,
+    interactiveChoice,
+    accessByName,
+  );
   await requireSandboxReady(deps, sandboxName, "after");
   if (onSelection) onSelection(interactiveChoice);
   return interactiveChoice;

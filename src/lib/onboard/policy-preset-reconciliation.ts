@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { type WebSearchConfig, webSearchProviderForConfig } from "../inference/web-search";
+import {
+  type WebSearchConfig,
+  webSearchProviderForConfig,
+} from "../inference/web-search";
 import {
   filterSetupPolicyPresetNamesForAgent,
   setupPolicyPresetAppliesToAgent,
@@ -56,6 +59,7 @@ export function mergeRequiredSetupPolicyPresets(
     agentFilteredPresets,
     options.enabledChannels,
     options.customPresetNames,
+    options.tierName,
   );
   const effectiveHermesToolGateways = (options.hermesToolGateways ?? []).filter(
     (name) =>
@@ -88,10 +92,17 @@ export function mergeRequiredSetupPolicyPresets(
       customOwnsObservability: options.customOwnsObservability,
     },
   );
-  const agentScoped = filterSetupPolicyPresetNamesForAgent(mergedPresets, options.agent);
+  const agentScoped = filterSetupPolicyPresetNamesForAgent(
+    mergedPresets,
+    options.agent,
+  );
   return ensureRequiredTierPolicyPresets(
     options.tierName,
-    filterSuppressedAgentRequiredPresets(agentScoped, options.tierName, options.agent),
+    filterSuppressedAgentRequiredPresets(
+      agentScoped,
+      options.tierName,
+      options.agent,
+    ),
   );
 }
 
@@ -114,14 +125,16 @@ export function isStaleBuiltinWebSearchPolicyPreset(
   if (
     setupPolicyPresetAppliesToAgent(name, options.agentName) &&
     getTier(options.tierName ?? "")?.presets.some(
-      (preset) => preset.name.trim().toLowerCase() === name.trim().toLowerCase(),
+      (preset) =>
+        preset.name.trim().toLowerCase() === name.trim().toLowerCase(),
     )
   ) {
     return false;
   }
   if (name === "nous-web") {
     return Boolean(
-      options.webSearchConfig && webSearchProviderForConfig(options.webSearchConfig) === "tavily",
+      options.webSearchConfig &&
+      webSearchProviderForConfig(options.webSearchConfig) === "tavily",
     );
   }
   if (name !== "brave" && name !== "tavily") return false;
@@ -142,6 +155,7 @@ export function createUnavailablePolicyPresetPruner(options: {
   pruning?: {
     preserveExplicitWebSearch?: boolean;
     tierName?: string | null;
+    messagingTierName?: string | null;
   },
 ) => string[] {
   // Custom and interactive selections may explicitly opt into a built-in web-search
@@ -150,14 +164,24 @@ export function createUnavailablePolicyPresetPruner(options: {
     // OpenClaw keeps an already-applied channel preset until disabledChannels
     // explicitly retires it. Hermes recovery records the full enabled set, so
     // it can also prune repository defaults that are absent from that set.
+    const messagingTier = pruning.messagingTierName ?? pruning.tierName;
     const enabledChannelPruned =
       options.agent?.trim().toLowerCase() === "hermes"
         ? pruneInactiveMessagingPolicyPresets(
-            pruneDisabledMessagingPolicyPresets(presetNames, options.disabledChannels),
+            pruneDisabledMessagingPolicyPresets(
+              presetNames,
+              options.disabledChannels,
+              messagingTier,
+            ),
             options.enabledChannels,
             options.customPresetNames,
+            messagingTier,
           )
-        : pruneDisabledMessagingPolicyPresets(presetNames, options.disabledChannels);
+        : pruneDisabledMessagingPolicyPresets(
+            presetNames,
+            options.disabledChannels,
+            messagingTier,
+          );
     return enabledChannelPruned.filter(
       (name) =>
         (pruning.preserveExplicitWebSearch ||

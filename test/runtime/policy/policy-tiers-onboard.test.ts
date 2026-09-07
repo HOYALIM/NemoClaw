@@ -36,7 +36,9 @@ function runAdapterScript(
   scriptBody: string,
   envOverrides: Record<string, string | undefined> = {},
 ): SpawnSyncReturns<string> {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-tier-onboard-"));
+  const tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "nemoclaw-tier-onboard-"),
+  );
   const scriptPath = path.join(tmpDir, "script.js");
   fs.writeFileSync(scriptPath, scriptBody);
   const env: NodeJS.ProcessEnv = {
@@ -75,7 +77,10 @@ function createPromptHarness({
     },
     selectFromNumberedMenuOrExit: (_rawChoice, defaultIdx, options) => {
       const selected = options[defaultIdx - 1];
-      assert.ok(selected !== undefined, "numbered menu default is out of range");
+      assert.ok(
+        selected !== undefined,
+        "numbered menu default is out of range",
+      );
       return selected;
     },
     makeOnboardCancelExit: (_rollback, cleanup) => () => cleanup(),
@@ -138,7 +143,11 @@ function createSetupHarness({
     step: () => undefined,
     note: (message) => notes.push(message),
     isNonInteractive: () => nonInteractive,
-    waitForSandboxReady: async () => ({ ready: true, reason: "ready", error: null }),
+    waitForSandboxReady: async () => ({
+      ready: true,
+      reason: "ready",
+      error: null,
+    }),
     waitForSandboxControlPlaneReady: () => true,
     syncPresetSelection: (sandboxName, current, selected, accessByName) => {
       syncCalls.push({
@@ -153,7 +162,11 @@ function createSetupHarness({
       appliedCalls.push(...selected.filter((name) => !currentSet.has(name)));
     },
     selectPolicyTier: async () => tierName,
-    selectTierPresetsAndAccess: async (selectedTier, presets, initialSelected) => {
+    selectTierPresetsAndAccess: async (
+      selectedTier,
+      presets,
+      initialSelected,
+    ) => {
       const promptHarness = createPromptHarness();
       return promptHarness.helpers.selectTierPresetsAndAccess(
         selectedTier,
@@ -183,7 +196,11 @@ async function runPolicySetup(
   selectionOptions: SetupPolicySelectionOptions = {},
 ) {
   const harness = createSetupHarness(harnessOptions);
-  const applied = await setupPoliciesWithSelection(harness.deps, "test-sb", selectionOptions);
+  const applied = await setupPoliciesWithSelection(
+    harness.deps,
+    "test-sb",
+    selectionOptions,
+  );
   return { ...harness, applied };
 }
 
@@ -198,7 +215,9 @@ afterEach(() => {
 
 describe("policy tier onboarding adapter contracts", () => {
   it("rejects unknown NEMOCLAW_POLICY_TIER before usage notice or preflight (#3741)", () => {
-    const onboardPath = JSON.stringify(path.join(repoRoot, "src", "lib", "onboard.ts"));
+    const onboardPath = JSON.stringify(
+      path.join(repoRoot, "src", "lib", "onboard.ts"),
+    );
     const script = String.raw`
 const fs = require("node:fs");
 const path = require("node:path");
@@ -248,9 +267,17 @@ process.exit = originalExit;
     assert.equal(result.status, 1, result.stderr);
     const payload = JSON.parse(result.stdout.trim().split(/\n/).at(-1) || "{}");
     assert.equal(payload.exitCode, 1);
-    assert.equal(payload.usageNoticeExists, false, "usage notice must not be accepted/written");
+    assert.equal(
+      payload.usageNoticeExists,
+      false,
+      "usage notice must not be accepted/written",
+    );
     assert.equal(payload.lockExists, false, "onboard lock must not be created");
-    assert.equal(payload.sessionExists, false, "onboard session must not be created");
+    assert.equal(
+      payload.sessionExists,
+      false,
+      "onboard session must not be created",
+    );
     assert.deepEqual(payload.exitObservation, {
       processExitRestored: true,
       nonInteractiveEnv: "preserve-direct",
@@ -260,12 +287,17 @@ process.exit = originalExit;
       /Unknown policy tier: invalid_tier\. Valid: restricted, balanced, open, personal/,
     );
     assert.doesNotMatch(result.stderr, /Third-Party Software Notice/);
-    assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /\[1\/8\] Preflight checks/);
+    assert.doesNotMatch(
+      `${result.stdout}\n${result.stderr}`,
+      /\[1\/8\] Preflight checks/,
+    );
     assert.ok(!result.stdout.includes("UNEXPECTED_SUCCESS"));
   });
 
   it("ignores invalid NEMOCLAW_POLICY_TIER during interactive onboarding", () => {
-    const onboardPath = JSON.stringify(path.join(repoRoot, "src", "lib", "onboard.ts"));
+    const onboardPath = JSON.stringify(
+      path.join(repoRoot, "src", "lib", "onboard.ts"),
+    );
     const script = String.raw`
 process.env.NEMOCLAW_POLICY_TIER = "invalid_tier";
 delete process.env.NEMOCLAW_NON_INTERACTIVE;
@@ -295,7 +327,9 @@ process.exit = (code = 0) => {
   }
 })();
 `;
-    const result = runAdapterScript(script, { NEMOCLAW_NON_INTERACTIVE: undefined });
+    const result = runAdapterScript(script, {
+      NEMOCLAW_NON_INTERACTIVE: undefined,
+    });
     assert.equal(result.status, 1, result.stderr);
     assert.doesNotMatch(result.stderr, /Unknown policy tier: invalid_tier/);
     assert.match(result.stderr, /Interactive onboarding requires a TTY/);
@@ -314,8 +348,12 @@ describe("policy tier selection", () => {
   it("rejects unknown NEMOCLAW_POLICY_TIER with a clear error and exit code 1 (#3741)", () => {
     vi.stubEnv("NEMOCLAW_POLICY_TIER", "invalid_tier");
     const errors: string[] = [];
-    vi.spyOn(console, "error").mockImplementation((...args) => errors.push(args.join(" ")));
-    const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+    vi.spyOn(console, "error").mockImplementation((...args) =>
+      errors.push(args.join(" ")),
+    );
+    const exit = vi.spyOn(process, "exit").mockImplementation(((
+      code?: number,
+    ) => {
       throw new Error(`process.exit(${String(code)})`);
     }) as never);
 
@@ -352,9 +390,15 @@ describe("policy tier selection", () => {
     "gives the balanced %s preset read-write access",
     (name) => {
       const accessByName = new Map(
-        tiers.resolveTierPresets("balanced").map((preset) => [preset.name, preset.access]),
+        tiers
+          .resolveTierPresets("balanced")
+          .map((preset) => [preset.name, preset.access]),
       );
-      assert.equal(accessByName.get(name), "read-write", `${name} should be read-write`);
+      assert.equal(
+        accessByName.get(name),
+        "read-write",
+        `${name} should be read-write`,
+      );
     },
   );
 
@@ -372,15 +416,28 @@ describe("policy tier selection", () => {
       .resolveTierPresets("balanced")
       .filter((preset) => preset.name !== "npm")
       .map((preset) => preset.name);
-    const resolved = tiers.resolveTierPresets("balanced", { selected: withoutNpm });
+    const resolved = tiers.resolveTierPresets("balanced", {
+      selected: withoutNpm,
+    });
 
-    assert.ok(!resolved.map((preset) => preset.name).includes("npm"), "npm should be deselected");
+    assert.ok(
+      !resolved.map((preset) => preset.name).includes("npm"),
+      "npm should be deselected",
+    );
   });
 
   it("allows access to be restricted from read-write to read through an override", () => {
-    const resolved = tiers.resolveTierPresets("balanced", { overrides: { npm: "read" } });
-    assert.equal(resolved.find((preset) => preset.name === "npm")?.access, "read");
-    assert.equal(resolved.find((preset) => preset.name === "pypi")?.access, "read-write");
+    const resolved = tiers.resolveTierPresets("balanced", {
+      overrides: { npm: "read" },
+    });
+    assert.equal(
+      resolved.find((preset) => preset.name === "npm")?.access,
+      "read",
+    );
+    assert.equal(
+      resolved.find((preset) => preset.name === "pypi")?.access,
+      "read-write",
+    );
   });
 
   it("emits a note containing the selected tier name", async () => {
@@ -399,9 +456,46 @@ describe("policy tier selection", () => {
 
 describe("policy tier setup", () => {
   it("persists the selected tier through setPolicyTier", async () => {
-    const result = await runPolicySetup({ tierName: "open", policyMode: "skip" });
+    const result = await runPolicySetup({
+      tierName: "open",
+      policyMode: "skip",
+    });
 
     assert.deepEqual(result.applied, []);
+  });
+
+  it("preserves open tier messaging presets when channels are not configured or disabled (#11058)", async () => {
+    const harness = createSetupHarness({
+      currentApplied: [],
+      tierName: "open",
+    });
+
+    const selected = await setupPoliciesWithSelection(harness.deps, "test-sb", {
+      tierName: "open",
+      disabledChannels: [
+        "slack",
+        "discord",
+        "telegram",
+        "wechat",
+        "whatsapp",
+        "teams",
+      ],
+    });
+
+    const openTierPresets = tiers.resolveTierPresets("open").map((p) => p.name);
+    assert.ok(openTierPresets.includes("slack"));
+    assert.ok(openTierPresets.includes("discord"));
+    assert.ok(openTierPresets.includes("telegram"));
+    assert.ok(openTierPresets.includes("wechat"));
+    assert.ok(openTierPresets.includes("whatsapp"));
+    assert.ok(openTierPresets.includes("teams"));
+
+    assert.ok(selected.includes("slack"), "must preserve slack");
+    assert.ok(selected.includes("discord"), "must preserve discord");
+    assert.ok(selected.includes("telegram"), "must preserve telegram");
+    assert.ok(selected.includes("wechat"), "must preserve wechat");
+    assert.ok(selected.includes("whatsapp"), "must preserve whatsapp");
+    assert.ok(selected.includes("teams"), "must preserve teams");
   });
 
   it("repairs a resumed Personal selection before recording or syncing it", async () => {
@@ -453,7 +547,10 @@ describe("policy tier setup", () => {
   });
 
   it("keeps the Personal requirement when optional presets are skipped", async () => {
-    const result = await runPolicySetup({ tierName: "personal", policyMode: "skip" });
+    const result = await runPolicySetup({
+      tierName: "personal",
+      policyMode: "skip",
+    });
 
     assert.deepEqual(result.applied, ["personal-open-internet"]);
     assert.deepEqual(result.appliedCalls, ["personal-open-internet"]);
@@ -483,7 +580,10 @@ describe("policy tier setup", () => {
   });
 
   it("restores the Personal requirement after interactive manual deselection", async () => {
-    const harness = createSetupHarness({ tierName: "personal", nonInteractive: false });
+    const harness = createSetupHarness({
+      tierName: "personal",
+      nonInteractive: false,
+    });
     harness.deps.selectTierPresetsAndAccess = async () => [
       { name: "weather", access: "read-write" },
     ];
@@ -504,7 +604,10 @@ describe("policy tier setup", () => {
       throw new Error(`process.exit(${String(code)})`);
     }) as never);
 
-    await assert.rejects(setupPoliciesWithSelection(harness.deps, "test-sb"), /process\.exit\(1\)/);
+    await assert.rejects(
+      setupPoliciesWithSelection(harness.deps, "test-sb"),
+      /process\.exit\(1\)/,
+    );
     assert.deepEqual(harness.syncCalls, []);
   });
 
@@ -532,11 +635,17 @@ describe("policy tier setup", () => {
   );
 
   it("omits Brave from policy preset selection when web search is unsupported", async () => {
-    const result = await runPolicySetup({ tierName: "balanced" }, { webSearchSupported: false });
+    const result = await runPolicySetup(
+      { tierName: "balanced" },
+      { webSearchSupported: false },
+    );
 
     assert.ok(!result.applied.includes("brave"));
     assert.ok(!result.appliedCalls.includes("brave"));
-    assert.ok(result.applied.includes("pypi"), "normal dev presets should still be included");
+    assert.ok(
+      result.applied.includes("pypi"),
+      "normal dev presets should still be included",
+    );
   });
 
   it("removes a previously-applied Brave preset when web search is unsupported", async () => {
@@ -565,7 +674,14 @@ describe("policy tier setup", () => {
         {
           tierName: tier,
           nonInteractive,
-          currentApplied: ["npm", "pypi", "huggingface", "brew", "brave", "openclaw-pricing"],
+          currentApplied: [
+            "npm",
+            "pypi",
+            "huggingface",
+            "brew",
+            "brave",
+            "openclaw-pricing",
+          ],
         },
         { agent: "openclaw", webSearchConfig: null, webSearchSupported: true },
       );
@@ -602,7 +718,13 @@ describe("policy tier setup", () => {
     ],
   ])(
     "preselects only the matching web-search preset for fresh interactive %s onboarding with %s (#7125)",
-    async (_agentLabel, agent, _searchLabel, webSearchConfig, expectedSearchPresets) => {
+    async (
+      _agentLabel,
+      agent,
+      _searchLabel,
+      webSearchConfig,
+      expectedSearchPresets,
+    ) => {
       const result = await runPolicySetup(
         { tierName: "balanced", nonInteractive: false },
         {
@@ -804,8 +926,13 @@ describe("policy tier setup", () => {
   });
 
   it("falls back to tier suggestions when NEMOCLAW_POLICY_MODE is unknown (#2429)", async () => {
-    const warnings = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const result = await runPolicySetup({ tierName: "balanced", policyMode: "restricted" });
+    const warnings = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    const result = await runPolicySetup({
+      tierName: "balanced",
+      policyMode: "restricted",
+    });
     const text = warningText(warnings);
 
     assert.ok(result.applied.length > 0);
@@ -815,7 +942,9 @@ describe("policy tier setup", () => {
   });
 
   it("omits the tier-name hint for a non-tier invalid policy mode (#2429)", async () => {
-    const warnings = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const warnings = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
     await runPolicySetup({ tierName: "balanced", policyMode: "garbage" });
     const text = warningText(warnings);
 
@@ -824,7 +953,10 @@ describe("policy tier setup", () => {
   });
 
   it("plans zero presets for restricted OpenClaw in non-interactive suggested mode (#7617)", async () => {
-    const result = await runPolicySetup({ tierName: "restricted" }, { agent: "openclaw" });
+    const result = await runPolicySetup(
+      { tierName: "restricted" },
+      { agent: "openclaw" },
+    );
 
     assert.deepEqual(result.applied, []);
     assert.deepEqual(result.appliedCalls, []);
@@ -877,7 +1009,10 @@ describe("policy tier setup", () => {
         noteLine,
         `suppression note must be printed, lines: ${JSON.stringify(result.notes)}`,
       );
-      assert.ok(noteLine.includes(name), `note must mention ${name}, got: ${noteLine}`);
+      assert.ok(
+        noteLine.includes(name),
+        `note must mention ${name}, got: ${noteLine}`,
+      );
       assert.ok(!result.applied.includes(name));
       assert.ok(!result.appliedCalls.includes(name));
     },
@@ -899,7 +1034,10 @@ describe("policy tier setup", () => {
       const result = await runPolicySetup(
         {
           tierName: "restricted",
-          currentApplied: ["openclaw-diagnostics-otel-local", "openclaw-pricing"],
+          currentApplied: [
+            "openclaw-diagnostics-otel-local",
+            "openclaw-pricing",
+          ],
           env: {
             NEMOCLAW_OPENCLAW_OTEL: "1",
             NEMOCLAW_OPENCLAW_OTEL_ENDPOINT: undefined,
@@ -973,7 +1111,11 @@ describe("selectTierPresetsAndAccess", () => {
     initialSelected?: string[],
   ): Promise<Array<{ name: string; access: string }>> {
     const { helpers } = createPromptHarness();
-    return helpers.selectTierPresetsAndAccess(tierName, policy.listPresets(), initialSelected);
+    return helpers.selectTierPresetsAndAccess(
+      tierName,
+      policy.listPresets(),
+      initialSelected,
+    );
   }
 
   it.each(tiers.resolveTierPresets("balanced"))(
@@ -989,8 +1131,14 @@ describe("selectTierPresetsAndAccess", () => {
 
   it("keeps weather and Slack out of balanced defaults", async () => {
     const names = (await resolve("balanced")).map((preset) => preset.name);
-    assert.ok(!names.includes("weather"), "weather should not be a balanced tier default");
-    assert.ok(!names.includes("slack"), "slack should not be included in balanced");
+    assert.ok(
+      !names.includes("weather"),
+      "weather should not be a balanced tier default",
+    );
+    assert.ok(
+      !names.includes("slack"),
+      "slack should not be included in balanced",
+    );
   });
 
   it("returns an empty array for the restricted tier", async () => {
@@ -998,21 +1146,35 @@ describe("selectTierPresetsAndAccess", () => {
   });
 
   it("uses an explicit initial checked set when provided", async () => {
-    const names = (await resolve("balanced", ["npm", "slack"])).map((preset) => preset.name);
+    const names = (await resolve("balanced", ["npm", "slack"])).map(
+      (preset) => preset.name,
+    );
     assert.deepEqual(names, ["npm", "slack"]);
   });
 
   it("silently filters an invalid initial preset name", async () => {
-    const names = (await resolve("balanced", ["nonexistent-preset"])).map((preset) => preset.name);
-    assert.ok(!names.includes("nonexistent-preset"), "invalid preset should be dropped");
+    const names = (await resolve("balanced", ["nonexistent-preset"])).map(
+      (preset) => preset.name,
+    );
+    assert.ok(
+      !names.includes("nonexistent-preset"),
+      "invalid preset should be dropped",
+    );
   });
 
   it("returns tier presets before non-tier presets", async () => {
     const tierNames = ["npm", "pypi", "huggingface", "brew", "brave"];
-    const names = (await resolve("balanced", [...tierNames, "slack"])).map((preset) => preset.name);
-    const lastTierIdx = Math.max(...tierNames.map((name) => names.indexOf(name)));
+    const names = (await resolve("balanced", [...tierNames, "slack"])).map(
+      (preset) => preset.name,
+    );
+    const lastTierIdx = Math.max(
+      ...tierNames.map((name) => names.indexOf(name)),
+    );
     const slackIdx = names.indexOf("slack");
-    assert.ok(slackIdx > lastTierIdx, "non-tier preset (slack) should appear after tier presets");
+    assert.ok(
+      slackIdx > lastTierIdx,
+      "non-tier preset (slack) should appear after tier presets",
+    );
   });
 
   it.each(tiers.resolveTierPresets("open"))(

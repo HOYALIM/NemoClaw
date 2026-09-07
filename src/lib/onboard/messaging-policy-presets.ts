@@ -5,14 +5,18 @@ import {
   listMessagingPolicyPresetsByChannel,
   listRequiredCreateTimeMessagingPolicyPresetsByChannel,
 } from "../messaging/channels";
+import { getTier } from "../policy/tiers";
 
 const REQUIRED_POLICY_PRESETS_BY_MESSAGING_CHANNEL =
   listRequiredCreateTimeMessagingPolicyPresetsByChannel();
 
-const ALL_POLICY_PRESETS_BY_MESSAGING_CHANNEL = listMessagingPolicyPresetsByChannel();
+const ALL_POLICY_PRESETS_BY_MESSAGING_CHANNEL =
+  listMessagingPolicyPresetsByChannel();
 
 const REPOSITORY_MESSAGING_POLICY_PRESETS = new Set(
-  Object.values(ALL_POLICY_PRESETS_BY_MESSAGING_CHANNEL).flatMap((presets) => presets),
+  Object.values(ALL_POLICY_PRESETS_BY_MESSAGING_CHANNEL).flatMap(
+    (presets) => presets,
+  ),
 );
 
 function normalizedNames(values: string[] | null | undefined): string[] {
@@ -37,7 +41,8 @@ export function mergePolicyMessagingChannels(
   const merged: string[] = [];
   for (const channels of [selectedChannels, recordedChannels, activeChannels]) {
     for (const channel of normalizedNames(channels)) {
-      if (!channel || disabled.has(channel) || merged.includes(channel)) continue;
+      if (!channel || disabled.has(channel) || merged.includes(channel))
+        continue;
       merged.push(channel);
     }
   }
@@ -49,7 +54,9 @@ export function requiredMessagingChannelPolicyPresets(
 ): string[] {
   const required: string[] = [];
   for (const channel of normalizedNames(channels)) {
-    for (const preset of REQUIRED_POLICY_PRESETS_BY_MESSAGING_CHANNEL[channel] || []) {
+    for (const preset of REQUIRED_POLICY_PRESETS_BY_MESSAGING_CHANNEL[
+      channel
+    ] || []) {
       if (!required.includes(preset)) required.push(preset);
     }
   }
@@ -87,10 +94,13 @@ export function mergeEnabledMessagingChannelPolicyPresets(
   return merged;
 }
 
-export function allMessagingChannelPolicyPresets(channels: string[] | null | undefined): string[] {
+export function allMessagingChannelPolicyPresets(
+  channels: string[] | null | undefined,
+): string[] {
   const all: string[] = [];
   for (const channel of normalizedNames(channels)) {
-    for (const preset of ALL_POLICY_PRESETS_BY_MESSAGING_CHANNEL[channel] || []) {
+    for (const preset of ALL_POLICY_PRESETS_BY_MESSAGING_CHANNEL[channel] ||
+      []) {
       if (!all.includes(preset)) all.push(preset);
     }
   }
@@ -99,22 +109,33 @@ export function allMessagingChannelPolicyPresets(channels: string[] | null | und
 
 // An array means the caller knows the complete enabled-channel set. Remove only
 // repository-owned messaging presets outside that set; null preserves an
-// unknown selection, and a custom preset with the same name keeps user intent.
+// unknown selection, and a custom preset or tier default with the same name keeps operator intent.
 export function pruneInactiveMessagingPolicyPresets(
   selectedPresets: string[],
   enabledChannels: string[] | null | undefined,
   customPresetNames?: ReadonlySet<string> | null,
+  tierName?: string | null,
 ): string[] {
   if (!Array.isArray(enabledChannels)) {
     return selectedPresets;
   }
 
-  const activePresets = new Set(allMessagingChannelPolicyPresets(enabledChannels));
-  const customPresets = new Set(normalizedNames(customPresetNames ? [...customPresetNames] : []));
+  const tierPresets = new Set(
+    (getTier(tierName ?? "")?.presets ?? []).map((preset) =>
+      preset.name.trim().toLowerCase(),
+    ),
+  );
+  const activePresets = new Set(
+    allMessagingChannelPolicyPresets(enabledChannels),
+  );
+  const customPresets = new Set(
+    normalizedNames(customPresetNames ? [...customPresetNames] : []),
+  );
   return selectedPresets.filter((preset) => {
     const name = preset.trim().toLowerCase();
     return (
       customPresets.has(name) ||
+      tierPresets.has(name) ||
       !REPOSITORY_MESSAGING_POLICY_PRESETS.has(name) ||
       activePresets.has(name)
     );
@@ -133,8 +154,12 @@ export function messagingChannelsForPolicyPresets(
   const presets = new Set(normalizedNames(presetNames));
   if (presets.size === 0) return [];
   const channels: string[] = [];
-  for (const [channel, channelPresets] of Object.entries(ALL_POLICY_PRESETS_BY_MESSAGING_CHANNEL)) {
-    if (channelPresets.some((preset) => presets.has(preset.trim().toLowerCase()))) {
+  for (const [channel, channelPresets] of Object.entries(
+    ALL_POLICY_PRESETS_BY_MESSAGING_CHANNEL,
+  )) {
+    if (
+      channelPresets.some((preset) => presets.has(preset.trim().toLowerCase()))
+    ) {
       channels.push(channel);
     }
   }
@@ -144,21 +169,34 @@ export function messagingChannelsForPolicyPresets(
 export function pruneDisabledMessagingPolicyPresets(
   selectedPresets: string[],
   disabledChannels: string[] | null | undefined,
+  tierName?: string | null,
 ): string[] {
-  const disabledChannelPresets = new Set(allMessagingChannelPolicyPresets(disabledChannels));
-  if (disabledChannelPresets.size === 0) return selectedPresets;
-  return selectedPresets.filter(
-    (preset) => !disabledChannelPresets.has(preset.trim().toLowerCase()),
+  const disabledChannelPresets = new Set(
+    allMessagingChannelPolicyPresets(disabledChannels),
   );
+  if (disabledChannelPresets.size === 0) return selectedPresets;
+  const tierPresets = new Set(
+    (getTier(tierName ?? "")?.presets ?? []).map((preset) =>
+      preset.name.trim().toLowerCase(),
+    ),
+  );
+  return selectedPresets.filter((preset) => {
+    const name = preset.trim().toLowerCase();
+    return tierPresets.has(name) || !disabledChannelPresets.has(name);
+  });
 }
 
 export function hasDisabledMessagingPolicyPreset(
   selectedPresets: string[],
   disabledChannels: string[] | null | undefined,
+  tierName?: string | null,
 ): boolean {
   return (
-    pruneDisabledMessagingPolicyPresets(selectedPresets, disabledChannels).length !==
-    selectedPresets.length
+    pruneDisabledMessagingPolicyPresets(
+      selectedPresets,
+      disabledChannels,
+      tierName,
+    ).length !== selectedPresets.length
   );
 }
 
@@ -166,13 +204,24 @@ export function mergeAppliedPolicyPresetsForDisabledMessagingCleanup(
   selectedPresets: string[],
   appliedPresets: string[],
   disabledChannels: string[] | null | undefined,
+  tierName?: string | null,
 ): string[] {
-  if (!hasDisabledMessagingPolicyPreset(appliedPresets, disabledChannels)) {
+  if (
+    !hasDisabledMessagingPolicyPreset(
+      appliedPresets,
+      disabledChannels,
+      tierName,
+    )
+  ) {
     return selectedPresets;
   }
 
   const merged = [...selectedPresets];
-  for (const preset of pruneDisabledMessagingPolicyPresets(appliedPresets, disabledChannels)) {
+  for (const preset of pruneDisabledMessagingPolicyPresets(
+    appliedPresets,
+    disabledChannels,
+    tierName,
+  )) {
     if (!merged.includes(preset)) merged.push(preset);
   }
   return merged;
