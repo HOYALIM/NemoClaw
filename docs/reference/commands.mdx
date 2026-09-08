@@ -1366,13 +1366,19 @@ If a concurrent lifecycle request reports `SUPERVISOR_BUSY` or `Hermes config mu
 
 <AgentOnly variant="openclaw,hermes">
 
-The command can fail at these layers: unsupported agent, privileged control unavailable, supervisor not running, secret-boundary refusal, unsafe config path, config hash mismatch when transaction metadata cannot be validated, MCP reconciliation refusal, relaunch quarantined, launch failure, health timeout, or forward recovery failure.
-`relaunch quarantined` means the in-sandbox supervisor stopped attempting relaunch after repeated process or health failures.
-Correct the reported cause, then run `$$nemoclaw <name> stop` and `$$nemoclaw <name> start` to reset the supervisor.
-Rebuild only if the sandbox still cannot start.
-An older direct-container image without the matching supervisor or managed controller helper reports `privileged control unavailable` and requires `$$nemoclaw <name> rebuild --yes`.
-Ordinary OpenShell exec and manual in-sandbox relaunch are not fallback paths.
-Terminal agents do not have a gateway runtime and fail as unsupported.
+The command can fail at these layers: unsupported agent, privileged control unavailable, supervisor not running, secret-boundary refusal, unsafe config path, config hash mismatch when transaction metadata cannot be validated, MCP reconciliation refusal, relaunch quarantined, launch failure, health timeout, or forward recovery failure. `relaunch quarantined` means the in-sandbox supervisor stopped attempting relaunch after repeated process or health failures or an unrecoverable startup-layout refusal. Inspect the reported cause before choosing a repair; another recovery request does not retry a stopped relaunch. For ordinary process or health failures, correct the cause, then run `$$nemoclaw <name> stop` and `$$nemoclaw <name> start` to reset the supervisor. Rebuild only if the sandbox still cannot start.
+
+</AgentOnly>
+
+<AgentOnly variant="hermes">
+
+For Hermes, `HERMES_RUNTIME_PREPARATION_FAILED stage=<stage>` identifies a supported input that still failed after five bounded preparation attempts. Correct the named input through its supported host-side configuration or credential flow, then run `$$nemoclaw <name> stop` followed by `$$nemoclaw <name> start`. If startup layout repair reports the maximum log-entry count or repair depth, archive or remove old retained logs from a trusted host-side recovery environment, then stop and start the sandbox. For symbolic links, hard links, unsafe entry types, or paths that changed during repair, restore a trusted snapshot into a recreated sandbox or recreate from host-side onboarding configuration. Rebuild for an integrity mismatch or when the input or sandbox state cannot be repaired safely.
+
+</AgentOnly>
+
+<AgentOnly variant="openclaw,hermes">
+
+An older direct-container image without the matching supervisor or managed controller helper reports `privileged control unavailable` and requires `$$nemoclaw <name> rebuild --yes`. Ordinary OpenShell exec and manual in-sandbox relaunch are not fallback paths. Terminal agents do not have a gateway runtime and fail as unsupported.
 
 </AgentOnly>
 
