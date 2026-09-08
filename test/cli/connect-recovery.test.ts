@@ -12,7 +12,7 @@ import {
   LAUNCH_READINESS_PAIRING_QUALIFICATION_OUTPUT,
   launchReadinessRegistryFixture,
 } from "../helpers/launch-readiness-fixture";
-import { nonWslPlatformNodeOptions } from "../helpers/platform-override-node-options";
+import { syntheticForwardNodeOptions } from "../helpers/platform-override-node-options";
 import {
   runWithEnv,
   testTimeoutOptions,
@@ -258,7 +258,7 @@ describe("CLI connect recovery process contracts", () => {
           "    exit 0",
           "  fi",
           "fi",
-          'if [ "$1" = "forward" ] && [ "$2" = "list" ]; then echo "alpha 127.0.0.1 18789 12345 running"; exit 0; fi',
+          'if [ "$1" = "forward" ] && [ "$2" = "list" ]; then exit 0; fi',
           'if [ "$1" = "forward" ]; then exit 99; fi',
           ...launchReadinessObservationStubLines,
           "exit 0",
@@ -278,7 +278,7 @@ describe("CLI connect recovery process contracts", () => {
       try {
         const result = runWithEnv("alpha connect --probe-only", {
           HOME: home,
-          NODE_OPTIONS: nonWslPlatformNodeOptions(home),
+          NODE_OPTIONS: syntheticForwardNodeOptions(home),
           PATH: `${localBin}:${process.env.PATH || ""}`,
         });
 
@@ -339,7 +339,7 @@ describe("CLI connect recovery process contracts", () => {
           "    exit 0",
           "  fi",
           "fi",
-          'if [ "$1" = "forward" ] && [ "$2" = "list" ]; then echo "alpha 127.0.0.1 18789 12345 running"; exit 0; fi',
+          'if [ "$1" = "forward" ] && [ "$2" = "list" ]; then exit 0; fi',
           'if [ "$1" = "forward" ]; then exit 99; fi',
           ...launchReadinessObservationStubLines,
           "exit 0",
@@ -357,7 +357,7 @@ describe("CLI connect recovery process contracts", () => {
       try {
         const result = runWithEnv("alpha connect --probe-only", {
           HOME: home,
-          NODE_OPTIONS: nonWslPlatformNodeOptions(home),
+          NODE_OPTIONS: syntheticForwardNodeOptions(home),
           PATH: `${localBin}:${process.env.PATH || ""}`,
         });
 
@@ -457,6 +457,10 @@ describe("CLI connect recovery process contracts", () => {
         "  echo '  Phase: Ready'",
         "  exit 0",
         "fi",
+        'if [ "$1" = "policy" ] && [ "$2" = "get" ]; then',
+        `  printf '%b' ${JSON.stringify(LAUNCH_READINESS_FIXTURE_POLICY)}`,
+        "  exit 0",
+        "fi",
         'if [ "$1" = "sandbox" ] && [ "$2" = "exec" ] && [ "$3" = "--name" ] && [ "$4" = "alpha" ]; then',
         "  echo 'OK 200'",
         "  exit 0",
@@ -475,7 +479,7 @@ describe("CLI connect recovery process contracts", () => {
 
     const result = runWithEnv("alpha connect", {
       HOME: home,
-      NODE_OPTIONS: nonWslPlatformNodeOptions(home),
+      NODE_OPTIONS: syntheticForwardNodeOptions(home),
       PATH: `${localBin}:${process.env.PATH || ""}`,
     });
 
