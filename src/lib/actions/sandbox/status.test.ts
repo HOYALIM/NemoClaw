@@ -9,6 +9,7 @@ import type { ProviderHealthProbeOptions } from "../../inference/health";
 import {
   classifySandboxContainerFailureForStatus,
   classifySandboxStatusPreflightFailure,
+  getSandboxStatusPreflight,
   getSandboxStatusInferenceHealth,
   getSandboxStatusReport,
   isDockerDaemonUnreachableForStatus,
@@ -382,6 +383,56 @@ describe("classifySandboxStatusPreflightFailure", () => {
       },
     );
     expect(result).toBeNull();
+  });
+
+  it("keeps the stopped observation available for intentional-stop classification (#11025)", async () => {
+    const result = await classifySandboxStatusPreflightFailure(
+      { name: "alpha", openshellDriver: "docker", stopped: true } as never,
+      {
+        dockerProbe: () => true,
+        sandboxContainerProbe: async () => ({
+          layer: "sandbox_container_stopped",
+          detail: "stub stopped container",
+        }),
+      },
+    );
+    expect(result).toEqual({
+      layer: "sandbox_container_stopped",
+      dockerUnreachable: false,
+    });
+  });
+
+  it("reports a clean stop only when provider observation confirms persisted intent (#11025)", async () => {
+    const stopped = await getSandboxStatusPreflight(
+      { name: "alpha", openshellDriver: "docker", stopped: true } as never,
+      {
+        dockerProbe: () => true,
+        sandboxContainerProbe: async () => ({
+          layer: "sandbox_container_stopped",
+          detail: "stub stopped container",
+        }),
+      },
+    );
+    const running = await getSandboxStatusPreflight(
+      { name: "alpha", openshellDriver: "docker", stopped: true } as never,
+      {
+        dockerProbe: () => true,
+        sandboxContainerProbe: async () => null,
+      },
+    );
+
+    expect(stopped).toMatchObject({
+      intentionalStopConfirmed: true,
+      failureLayer: null,
+      suppressInferenceProbe: true,
+      exitCode: 0,
+    });
+    expect(running).toMatchObject({
+      intentionalStopConfirmed: false,
+      failureLayer: null,
+      suppressInferenceProbe: false,
+      exitCode: 0,
+    });
   });
 
   it("returns null when the sandbox is not on the docker driver", async () => {

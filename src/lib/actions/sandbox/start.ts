@@ -71,6 +71,7 @@ export interface SandboxStartDeps {
   observer?: OpenShellSandboxObserver;
   environment?: NodeJS.ProcessEnv;
   getSandbox?: typeof registry.getSandbox;
+  updateSandbox?: typeof registry.updateSandbox;
   restoreProcessState?: (sandboxName: string) => SandboxStartupRecoveryResult;
   runtimeProviders?: RuntimeProviderBundleRegistry;
   restoreStartupState?: (
@@ -238,6 +239,17 @@ async function startSandboxWithinLifecycleFence(
     await (deps.verifyGateway ?? verifyGateway)(name);
     readiness.inference = checkStartedSandboxInference(name, resolved.sandbox, deps, log);
   });
+  if (
+    !registry.recordSandboxStopIntent(
+      sandboxName,
+      false,
+      deps.updateSandbox ?? registry.updateSandbox,
+    )
+  ) {
+    throw new Error(
+      `Sandbox '${sandboxName}' started, but NemoClaw could not clear its intentional-stop record. Run '${cliName()} ${sandboxName} status' before another lifecycle command.`,
+    );
+  }
   if (readiness.inference && !readiness.inference.ok) {
     log(`  The sandbox started but inference is not usable: ${readiness.inference.detail}.`);
     log(`  Run the sandbox doctor command for '${sandboxName}' to identify the failing hop.`);

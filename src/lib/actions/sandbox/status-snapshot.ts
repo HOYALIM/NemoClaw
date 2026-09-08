@@ -50,6 +50,7 @@ import {
 import {
   getSandboxStatusPreflight,
   hasLegacyStatusRuntimeObservation,
+  resolveSandboxStatusPhase,
   type SandboxStatusFailureLayer,
   type SandboxStatusPreflightResult,
   usesManagedProviderGateway,
@@ -422,12 +423,6 @@ export async function collectSandboxStatusSnapshot(
     deps?: CollectSandboxStatusSnapshotDeps;
   } = {},
 ): Promise<SandboxStatusSnapshot> {
-  const reconcile =
-    opts.deps?.reconcile ??
-    ((name: string) =>
-      getReconciledSandboxGatewayState(name, {
-        getState: getSandboxGatewayStateForStatus,
-      }));
   const getSandbox =
     opts.deps?.getSandbox ??
     ((name: string) => {
@@ -435,6 +430,20 @@ export async function collectSandboxStatusSnapshot(
       return entry && registry.isPublishedSandboxRegistration(entry) ? entry : null;
     });
   const sb = getSandbox(sandboxName);
+  const initialPreflight =
+    opts.preflight ??
+    (sb?.stopped
+      ? await (opts.deps?.getSandboxStatusPreflightImpl ?? getSandboxStatusPreflight)(sb)
+      : undefined);
+  const reconcile =
+    opts.deps?.reconcile ??
+    ((name: string) =>
+      getReconciledSandboxGatewayState(name, {
+        getState: getSandboxGatewayStateForStatus,
+        ...(initialPreflight?.intentionalStopConfirmed
+          ? { gatewayRecovery: "observe" as const }
+          : {}),
+      }));
   let lookup: SandboxGatewayState;
   try {
     lookup = await reconcile(sandboxName);
@@ -452,7 +461,7 @@ export async function collectSandboxStatusSnapshot(
     usesManagedProviderGateway(sb) &&
     (sb.agent ?? "openclaw") === "openclaw" &&
     lookup.phase === "Ready" &&
-    !opts.preflight?.failure;
+    !initialPreflight?.failure;
   let recoveredManagedGateway = false;
   if (
     lookup.state === "present" &&
@@ -489,15 +498,15 @@ export async function collectSandboxStatusSnapshot(
     }
   }
   const postRecoveryPreflight =
-    dockerRecovered && opts.preflight
+    dockerRecovered && initialPreflight
       ? await refreshPreflightAfterDockerRecovery(
           sb,
-          opts.preflight,
+          initialPreflight,
           opts.deps?.getSandboxStatusPreflightImpl ?? getSandboxStatusPreflight,
         )
       : undefined;
   const suppressInferenceProbe =
-    (postRecoveryPreflight ?? opts.preflight)?.suppressInferenceProbe ??
+    (postRecoveryPreflight ?? initialPreflight)?.suppressInferenceProbe ??
     opts.suppressInferenceProbe === true;
   let liveResult: Awaited<ReturnType<typeof captureOpenshellForStatus>> | null = null;
   let gatewayName: string | null = null;
@@ -695,7 +704,7 @@ export async function collectSandboxStatusSnapshot(
       );
   const statusAgent = resolveSandboxStatusAgent(sb?.agent || "openclaw");
   const terminalRuntimeHealth =
-    lookup.state === "present" && statusAgent.agentRuntime === "terminal"
+    lookup.state === "present" && !suppressInferenceProbe && statusAgent.agentRuntime === "terminal"
       ? (opts.deps?.probeTerminalRuntimeHealth ?? probeTerminalRuntimeCgroupOom)(sandboxName)
       : null;
   // The serving-process leg is only meaningful when the gateway is up. A
@@ -768,7 +777,11 @@ async function buildSandboxStatusReport(
     lookup.state === "present" && hasLegacyStatusRuntimeObservation(sb)
       ? getSandboxDockerRuntime(sandboxName)
       : null;
-  const phase = lookup.state === "present" ? (lookup.phase ?? null) : null;
+  const observedPhase = lookup.state === "present" ? (lookup.phase ?? null) : null;
+  const phase = resolveSandboxStatusPhase(
+    observedPhase,
+    snapshot.postRecoveryPreflight ?? preflight,
+  );
   const effectivePreflight = withoutTerminalPhasePreflight(
     snapshot.postRecoveryPreflight ?? preflight,
     phase,
