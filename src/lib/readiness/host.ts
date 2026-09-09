@@ -377,6 +377,7 @@ function unknownProjection(evidenceIds: readonly string[]): {
     "host.gpu.container_toolkit_available",
     "host.gpu.cdi_healthy",
     "host.platform.supported",
+    "host.platform.identity_consistent",
     "host.platform.linux_supported",
     "host.platform.macos_apple_silicon",
     "host.platform.wsl_docker_desktop",
@@ -386,6 +387,9 @@ function unknownProjection(evidenceIds: readonly string[]): {
     "host.platform.n1x_wsl",
     "host.platform.dgx_spark",
     "host.platform.n1x",
+    "host.platform.dgx_station_hardware",
+    "host.platform.dgx_station_software",
+    "host.platform.dgx_station_runtime",
     "host.platform.dgx_station",
   ];
   return {
@@ -548,6 +552,8 @@ export function projectHostReadiness(
       runtimeProviderOwnsHostReadiness: host.runtimeProviderOwnsHostReadiness,
       containerGpuProof: host.containerGpuProof,
       ...host.platformIdentity,
+      nvidiaGpuCount: host.nvidiaGpuCount,
+      nvidiaGpuMemoryPerDeviceBytes: host.nvidiaGpuMemoryPerDeviceBytes,
     });
     evidence.push(...platform.evidence);
     qualifications = platform.qualifications;
