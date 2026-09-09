@@ -20,7 +20,11 @@ import {
   projectPlatformQualification,
 } from "./platform-qualification.js";
 import { measureObservationAge, staleEvidence } from "./observation-age.js";
-import { buildSystemReadinessProbeEnv, createSystemReadinessCapture } from "./probe-env.js";
+import {
+  buildSystemReadinessProbeEnv,
+  createSystemReadinessCapture,
+  createSystemReadinessCaptureEx,
+} from "./probe-env.js";
 import { sanitizeReadinessText } from "./sanitize.js";
 import {
   type EvidenceScalar,
@@ -44,6 +48,7 @@ export interface HostObservations {
   isHeadlessLikely: boolean;
   dockerInstalled: boolean;
   dockerReachable: boolean;
+  dockerProbeIssue?: HostAssessment["dockerProbeIssue"];
   dockerHostInvalid: boolean;
   runtime: string;
   dockerCgroupVersion?: string;
@@ -160,6 +165,7 @@ function adaptHostAssessment(
     isHeadlessLikely: host.isHeadlessLikely,
     dockerInstalled: host.dockerInstalled,
     dockerReachable: host.dockerReachable,
+    dockerProbeIssue: host.dockerProbeIssue,
     dockerHostInvalid: host.dockerHostInvalid === true,
     runtime: host.runtime,
     dockerCgroupVersion: host.dockerCgroupVersion,
@@ -217,6 +223,7 @@ function observeHost(
   try {
     const probeEnv = buildSystemReadinessProbeEnv();
     const runCaptureImpl = createSystemReadinessCapture(probeEnv);
+    const runCaptureExImpl = createSystemReadinessCaptureEx(probeEnv);
     const resolveReadinessOpenshell = () => {
       const commandVResult = runCaptureImpl(["sh", "-c", 'command -v "$1"', "--", "openshell"], {
         ignoreError: true,
@@ -232,6 +239,7 @@ function observeHost(
           env: process.env,
           resolveOpenshellImpl: resolveReadinessOpenshell,
           runCaptureImpl,
+          runCaptureExImpl,
         });
     const gpuProbeAllowed =
       !assessment.isWsl || assessment.runtime !== "docker-desktop" || assessment.dockerReachable;
@@ -422,7 +430,11 @@ export function projectHostReadiness(
     ({ observations, capabilities, findings } = projected);
   } else {
     const dockerHostBlocks = host.dockerHostInvalid;
-    const dockerEvidenceUsable = host.dockerReachable && !dockerHostBlocks;
+    const dockerProbeInconclusive = host.dockerProbeIssue !== undefined;
+    const dockerInfoInconclusive =
+      host.dockerProbeIssue === "info_timeout" || host.dockerProbeIssue === "info_unavailable";
+    const dockerEvidenceUsable =
+      host.dockerReachable && !dockerHostBlocks && !dockerProbeInconclusive;
     const cdiApplies =
       host.platform === "linux" &&
       dockerEvidenceUsable &&
@@ -455,7 +467,10 @@ export function projectHostReadiness(
       observation("host.os.wsl", host.isWsl),
       observation("host.session.headless", host.isHeadlessLikely),
       observation("host.docker.installed", host.dockerInstalled),
-      observation("host.docker.reachable", dockerHostBlocks ? undefined : host.dockerReachable),
+      observation(
+        "host.docker.reachable",
+        dockerHostBlocks || dockerInfoInconclusive ? undefined : host.dockerReachable,
+      ),
       observation("host.docker.host_invalid", host.dockerHostInvalid),
       observation("host.docker.runtime", dockerEvidenceUsable ? host.runtime : undefined),
       observation("host.runtime.provider", host.runtimeProviderId),
@@ -542,7 +557,7 @@ export function projectHostReadiness(
       capability("host.docker.endpoint_supported", stateOf(!host.dockerHostInvalid)),
       capability(
         "host.docker.daemon_reachable",
-        dockerHostBlocks
+        dockerHostBlocks || dockerInfoInconclusive
           ? "unknown"
           : host.dockerInstalled
             ? stateOf(host.dockerReachable)
@@ -591,6 +606,15 @@ export function projectHostReadiness(
           "blocking",
           "DOCKER_HOST is not a supported absolute local Unix socket endpoint.",
           ["host.docker.endpoint_supported"],
+        ),
+      );
+    else if (dockerProbeInconclusive)
+      findings.push(
+        finding(
+          "host.docker.probe_inconclusive",
+          "warning",
+          "The selected Docker authority did not return complete probe evidence.",
+          ["host.docker.daemon_reachable", "host.docker.runtime_supported"],
         ),
       );
     else if (host.dockerInstalled && !host.dockerReachable)
