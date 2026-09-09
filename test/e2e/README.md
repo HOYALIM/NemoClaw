@@ -210,6 +210,24 @@ The 90-minute `test-hermes-sandbox-image` job downloads and loads that artifact 
 rebuilding the image.
 Within that job, the secret-boundary and root-entrypoint steps have 45- and 30-minute budgets respectively.
 
+To reproduce root-entrypoint failures locally, load the run's `hermes-isolation-image` artifact into Docker and run:
+
+```bash
+NEMOCLAW_HERMES_TEST_IMAGE=nemoclaw-hermes-production NEMOCLAW_RUN_LIVE_E2E=1 \
+  npx vitest run --project e2e-live test/e2e/live/hermes-root-entrypoint-smoke.test.ts
+```
+
+For Rancher Desktop, also set `DOCKER_HOST=unix://$HOME/.rd/docker.sock`.
+Use a native image for process-identity checks; QEMU can cause the startup guard to reject a valid PID 1.
+To build a native image from the checkout with its pinned published base, run `docker build -f agents/hermes/Dockerfile -t nemoclaw-hermes-local .`.
+Then set `NEMOCLAW_HERMES_TEST_IMAGE=nemoclaw-hermes-local` in the test command.
+Refusal scenarios execute startup as PID 1.
+They require exit code 1 for root preparation or 78 for non-root layout repair.
+They then start the retained container with a verification script to check the refusal reason and filesystem state.
+This second pass does not launch Hermes again.
+The sandbox user owns the config directory and can remove its history file.
+Sticky-bit protection prevents the gateway user from removing sandbox-owned config files.
+
 The former root-level `test/e2e-test.sh` and `test/e2e-gateway-isolation.sh` suites have been
 removed. Their production-image security coverage now belongs to
 `test/e2e-runtime/managed-image-openclaw-security.test.ts` and the
@@ -1621,9 +1639,9 @@ during Docker layer export. Apart from those rebuild and export paths, E2E jobs
 add swap only through the trusted Hermes main-workflow fallback described in
 [Larger-runner routing](#larger-runner-routing).
 
-Each exporting job disables and deletes that swap after its last Hermes image
-operation. Cleanup runs after earlier failures and fails if the swap remains
-active or the file remains present.
+The exporters leave swap active through their final image operation. Their
+GitHub-hosted runners own terminal disposal of the swap and its backing file;
+the workflows do not add a failure-prone teardown step for that ephemeral state.
 
 These assertions run inside the existing `full-e2e` lifecycle instead of a
 second standalone onboarding run. This keeps the measurement on the job's first
