@@ -1961,10 +1961,11 @@ function applyRequestedVllmGpuDevice(
  *
  * Ownership alone is not enough. A managed container published on a different
  * host port is not the process holding this port, and removing it would free
- * nothing while destroying an unrelated runtime, so its published binding must
- * match the port that failed. Every other state — a foreign or unlabeled
- * holder, an ambiguous inspection, a distributed head or worker, a container
- * that is not running, and an unreadable binding — remains a conflict.
+ * nothing while destroying an unrelated runtime, so one published binding must
+ * cover the probed loopback address and match the port that failed. Every other
+ * state — a foreign or unlabeled holder, an ambiguous inspection, a distributed
+ * head or worker, a container that is not running, and an unreadable or
+ * address-mismatched binding — remains a conflict.
  */
 function adoptableServingPortHolder(
   containerName: string,
@@ -1978,8 +1979,13 @@ function adoptableServingPortHolder(
     env: dockerEnv,
     ignoreError: true,
     timeout: 10_000,
-  })?.match(/:(\d+)\s*$/);
-  if (!published || Number(published[1]) !== servingPort) return undefined;
+  })
+    ?.split(/\r?\n/u)
+    .some((binding) => {
+      const endpoint = binding.trim().match(/^(127[.]0[.]0[.]1|0[.]0[.]0[.]0):(\d+)$/u);
+      return endpoint !== null && Number(endpoint[2]) === servingPort;
+    });
+  if (!published) return undefined;
   return ownership.containerId;
 }
 

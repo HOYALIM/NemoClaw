@@ -437,7 +437,7 @@ describe("managed vLLM serving-port guard (#8685)", () => {
     // managed bearer auth carries no auth label, so lifecycle recovery cannot
     // admit the container this very install left behind.
     mocks.recoverHostLocalManagedVllmEndpoint.mockReturnValue(null);
-    publishContainerPort(8000);
+    publishContainerBindings("0.0.0.0:8000", "[::]:8000");
     const checkServingPort = vi.fn(async () => ({
       ok: false,
       reason: "port 8000 is held by docker-proxy (PID 4242)",
@@ -505,12 +505,12 @@ describe("managed vLLM serving-port guard (#8685)", () => {
     );
   }
 
-  /** Report the host port the managed container publishes for container 8000. */
-  function publishContainerPort(hostPort: number): void {
+  /** Report the host bindings the managed container publishes for container 8000. */
+  function publishContainerBindings(...bindings: string[]): void {
     const base = mocks.dockerCapture.getMockImplementation();
     mocks.dockerCapture.mockImplementation(
       (args: readonly string[], options?: { env?: NodeJS.ProcessEnv }) =>
-        args[0] === "port" ? `0.0.0.0:${String(hostPort)}\n` : (base?.(args, options) ?? ""),
+        args[0] === "port" ? `${bindings.join("\n")}\n` : (base?.(args, options) ?? ""),
     );
   }
 
@@ -526,7 +526,32 @@ describe("managed vLLM serving-port guard (#8685)", () => {
     mocks.recoverHostLocalManagedVllmEndpoint.mockReturnValue(null);
     // Our managed container serves another port, so an unrelated process owns
     // the port that failed. Removing this container would free nothing.
-    publishContainerPort(19_000);
+    publishContainerBindings("0.0.0.0:19000");
+
+    const result = await installVllm(profile, {
+      hasImage: true,
+      nonInteractive: true,
+      promptFn: vi.fn<(q: string) => Promise<string>>(),
+      checkServingPort: async () => ({ ok: false, reason: "port 8000 is held" }),
+    });
+
+    expect(result).toEqual({ ok: false });
+    expect(mocks.dockerForceRm).not.toHaveBeenCalled();
+    expect(mocks.dockerRunDetached).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.flat().join("\n")).toContain("already in use");
+  });
+
+  it("refuses a managed container bound away from the probed loopback address", async () => {
+    const profile = detectVllmProfile({ platform: "spark", type: "nvidia" })!;
+    const managed = vllmContainerRow(profile.containerName, { state: "running" });
+    mockSuccessfulVllmInstall(mocks, profile.containerName, [
+      () => managed,
+      () => managed,
+      () => managed,
+    ]);
+    mockDefaultDockerOwnership(managed);
+    mocks.recoverHostLocalManagedVllmEndpoint.mockReturnValue(null);
+    publishContainerBindings("127.0.0.2:8000", "192.168.1.10:8000");
 
     const result = await installVllm(profile, {
       hasImage: true,
