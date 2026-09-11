@@ -5,6 +5,7 @@ import { timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+import { dockerPort } from "../../adapters/docker/container";
 import { dockerCapture } from "../../adapters/docker/local-model-runtime";
 import { writeLocalAdapterJsonFile } from "../local-adapter-lifecycle";
 import { loadManagedVllmApiKey, managedVllmStateDir } from "../vllm-api-key";
@@ -274,6 +275,29 @@ function inspectHostLocalContainer(
     ignoreError: true,
     timeout: 10_000,
   });
+}
+
+/**
+ * Host port the managed container publishes for the vLLM listener.
+ *
+ * Endpoint recovery additionally proves the bearer binding and therefore
+ * returns nothing for a container started without managed authentication.
+ * Reachability does not depend on that proof, so callers that only need to
+ * know where the listener is published observe the published binding here
+ * instead of assuming the ambient `NEMOCLAW_VLLM_PORT` default.
+ */
+export function observeManagedVllmHostPort(
+  options: { readonly dockerPortImpl?: typeof dockerPort } = {},
+): number | null {
+  const mapping = (options.dockerPortImpl ?? dockerPort)(
+    HOST_LOCAL_VLLM_CONTAINER_NAME,
+    HOST_LOCAL_VLLM_CONTAINER_PORT,
+    { env: buildLocalManagedVllmDockerEnv(), ignoreError: true, timeout: 10_000 },
+  );
+  const published = mapping?.match(/:(\d+)\s*$/);
+  if (!published) return null;
+  const port = Number(published[1]);
+  return Number.isSafeInteger(port) && port >= 1 && port <= 65_535 ? port : null;
 }
 
 /** Recover only the exact authenticated host-local container with bounded host bindings. */
