@@ -1961,13 +1961,28 @@ function applyRequestedVllmGpuDevice(
  * the runtime receipt written after startup and the auth label that a profile
  * adds only for managed bearer auth. An install interrupted before either
  * exists leaves a running managed container that recovery can never claim, so
- * the ownership labels decide instead. Every other state — a foreign or
- * unlabeled holder, an ambiguous inspection, a distributed head or worker, or a
- * container that is not running — remains a conflict.
+ * ownership labels decide instead.
+ *
+ * Ownership alone is not enough. A managed container published on a different
+ * host port is not the process holding this port, and removing it would free
+ * nothing while destroying an unrelated runtime, so its published binding must
+ * match the port that failed. Every other state — a foreign or unlabeled
+ * holder, an ambiguous inspection, a distributed head or worker, a container
+ * that is not running, and an unreadable binding — remains a conflict.
  */
-function adoptableServingPortHolder(containerName: string): string | undefined {
+function adoptableServingPortHolder(
+  containerName: string,
+  servingPort: number,
+): string | undefined {
   const ownership = inspectVllmContainerOwnership(containerName);
   if (ownership.kind !== "managed" || !ownership.running) return undefined;
+  // The managed container always publishes the fixed container port 8000.
+  const published = dockerCapture(["port", containerName, "8000"], {
+    env: buildVllmDockerEnv(),
+    ignoreError: true,
+    timeout: 10_000,
+  })?.match(/:(\d+)\s*$/);
+  if (!published || Number(published[1]) !== servingPort) return undefined;
   return ownership.containerId;
 }
 
@@ -2346,7 +2361,7 @@ async function runVllmInstall(
         recoveredHostLocalContainerId = recovered.containerId;
         // Continue through the ordinary managed-container replacement path.
       } else {
-        const adopted = adoptableServingPortHolder(runtimeProfile.containerName);
+        const adopted = adoptableServingPortHolder(runtimeProfile.containerName, VLLM_PORT);
         if (adopted === undefined) {
           printServingPortConflict(servingPort);
           return { ok: false };

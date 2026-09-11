@@ -429,6 +429,7 @@ describe("managed vLLM serving-port guard (#8685)", () => {
     // managed bearer auth carries no auth label, so lifecycle recovery cannot
     // admit the container this very install left behind.
     mocks.recoverHostLocalManagedVllmEndpoint.mockReturnValue(null);
+    publishContainerPort(8000);
     const checkServingPort = vi.fn(async () => ({
       ok: false,
       reason: "port 8000 is held by docker-proxy (PID 4242)",
@@ -455,6 +456,39 @@ describe("managed vLLM serving-port guard (#8685)", () => {
     const foreign = vllmContainerRow(profile.containerName, { label: "", state: "running" });
     mockSuccessfulVllmInstall(mocks, profile.containerName, [() => foreign, () => foreign]);
     mocks.recoverHostLocalManagedVllmEndpoint.mockReturnValue(null);
+
+    const result = await installVllm(profile, {
+      hasImage: true,
+      nonInteractive: true,
+      promptFn: vi.fn<(q: string) => Promise<string>>(),
+      checkServingPort: async () => ({ ok: false, reason: "port 8000 is held" }),
+    });
+
+    expect(result).toEqual({ ok: false });
+    expect(mocks.dockerForceRm).not.toHaveBeenCalled();
+    expect(mocks.dockerRunDetached).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.flat().join("\n")).toContain("already in use");
+  });
+  /** Report the host port the managed container publishes for container 8000. */
+  function publishContainerPort(hostPort: number): void {
+    const base = mocks.dockerCapture.getMockImplementation();
+    mocks.dockerCapture.mockImplementation((args: readonly string[]) =>
+      args[0] === "port" ? `0.0.0.0:${String(hostPort)}\n` : (base?.(args) ?? ""),
+    );
+  }
+
+  it("refuses a managed container published on a different host port", async () => {
+    const profile = detectVllmProfile({ platform: "spark", type: "nvidia" })!;
+    const managed = vllmContainerRow(profile.containerName, { state: "running" });
+    mockSuccessfulVllmInstall(mocks, profile.containerName, [
+      () => managed,
+      () => managed,
+      () => managed,
+    ]);
+    mocks.recoverHostLocalManagedVllmEndpoint.mockReturnValue(null);
+    // Our managed container serves another port, so an unrelated process owns
+    // the port that failed. Removing this container would free nothing.
+    publishContainerPort(19_000);
 
     const result = await installVllm(profile, {
       hasImage: true,
