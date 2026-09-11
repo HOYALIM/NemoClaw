@@ -1953,6 +1953,24 @@ function applyRequestedVllmGpuDevice(
  * Name the process holding the serving port so the operator can act, matching
  * how the Ollama auth proxy reports its own port conflict.
  */
+/**
+ * Container id of this install's own managed container when that container is
+ * what holds the serving port.
+ *
+ * Lifecycle recovery admits only a completed authenticated install: it needs
+ * the runtime receipt written after startup and the auth label that a profile
+ * adds only for managed bearer auth. An install interrupted before either
+ * exists leaves a running managed container that recovery can never claim, so
+ * the ownership labels decide instead. Every other state — a foreign or
+ * unlabeled holder, an ambiguous inspection, a distributed head or worker, or a
+ * container that is not running — remains a conflict.
+ */
+function adoptableServingPortHolder(containerName: string): string | undefined {
+  const ownership = inspectVllmContainerOwnership(containerName);
+  if (ownership.kind !== "managed" || !ownership.running) return undefined;
+  return ownership.containerId;
+}
+
 function printServingPortConflict(probe: ServingPortProbe): void {
   console.error(
     `  vLLM install failed: port ${String(VLLM_PORT)} is already in use by another process.`,
@@ -2328,8 +2346,12 @@ async function runVllmInstall(
         recoveredHostLocalContainerId = recovered.containerId;
         // Continue through the ordinary managed-container replacement path.
       } else {
-        printServingPortConflict(servingPort);
-        return { ok: false };
+        const adopted = adoptableServingPortHolder(runtimeProfile.containerName);
+        if (adopted === undefined) {
+          printServingPortConflict(servingPort);
+          return { ok: false };
+        }
+        recoveredHostLocalContainerId = adopted;
       }
     } catch (error) {
       console.error(

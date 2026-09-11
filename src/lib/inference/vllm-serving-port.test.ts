@@ -415,4 +415,57 @@ describe("managed vLLM serving-port guard (#8685)", () => {
     expect(mocks.dockerRunDetached).toHaveBeenCalled();
     expect(errSpy.mock.calls.flat().join("\n")).not.toContain("already in use");
   });
+  it("adopts its own interrupted managed container that holds the serving port", async () => {
+    const profile = detectVllmProfile({ platform: "spark", type: "nvidia" })!;
+    const managed = vllmContainerRow(profile.containerName, { state: "running" });
+    // Three responses: the ownership check that classifies the port holder, then
+    // the ordinary replacement guard's own inspection.
+    mockSuccessfulVllmInstall(mocks, profile.containerName, [
+      () => managed,
+      () => managed,
+      () => managed,
+    ]);
+    // An interrupted install persists no runtime receipt, and a profile without
+    // managed bearer auth carries no auth label, so lifecycle recovery cannot
+    // admit the container this very install left behind.
+    mocks.recoverHostLocalManagedVllmEndpoint.mockReturnValue(null);
+    const checkServingPort = vi.fn(async () => ({
+      ok: false,
+      reason: "port 8000 is held by docker-proxy (PID 4242)",
+    }));
+
+    const result = await installVllm(profile, {
+      hasImage: true,
+      nonInteractive: true,
+      promptFn: vi.fn<(q: string) => Promise<string>>(),
+      checkServingPort,
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(mocks.dockerForceRm).toHaveBeenCalledWith(
+      MANAGED_CONTAINER_ID,
+      expect.objectContaining({ ignoreError: true, suppressOutput: true }),
+    );
+    expect(mocks.dockerRunDetached).toHaveBeenCalled();
+    expect(errSpy.mock.calls.flat().join("\n")).not.toContain("another process");
+  });
+
+  it("still refuses when an unlabeled container holds the serving port", async () => {
+    const profile = detectVllmProfile({ platform: "spark", type: "nvidia" })!;
+    const foreign = vllmContainerRow(profile.containerName, { label: "", state: "running" });
+    mockSuccessfulVllmInstall(mocks, profile.containerName, [() => foreign, () => foreign]);
+    mocks.recoverHostLocalManagedVllmEndpoint.mockReturnValue(null);
+
+    const result = await installVllm(profile, {
+      hasImage: true,
+      nonInteractive: true,
+      promptFn: vi.fn<(q: string) => Promise<string>>(),
+      checkServingPort: async () => ({ ok: false, reason: "port 8000 is held" }),
+    });
+
+    expect(result).toEqual({ ok: false });
+    expect(mocks.dockerForceRm).not.toHaveBeenCalled();
+    expect(mocks.dockerRunDetached).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.flat().join("\n")).toContain("already in use");
+  });
 });
