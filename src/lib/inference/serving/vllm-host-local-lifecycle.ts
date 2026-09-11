@@ -9,7 +9,7 @@ import { dockerPort } from "../../adapters/docker/container";
 import { dockerCapture } from "../../adapters/docker/local-model-runtime";
 import { writeLocalAdapterJsonFile } from "../local-adapter-lifecycle";
 import { loadManagedVllmApiKey, managedVllmStateDir } from "../vllm-api-key";
-import { buildLocalManagedVllmDockerEnv } from "../vllm-docker-env";
+import { buildLocalManagedVllmDockerEnv, buildVllmDockerEnv } from "../vllm-docker-env";
 import { runtimeAuthFingerprint } from "./runtime-auth-fingerprint";
 import {
   resolveManagedVllmBridgeHost,
@@ -289,15 +289,23 @@ function inspectHostLocalContainer(
 export function observeManagedVllmHostPort(
   options: { readonly dockerPortImpl?: typeof dockerPort } = {},
 ): number | null {
-  const mapping = (options.dockerPortImpl ?? dockerPort)(
-    HOST_LOCAL_VLLM_CONTAINER_NAME,
-    HOST_LOCAL_VLLM_CONTAINER_PORT,
-    { env: buildLocalManagedVllmDockerEnv(), ignoreError: true, timeout: 10_000 },
-  );
-  const published = mapping?.match(/:(\d+)\s*$/);
-  if (!published) return null;
-  const port = Number(published[1]);
-  return Number.isSafeInteger(port) && port >= 1 && port <= 65_535 ? port : null;
+  const probe = options.dockerPortImpl ?? dockerPort;
+  // Match the Docker selection used to launch the runtime being observed: a
+  // managed container started for an authenticated profile lives on the local
+  // daemon, while an ordinary managed profile follows the ambient client
+  // configuration. Checking the local daemon first keeps the dual-Station pair
+  // authoritative, exactly as container ownership inspection resolves it.
+  for (const env of [buildLocalManagedVllmDockerEnv(), buildVllmDockerEnv()]) {
+    const published = probe(HOST_LOCAL_VLLM_CONTAINER_NAME, HOST_LOCAL_VLLM_CONTAINER_PORT, {
+      env,
+      ignoreError: true,
+      timeout: 10_000,
+    })?.match(/:(\d+)\s*$/);
+    if (!published) continue;
+    const port = Number(published[1]);
+    if (Number.isSafeInteger(port) && port >= 1 && port <= 65_535) return port;
+  }
+  return null;
 }
 
 /** Recover only the exact authenticated host-local container with bounded host bindings. */
