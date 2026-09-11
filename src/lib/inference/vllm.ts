@@ -1242,7 +1242,7 @@ function startContainer(
   // avoids deleting an unrelated same-name container if the name changes hands.
   const replacement = vllmContainerReplacementTarget(
     profile.containerName,
-    model.managedBearerAuth ? dockerEnv : undefined,
+    model.managedBearerAuth || expectedReplacementContainerId !== undefined ? dockerEnv : undefined,
     expectedReplacementContainerId,
   );
   if (!replacement.ok) return replacement;
@@ -1950,10 +1950,6 @@ function applyRequestedVllmGpuDevice(
 }
 
 /**
- * Name the process holding the serving port so the operator can act, matching
- * how the Ollama auth proxy reports its own port conflict.
- */
-/**
  * Container id of this install's own managed container when that container is
  * what holds the serving port.
  *
@@ -1973,12 +1969,13 @@ function applyRequestedVllmGpuDevice(
 function adoptableServingPortHolder(
   containerName: string,
   servingPort: number,
+  dockerEnv: Record<string, string>,
 ): string | undefined {
-  const ownership = inspectVllmContainerOwnership(containerName);
+  const ownership = inspectVllmContainerOwnershipInDockerEnv(containerName, dockerEnv);
   if (ownership.kind !== "managed" || !ownership.running) return undefined;
   // The managed container always publishes the fixed container port 8000.
   const published = dockerCapture(["port", containerName, "8000"], {
-    env: buildVllmDockerEnv(),
+    env: dockerEnv,
     ignoreError: true,
     timeout: 10_000,
   })?.match(/:(\d+)\s*$/);
@@ -1986,6 +1983,10 @@ function adoptableServingPortHolder(
   return ownership.containerId;
 }
 
+/**
+ * Name the process holding the serving port so the operator can act, matching
+ * how the Ollama auth proxy reports its own port conflict.
+ */
 function printServingPortConflict(probe: ServingPortProbe): void {
   console.error(
     `  vLLM install failed: port ${String(VLLM_PORT)} is already in use by another process.`,
@@ -2348,6 +2349,7 @@ async function runVllmInstall(
   // Port 25000 is not checked here: it belongs to the managed-cluster
   // rendezvous contract and this single-node path never binds it.
   let recoveredHostLocalContainerId: string | undefined;
+  let recoveredHostLocalDockerEnv: Record<string, string> | undefined;
   const servingPort = await opts.checkServingPort?.(VLLM_PORT);
   if (servingPort && !servingPort.ok) {
     // An interrupted host-local install can leave its authenticated managed
@@ -2356,18 +2358,24 @@ async function runVllmInstall(
     // credential fingerprint. The replacement guard below then removes the
     // inspected container ID immediately before the new launch.
     try {
+      const hostLocalDockerEnv = buildLocalManagedVllmDockerEnv();
       const recovered = recoverHostLocalManagedVllmEndpoint();
       if (recovered?.baseUrl === `http://127.0.0.1:${String(VLLM_PORT)}`) {
         recoveredHostLocalContainerId = recovered.containerId;
         // Continue through the ordinary managed-container replacement path.
       } else {
-        const adopted = adoptableServingPortHolder(runtimeProfile.containerName, VLLM_PORT);
+        const adopted = adoptableServingPortHolder(
+          runtimeProfile.containerName,
+          VLLM_PORT,
+          hostLocalDockerEnv,
+        );
         if (adopted === undefined) {
           printServingPortConflict(servingPort);
           return { ok: false };
         }
         recoveredHostLocalContainerId = adopted;
       }
+      recoveredHostLocalDockerEnv = hostLocalDockerEnv;
     } catch (error) {
       console.error(
         `  vLLM install failed: managed host-local vLLM recovery could not verify the container: ${(error as Error).message}`,
@@ -2410,9 +2418,8 @@ async function runVllmInstall(
   let hostLocalApiKey: string | null = null;
   let localDockerEnv = dualStationPlan
     ? buildLocalDualStationDockerEnv()
-    : model.managedBearerAuth
-      ? buildLocalManagedVllmDockerEnv()
-      : buildVllmDockerEnv();
+    : (recoveredHostLocalDockerEnv ??
+      (model.managedBearerAuth ? buildLocalManagedVllmDockerEnv() : buildVllmDockerEnv()));
   let gpuMemoryWarningShown = false;
   const reportGpuMemoryWarning = (result: GpuMemoryPreflightResult): void => {
     if (!result.ok || !result.warning || gpuMemoryWarningShown) return;
@@ -2463,7 +2470,9 @@ async function runVllmInstall(
   } else {
     const replacement = vllmContainerReplacementTarget(
       runtimeProfile.containerName,
-      model.managedBearerAuth ? localDockerEnv : undefined,
+      model.managedBearerAuth || recoveredHostLocalContainerId !== undefined
+        ? localDockerEnv
+        : undefined,
       recoveredHostLocalContainerId,
     );
     if (!replacement.ok) {
