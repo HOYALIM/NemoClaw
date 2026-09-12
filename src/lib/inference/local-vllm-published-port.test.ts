@@ -4,6 +4,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 const PUBLISHED_HOST_PORT = 46_145;
+const AMBIENT_CONTEXT = "remote-builder";
 
 vi.mock("../adapters/docker/container", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../adapters/docker/container")>()),
@@ -39,13 +40,16 @@ describe("managed vLLM status probe port resolution", () => {
     const endpoint = probedArgv.find((arg) => arg.includes("/v1/models")) ?? "";
     expect(endpoint).toContain(`:${PUBLISHED_HOST_PORT}`);
   });
-  it("finds the container when only a non-default Docker context publishes it", () => {
-    // An ordinary managed profile follows the ambient Docker client
-    // configuration, so the local daemon reports nothing for it.
-    let selectionsProbed = 0;
-    vi.mocked(dockerPort).mockImplementation(() => {
-      selectionsProbed += 1;
-      return selectionsProbed === 1 ? "" : `0.0.0.0:${PUBLISHED_HOST_PORT}\n`;
+  it("finds the container only through the ambient Docker selection", () => {
+    // The local-daemon selection pins DOCKER_CONTEXT to "default"; the ambient
+    // selection carries whatever this process has configured. An ordinary
+    // managed profile is launched with the ambient one.
+    vi.stubEnv("DOCKER_CONTEXT", AMBIENT_CONTEXT);
+    const selectorsProbed: (string | undefined)[] = [];
+    vi.mocked(dockerPort).mockImplementation((_name, _port, opts) => {
+      const selector = opts?.env?.DOCKER_CONTEXT;
+      selectorsProbed.push(selector);
+      return selector === AMBIENT_CONTEXT ? `0.0.0.0:${PUBLISHED_HOST_PORT}\n` : "";
     });
     const probedArgv: string[] = [];
 
@@ -66,7 +70,8 @@ describe("managed vLLM status probe port resolution", () => {
       },
     });
 
-    expect(selectionsProbed).toBeGreaterThan(1);
+    expect(selectorsProbed).toContain("default");
+    expect(selectorsProbed).toContain(AMBIENT_CONTEXT);
     const endpoint = probedArgv.find((arg) => arg.includes("/v1/models")) ?? "";
     expect(endpoint).toContain(`:${PUBLISHED_HOST_PORT}`);
   });
