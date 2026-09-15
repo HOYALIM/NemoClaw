@@ -12,10 +12,8 @@ import { spawnExitCode } from "../../core/process-exit";
 import { assertNoOpenShellGatewayEndpointOverride } from "../../openshell-gateway-endpoint-guard";
 import { isValidName } from "../../sandbox-name-contract";
 import { buildSubprocessEnv } from "../../subprocess-env";
-import {
-  captureOpenshellCommandAsyncResult,
-  type OpenshellAsyncCaptureSignalSource,
-} from "./client";
+import type { OpenshellAsyncCaptureSignalSource } from "./client";
+import { captureOpenshellCommandAsyncResult } from "./command-execution";
 import { resolveOpenshellBinaryOrNull } from "./resolve-shared";
 import {
   type OpenShellSandboxBufferedCommandCompletion,
@@ -513,12 +511,19 @@ export function createCliOpenShellSandboxSessionExecutor(
               {
                 maxBufferBytes: request.kind === "command" ? request.outputLimitBytes : undefined,
                 stdinIsTty,
+                stdin: request.stdin,
               },
               { spawnChild: spawnSession, signalSource: deps.signalSource },
             )
           : superviseProcessSession(
-              () => spawnSession(binary, args, ["inherit", "inherit", "inherit"]),
+              () =>
+                spawnSession(binary, args, [
+                  request.kind === "command" && request.stdin === false ? "ignore" : "inherit",
+                  "inherit",
+                  "inherit",
+                ]),
               deps.signalSource,
+              { forwardSigint: !stdinIsTty },
             );
       const completion = execution.then((result) => {
         finished = true;

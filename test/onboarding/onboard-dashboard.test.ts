@@ -179,12 +179,13 @@ describe("onboard dashboard helpers", () => {
     );
   });
 
-  it("keeps an external dashboard URL's ForwardTcp service on loopback", () => {
-    vi.stubEnv("NEMOCLAW_DASHBOARD_BIND", undefined);
-    const launch = vi.fn();
+  it("leaves listed legacy forwards for gateway teardown instead of stopping by shared PID record", () => {
+    const runOpenshell = vi.fn(() => ({ status: 0 }));
     const helpers = createOnboardDashboardHelpers({
-      runOpenshell: vi.fn(() => ({ status: 0 })),
-      runCaptureOpenshell: vi.fn(() => ""),
+      runOpenshell,
+      runCaptureOpenshell: vi.fn(
+        () => "SANDBOX BIND PORT PID STATUS\nmy-sandbox 127.0.0.1 18789 4242 running",
+      ),
       openshellArgv: (args: string[]) => ["/usr/local/bin/openshell", ...args],
       cliName: () => "nemoclaw",
       agentProductName: () => "NemoClaw",
@@ -194,65 +195,15 @@ describe("onboard dashboard helpers", () => {
       redact: (value: unknown) => String(value),
       sleep: vi.fn(),
       printAgentDashboardUi: vi.fn(),
-      listSandboxes: () => ({ sandboxes: [] }),
-      isPortBoundOnHost: () => false,
-      forwardService: {
-        executable: () => "/usr/local/bin/openshell",
-        launch,
-        resolveGatewayName: () => "nemoclaw",
-        retireLegacy: vi.fn(() => 0),
-      },
-    });
-
-    try {
-      expect(
-        helpers.ensureDashboardForward("my-sandbox", "https://hermes.example.test:18794"),
-      ).toBe(18_794);
-      expect(launch.mock.calls[0]?.[0]).toEqual({
-        executable: "/usr/local/bin/openshell",
-        gatewayName: "nemoclaw",
-        workspace: "default",
-        sandboxName: "my-sandbox",
-        localHost: "127.0.0.1",
-        localPort: 18_794,
-        targetHost: "127.0.0.1",
-        targetPort: 18_794,
-      });
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
-
-  it("does not reallocate or adopt an occupied persisted dashboard port", () => {
-    const launch = vi.fn();
-    const helpers = createOnboardDashboardHelpers({
-      runOpenshell: vi.fn(() => ({ status: 0 })),
-      runCaptureOpenshell: vi.fn(() => ""),
-      openshellArgv: (args: string[]) => ["/usr/local/bin/openshell", ...args],
-      cliName: () => "nemoclaw",
-      agentProductName: () => "NemoClaw",
-      getProviderLabel: (provider: string) => provider,
-      note: vi.fn(),
-      isWsl: () => false,
-      redact: (value: unknown) => String(value),
-      sleep: vi.fn(),
-      printAgentDashboardUi: vi.fn(),
+      productionForwardService: true,
       listSandboxes: () => ({
         sandboxes: [{ name: "my-sandbox", dashboardPort: 18_789, scopeGatewayPort: 8_080 }],
       }),
-      isPortBoundOnHost: () => true,
-      forwardService: {
-        executable: () => "/usr/local/bin/openshell",
-        launch,
-        resolveGatewayName: () => "nemoclaw",
-        retireLegacy: vi.fn(() => 0),
-      },
     });
 
-    expect(() => helpers.ensureDashboardForward("my-sandbox")).toThrow(
-      /cannot be reallocated or adopted/u,
-    );
-    expect(launch).not.toHaveBeenCalled();
+    helpers.stopAllDashboardForwards();
+
+    expect(runOpenshell).not.toHaveBeenCalled();
   });
 
   it("skips dashboard forwarding for terminal agents without declared ports", async () => {
